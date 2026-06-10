@@ -256,16 +256,16 @@ static int module_intfc() {
 }
 
 static int tp_init() {
-    if (-1 == tpCreate(&emcmotInternal->coord_tp, DEFAULT_TC_QUEUE_SIZE,mot_comp_id)) {
+    if (-1 == tpCreate(&emcmotInternal->chan[0].coord_tp, DEFAULT_TC_QUEUE_SIZE,mot_comp_id)) {
         rtapi_print_msg(RTAPI_MSG_ERR,
             "MOTION: tpCreate failed\n");
         return -1;
     }
     // tpInit is called from tpCreate
-    tpSetCycleTime(&emcmotInternal->coord_tp,  emcmotConfig->trajCycleTime);
-    tpSetVmax(     &emcmotInternal->coord_tp,  emcmotStatus->vel, emcmotStatus->vel);
-    tpSetAmax(     &emcmotInternal->coord_tp,  emcmotStatus->acc);
-    tpSetPos(      &emcmotInternal->coord_tp, &emcmotStatus->carte_pos_cmd);
+    tpSetCycleTime(&emcmotInternal->chan[0].coord_tp,  emcmotConfig->trajCycleTime);
+    tpSetVmax(     &emcmotInternal->chan[0].coord_tp,  emcmotStatus->vel, emcmotStatus->vel);
+    tpSetAmax(     &emcmotInternal->chan[0].coord_tp,  emcmotStatus->acc);
+    tpSetPos(      &emcmotInternal->chan[0].coord_tp, &emcmotStatus->carte_pos_cmd);
     return 0;
 }
 
@@ -1127,7 +1127,7 @@ static int setTrajCycleTime(double secs)
         emcmotConfig->interpolationRate = 1;
 
     /* set traj planner */
-    tpSetCycleTime(&emcmotInternal->coord_tp, secs);
+    tpSetCycleTime(&emcmotInternal->chan[0].coord_tp, secs);
 
     /* set the free planners, cubic interpolation rate and segment time */
     for (t = 0; t < ALL_JOINTS; t++) {
