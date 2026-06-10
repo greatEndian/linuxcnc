@@ -337,6 +337,10 @@ extern void emcmotApplyPendingPlannerType(void);
  * switch (G43.4/G49). Defined in command.c, called each cycle from emcmotController(). */
 extern void emcmotApplyPendingSwitchkinsType(void);
 
+/* MCHAN: validated channel count (1..EMCMOT_MAX_CHANNELS), set at module
+ * init from the num_channels loadrt parameter. 1 = historic behavior. */
+extern int motion_num_channels;
+
 /* joint flags */
 
 #define GET_JOINT_ENABLE_FLAG(joint) ((joint)->flag & EMCMOT_JOINT_ENABLE_BIT ? 1 : 0)
