@@ -267,6 +267,14 @@ void emcmotController(void *arg, long period)
      * coordinated queue has gone idle. No-op unless a switch is pending + motion idle. */
     emcmotApplyPendingPlannerType();
 
+    /* MCHAN: tick the secondary channels' planners every cycle. Their queues
+     * stay empty until the per-channel command plumbing lands (MC2+), so this
+     * is a cheap no-op pass that keeps every channel's planner clock aligned
+     * with the servo thread. Loop body never runs at num_channels=1. */
+    for (int mchan_ch = 1; mchan_ch < motion_num_channels; mchan_ch++) {
+	tpRunCycle(&emcmotInternal->chan[mchan_ch].coord_tp, period);
+    }
+
     get_pos_cmds(period);
     compute_screw_comp();
     *(emcmot_hal_data->eoffset_active) = axis_plan_external_offsets(servo_period, GET_MOTION_ENABLE_FLAG(), get_allhomed());
