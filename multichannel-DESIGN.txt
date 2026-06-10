@@ -74,7 +74,11 @@ D8. SCALING RULE (the A+D merge): this design is one "timing domain".
 PROBLEM REGISTER (MC1-MC17) — build guards for these, validate against them
 ----------------------------------------------------------------------------
 RT/motion core:
- MC1  two TPs in one servo cycle (CPU budget)      -> 2-TP no-op prototype FIRST; gate
+ MC1  two TPs in one servo cycle (CPU budget)      -> GATE PASSED 2026-06-10:
+      measured worst-case S-curve TP cost on dense 0.01" segments = 41 us/cycle
+      (motion.tp-time-max, tests/mchan-tp-budget, 1 ms period). 2 channels ~8%
+      of the 1 ms budget; ~33% of an eventual 250 us period. Permanent budget
+      tripwire test committed; re-measure after every motion-core change.
  MC2  task<->motion handshake is single mailbox    -> per-channel cmd/status areas
  MC3  per-channel free/coord/teleop state machines -> hairiest piece; explicit per-ch
       (jog ch2 while ch1 runs a program)              state struct; sim-gated early
