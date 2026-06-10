@@ -1,0 +1,23 @@
+#!/bin/bash
+# MCHAN MC1 budget tripwire: the measured TP cost must exist and stay far
+# below the servo period. Threshold = 500000 ns (half of the 1 ms period);
+# generous on purpose - this is a tripwire against gross regressions, the
+# real budget analysis reads the printed numbers.
+RESULT_FILE=$1
+
+MAXNS=$(grep "^tp-time-max-ns=" "$RESULT_FILE" | cut -d= -f2)
+
+if [ -z "$MAXNS" ] || [ "$MAXNS" = "-1" ]; then
+    echo "FAIL: no tp-time-max measurement found"
+    exit 1
+fi
+if [ "$MAXNS" -le 0 ]; then
+    echo "FAIL: tp-time-max not positive ($MAXNS)"
+    exit 1
+fi
+if [ "$MAXNS" -ge 500000 ]; then
+    echo "FAIL: TP cost $MAXNS ns exceeds budget tripwire (500000 ns of 1 ms period)"
+    exit 1
+fi
+echo "OK: tp-time-max = $MAXNS ns per servo cycle"
+exit 0
