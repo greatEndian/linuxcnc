@@ -1376,13 +1376,19 @@ static void get_pos_cmds(long period)
 
 	/* check joint 0 to see if the interpolators are empty */
 	coord_cubic_active = 1;
+	{
+	/* MCHAN (MC1): accumulate this cycle's coordinated-TP cost; the loop
+	 * can iterate more than once while the interpolators fill. */
+	long long tp_ns_acc = 0;
 	while (cubicNeedNextPoint(&(joints[0].cubic))) {
 	    /* they're empty, pull next point(s) off Cartesian planner */
 	    /* run coordinated trajectory planning cycle */
 
+	    long long tp_t0 = rtapi_get_time();
 	    tpRunCycle(&emcmotInternal->coord_tp, period);
             /* get new commanded traj pos */
             tpGetPos(&emcmotInternal->coord_tp, &emcmotStatus->carte_pos_cmd);
+	    tp_ns_acc += rtapi_get_time() - tp_t0;
 
             if (axis_update_coord_with_bound(pcmd_p, servo_period)) {
                 ext_offset_coord_limit = 1;
@@ -1424,6 +1430,11 @@ static void get_pos_cmds(long period)
 
 	    /* END OF OUTPUT KINS */
 	} // while
+	/* MCHAN (MC1): publish this cycle's TP cost */
+	*(emcmot_hal_data->tp_time_last) = (hal_s32_t)tp_ns_acc;
+	if ((hal_s32_t)tp_ns_acc > *(emcmot_hal_data->tp_time_max))
+	    *(emcmot_hal_data->tp_time_max) = (hal_s32_t)tp_ns_acc;
+	}
 	/* there is data in the interpolators */
 	/* run interpolation */
 	for (joint_num = 0; joint_num < NO_OF_KINS_JOINTS; joint_num++) {
