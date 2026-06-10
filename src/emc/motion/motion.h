@@ -751,6 +751,13 @@ Suggestion: Split this in to an Error and a Status flag register..
     } emcmot_error_t;
 
 
+/* MCHAN: one motion channel = one independent coordinated trajectory
+ * planner. Grows per-channel state in later phases (mode machine, command
+ * area, axis ownership). */
+typedef struct emcmot_channel_t {
+    TP_STRUCT coord_tp;	/* this channel's coordinated-mode planner */
+} emcmot_channel_t;
+
 typedef struct emcmot_internal_t {
     unsigned char head; /* flag count for mutex detect */
     unsigned char tail; /* flag count for mutex detect */
@@ -760,7 +767,12 @@ typedef struct emcmot_internal_t {
     int teleoperating;  /* starts up in free mode */
     int overriding;     /* non-zero means we've initiated an joint
                            move while overriding limits */
-    TP_STRUCT coord_tp; /* coordinated mode planner */
+    /* MCHAN: per-channel motion state. Each channel is an independent
+     * coordinated planner (Fanuc-multi-path style). chan[0] is the historic
+     * single channel; with num_channels=1 behavior is bit-identical to the
+     * pre-multichannel code. Future per-channel state (mode machines, axis
+     * ownership) lives here too. */
+    emcmot_channel_t chan[EMCMOT_MAX_CHANNELS];
     int idForStep;      /* status id while stepping */
     } emcmot_internal_t;
 

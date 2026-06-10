@@ -513,7 +513,7 @@ void emcmotCommandHandler_locked(void *arg, long servo_period)
 		   never released after a spindle stop almost always means
 		   spindle.N.at-speed is not wired, or does not go true once the
 		   spindle has actually stopped. */
-		if (MOTION_ID_VALID(emcmotInternal->coord_tp.spindle.waiting_for_atspeed)) {
+		if (MOTION_ID_VALID(emcmotInternal->chan[0].coord_tp.spindle.waiting_for_atspeed)) {
 			for (spindle_num = 0; spindle_num < emcmotConfig->numSpindles; spindle_num++) {
 				if (emcmotStatus->spindle_status[spindle_num].state == 0 && !emcmotStatus->spindle_status[spindle_num].at_speed) {
 					reportError(_("Aborted while waiting for spindle %d at-speed after a spindle stop. "
@@ -523,7 +523,7 @@ void emcmotCommandHandler_locked(void *arg, long servo_period)
 				}
 			}
 		}
-		tpAbort(&emcmotInternal->coord_tp);
+		tpAbort(&emcmotInternal->chan[0].coord_tp);
 	    } else {
 		for (joint_num = 0; joint_num < ALL_JOINTS; joint_num++) {
 		    /* point to joint struct */
@@ -1014,17 +1014,17 @@ void emcmotCommandHandler_locked(void *arg, long servo_period)
             break;
 
 	case EMCMOT_SET_TERM_COND:
-	    /* sets termination condition for motion emcmotInternal->coord_tp */
+	    /* sets termination condition for motion emcmotInternal->chan[0].coord_tp */
 	    rtapi_print_msg(RTAPI_MSG_DBG, "SET_TERM_COND");
-	    tpSetTermCond(&emcmotInternal->coord_tp, emcmotCommand->termCond, emcmotCommand->tolerance);
+	    tpSetTermCond(&emcmotInternal->chan[0].coord_tp, emcmotCommand->termCond, emcmotCommand->tolerance);
 	    break;
 
 	case EMCMOT_SET_SPINDLESYNC:
-		tpSetSpindleSync(&emcmotInternal->coord_tp, emcmotCommand->spindle, emcmotCommand->spindlesync, emcmotCommand->flags);
+		tpSetSpindleSync(&emcmotInternal->chan[0].coord_tp, emcmotCommand->spindle, emcmotCommand->spindlesync, emcmotCommand->flags);
 		break;
 
 	case EMCMOT_SET_LINE:
-	    /* emcmotInternal->coord_tp up a linear move */
+	    /* emcmotInternal->chan[0].coord_tp up a linear move */
 	    /* requires motion enabled, coordinated mode, not on limits */
 	    rtapi_print_msg(RTAPI_MSG_DBG, "SET_LINE");
 	    if (!GET_MOTION_COORD_FLAG() || !GET_MOTION_ENABLE_FLAG()) {
@@ -1035,13 +1035,13 @@ void emcmotCommandHandler_locked(void *arg, long servo_period)
 	    } else if (!inRange(emcmotCommand->pos, emcmotCommand->id, "Linear")) {
 		reportError(_("invalid params in linear command"));
 		emcmotStatus->commandStatus = EMCMOT_COMMAND_INVALID_PARAMS;
-		tpAbort(&emcmotInternal->coord_tp);
+		tpAbort(&emcmotInternal->chan[0].coord_tp);
 		SET_MOTION_ERROR_FLAG(1);
 		break;
 	    } else if (!limits_ok()) {
 		reportError(_("can't do linear move with limits exceeded"));
 		emcmotStatus->commandStatus = EMCMOT_COMMAND_INVALID_PARAMS;
-		tpAbort(&emcmotInternal->coord_tp);
+		tpAbort(&emcmotInternal->chan[0].coord_tp);
 		SET_MOTION_ERROR_FLAG(1);
 		break;
 	    }
@@ -1055,9 +1055,9 @@ void emcmotCommandHandler_locked(void *arg, long servo_period)
 			emcmotStatus->atspeed_next_feed = 1;
 		}
 
-	    /* append it to the emcmotInternal->coord_tp */
-	    tpSetId(&emcmotInternal->coord_tp, emcmotCommand->id);
-	    int res_addline = tpAddLine(&emcmotInternal->coord_tp,
+	    /* append it to the emcmotInternal->chan[0].coord_tp */
+	    tpSetId(&emcmotInternal->chan[0].coord_tp, emcmotCommand->id);
+	    int res_addline = tpAddLine(&emcmotInternal->chan[0].coord_tp,
 					emcmotCommand->pos,
 					emcmotCommand->motion_type,
 					emcmotCommand->vel,
@@ -1073,7 +1073,7 @@ void emcmotCommandHandler_locked(void *arg, long servo_period)
             reportError(_("can't add linear move at line %d, error code %d"),
                     emcmotCommand->id, res_addline);
             emcmotStatus->commandStatus = EMCMOT_COMMAND_BAD_EXEC;
-            tpAbort(&emcmotInternal->coord_tp);
+            tpAbort(&emcmotInternal->chan[0].coord_tp);
             SET_MOTION_ERROR_FLAG(1);
             break;
         } else if (res_addline != 0) {
@@ -1093,7 +1093,7 @@ void emcmotCommandHandler_locked(void *arg, long servo_period)
 	    break;
 
 	case EMCMOT_SET_CIRCLE:
-	    /* emcmotInternal->coord_tp up a circular move */
+	    /* emcmotInternal->chan[0].coord_tp up a circular move */
 	    /* requires coordinated mode, enable on, not on limits */
 	    rtapi_print_msg(RTAPI_MSG_DBG, "SET_CIRCLE");
 	    if (!GET_MOTION_COORD_FLAG() || !GET_MOTION_ENABLE_FLAG()) {
@@ -1103,13 +1103,13 @@ void emcmotCommandHandler_locked(void *arg, long servo_period)
 		break;
 	    } else if (!inRange(emcmotCommand->pos, emcmotCommand->id, "Circular")) {
 		emcmotStatus->commandStatus = EMCMOT_COMMAND_INVALID_PARAMS;
-		tpAbort(&emcmotInternal->coord_tp);
+		tpAbort(&emcmotInternal->chan[0].coord_tp);
 		SET_MOTION_ERROR_FLAG(1);
 		break;
 	    } else if (!limits_ok()) {
 		reportError(_("can't do circular move with limits exceeded"));
 		emcmotStatus->commandStatus = EMCMOT_COMMAND_INVALID_PARAMS;
-		tpAbort(&emcmotInternal->coord_tp);
+		tpAbort(&emcmotInternal->chan[0].coord_tp);
 		SET_MOTION_ERROR_FLAG(1);
 		break;
 	    }
@@ -1117,9 +1117,9 @@ void emcmotCommandHandler_locked(void *arg, long servo_period)
                 issue_atspeed = 1;
                 emcmotStatus->atspeed_next_feed = 0;
             }
-	    /* append it to the emcmotInternal->coord_tp */
-	    tpSetId(&emcmotInternal->coord_tp, emcmotCommand->id);
-	    int res_addcircle = tpAddCircle(&emcmotInternal->coord_tp, emcmotCommand->pos,
+	    /* append it to the emcmotInternal->chan[0].coord_tp */
+	    tpSetId(&emcmotInternal->chan[0].coord_tp, emcmotCommand->id);
+	    int res_addcircle = tpAddCircle(&emcmotInternal->chan[0].coord_tp, emcmotCommand->pos,
                             emcmotCommand->center, emcmotCommand->normal,
                             emcmotCommand->turn, emcmotCommand->motion_type,
                             emcmotCommand->vel, emcmotCommand->ini_maxvel,
@@ -1129,7 +1129,7 @@ void emcmotCommandHandler_locked(void *arg, long servo_period)
             reportError(_("can't add circular move at line %d, error code %d"),
                     emcmotCommand->id, res_addcircle);
 		emcmotStatus->commandStatus = EMCMOT_COMMAND_BAD_EXEC;
-		tpAbort(&emcmotInternal->coord_tp);
+		tpAbort(&emcmotInternal->chan[0].coord_tp);
 		SET_MOTION_ERROR_FLAG(1);
 		break;
         } else if (res_addcircle != 0) {
@@ -1154,7 +1154,7 @@ void emcmotCommandHandler_locked(void *arg, long servo_period)
 	    /* can do it at any time */
 	    rtapi_print_msg(RTAPI_MSG_DBG, "SET_VEL");
 	    emcmotStatus->vel = emcmotCommand->vel;
-	    tpSetVmax(&emcmotInternal->coord_tp, emcmotStatus->vel, emcmotCommand->ini_maxvel);
+	    tpSetVmax(&emcmotInternal->chan[0].coord_tp, emcmotStatus->vel, emcmotCommand->ini_maxvel);
 	    break;
 
 	case EMCMOT_SET_VEL_LIMIT:
@@ -1163,7 +1163,7 @@ void emcmotCommandHandler_locked(void *arg, long servo_period)
 	    /* set the absolute max velocity for all subsequent moves */
 	    /* can do it at any time */
 	    emcmotConfig->limitVel = emcmotCommand->vel;
-	    tpSetVlimit(&emcmotInternal->coord_tp, emcmotConfig->limitVel);
+	    tpSetVlimit(&emcmotInternal->chan[0].coord_tp, emcmotConfig->limitVel);
 	    break;
 
 	case EMCMOT_SET_JOINT_VEL_LIMIT:
@@ -1209,7 +1209,7 @@ void emcmotCommandHandler_locked(void *arg, long servo_period)
 	    /* can do it at any time */
 	    rtapi_print_msg(RTAPI_MSG_DBG, "SET_ACCEL");
 	    emcmotStatus->acc = emcmotCommand->acc;
-	    tpSetAmax(&emcmotInternal->coord_tp, emcmotStatus->acc);
+	    tpSetAmax(&emcmotInternal->chan[0].coord_tp, emcmotStatus->acc);
 	    break;
  
 	case EMCMOT_SET_JERK:
@@ -1235,7 +1235,7 @@ void emcmotCommandHandler_locked(void *arg, long servo_period)
 	    /* pause the motion */
 	    /* can happen at any time */
 	    rtapi_print_msg(RTAPI_MSG_DBG, "PAUSE");
-	    tpPause(&emcmotInternal->coord_tp);
+	    tpPause(&emcmotInternal->chan[0].coord_tp);
 	    emcmotStatus->paused = 1;
 	    break;
 
@@ -1243,14 +1243,14 @@ void emcmotCommandHandler_locked(void *arg, long servo_period)
 	    /* run motion in reverse*/
 	    /* only allowed during a pause */
 	    rtapi_print_msg(RTAPI_MSG_DBG, "REVERSE");
-	    tpSetRunDir(&emcmotInternal->coord_tp, TC_DIR_REVERSE);
+	    tpSetRunDir(&emcmotInternal->chan[0].coord_tp, TC_DIR_REVERSE);
 	    break;
 
 	case EMCMOT_FORWARD:
 	    /* run motion in reverse*/
 	    /* only allowed during a pause */
 	    rtapi_print_msg(RTAPI_MSG_DBG, "FORWARD");
-	    tpSetRunDir(&emcmotInternal->coord_tp, TC_DIR_FORWARD);
+	    tpSetRunDir(&emcmotInternal->chan[0].coord_tp, TC_DIR_FORWARD);
 	    break;
 
 	case EMCMOT_RESUME:
@@ -1258,7 +1258,7 @@ void emcmotCommandHandler_locked(void *arg, long servo_period)
 	    /* can happen at any time */
 	    rtapi_print_msg(RTAPI_MSG_DBG, "RESUME");
 	    emcmotStatus->stepping = 0;
-	    tpResume(&emcmotInternal->coord_tp);
+	    tpResume(&emcmotInternal->chan[0].coord_tp);
 	    emcmotStatus->paused = 0;
 	    break;
 
@@ -1269,7 +1269,7 @@ void emcmotCommandHandler_locked(void *arg, long servo_period)
             if(emcmotStatus->paused) {
                 emcmotInternal->idForStep = emcmotStatus->id;
                 emcmotStatus->stepping = 1;
-                tpResume(&emcmotInternal->coord_tp);
+                tpResume(&emcmotInternal->chan[0].coord_tp);
                 emcmotStatus->paused = 1;
             } else {
 		reportError(_("MOTION: can't STEP while already executing"));
@@ -1475,7 +1475,7 @@ void emcmotCommandHandler_locked(void *arg, long servo_period)
 
 	case EMCMOT_PROBE:
 	    /* most of this is taken from EMCMOT_SET_LINE */
-	    /* emcmotInternal->coord_tp up a linear move */
+	    /* emcmotInternal->chan[0].coord_tp up a linear move */
 	    /* requires coordinated mode, enable off, not on limits */
 	    rtapi_print_msg(RTAPI_MSG_DBG, "PROBE");
 	    if (!GET_MOTION_COORD_FLAG() || !GET_MOTION_ENABLE_FLAG()) {
@@ -1485,13 +1485,13 @@ void emcmotCommandHandler_locked(void *arg, long servo_period)
 		break;
 	    } else if (!inRange(emcmotCommand->pos, emcmotCommand->id, "Probe")) {
 		emcmotStatus->commandStatus = EMCMOT_COMMAND_INVALID_PARAMS;
-		tpAbort(&emcmotInternal->coord_tp);
+		tpAbort(&emcmotInternal->chan[0].coord_tp);
 		SET_MOTION_ERROR_FLAG(1);
 		break;
 	    } else if (!limits_ok()) {
 		reportError(_("can't do probe move with limits exceeded"));
 		emcmotStatus->commandStatus = EMCMOT_COMMAND_INVALID_PARAMS;
-		tpAbort(&emcmotInternal->coord_tp);
+		tpAbort(&emcmotInternal->chan[0].coord_tp);
 		SET_MOTION_ERROR_FLAG(1);
 		break;
 	    } else if (!(emcmotCommand->probe_type & 1)) {
@@ -1508,7 +1508,7 @@ void emcmotCommandHandler_locked(void *arg, long servo_period)
                         reportError(_("Probe is already tripped when starting G38.2 or G38.3 move"));
 
                     emcmotStatus->commandStatus = EMCMOT_COMMAND_BAD_EXEC;
-                    tpAbort(&emcmotInternal->coord_tp);
+                    tpAbort(&emcmotInternal->chan[0].coord_tp);
                     SET_MOTION_ERROR_FLAG(1);
                     break;
                 }
@@ -1522,9 +1522,9 @@ void emcmotCommandHandler_locked(void *arg, long servo_period)
 		emcmotStatus->atspeed_next_feed = 0;
 	    }
 
-	    /* append it to the emcmotInternal->coord_tp */
-	    tpSetId(&emcmotInternal->coord_tp, emcmotCommand->id);
-	    if (-1 == tpAddLine(&emcmotInternal->coord_tp,
+	    /* append it to the emcmotInternal->chan[0].coord_tp */
+	    tpSetId(&emcmotInternal->chan[0].coord_tp, emcmotCommand->id);
+	    if (-1 == tpAddLine(&emcmotInternal->chan[0].coord_tp,
 				emcmotCommand->pos,
 				emcmotCommand->motion_type,
 				emcmotCommand->vel,
@@ -1537,7 +1537,7 @@ void emcmotCommandHandler_locked(void *arg, long servo_period)
 				emcmotCommand->tag)) {
 		reportError(_("can't add probe move"));
 		emcmotStatus->commandStatus = EMCMOT_COMMAND_BAD_EXEC;
-		tpAbort(&emcmotInternal->coord_tp);
+		tpAbort(&emcmotInternal->chan[0].coord_tp);
 		SET_MOTION_ERROR_FLAG(1);
 		break;
 	    } else {
@@ -1553,7 +1553,7 @@ void emcmotCommandHandler_locked(void *arg, long servo_period)
 
 	case EMCMOT_RIGID_TAP:
 	    /* most of this is taken from EMCMOT_SET_LINE */
-	    /* emcmotInternal->coord_tp up a linear move */
+	    /* emcmotInternal->chan[0].coord_tp up a linear move */
 	    /* requires coordinated mode, enable off, not on limits */
 	    rtapi_print_msg(RTAPI_MSG_DBG, "RIGID_TAP");
 	    if (!GET_MOTION_COORD_FLAG() || !GET_MOTION_ENABLE_FLAG()) {
@@ -1563,20 +1563,20 @@ void emcmotCommandHandler_locked(void *arg, long servo_period)
 		break;
 	    } else if (!inRange(emcmotCommand->pos, emcmotCommand->id, "Rigid tap")) {
 		emcmotStatus->commandStatus = EMCMOT_COMMAND_INVALID_PARAMS;
-		tpAbort(&emcmotInternal->coord_tp);
+		tpAbort(&emcmotInternal->chan[0].coord_tp);
 		SET_MOTION_ERROR_FLAG(1);
 		break;
 	    } else if (!limits_ok()) {
 		reportError(_("can't do rigid tap move with limits exceeded"));
 		emcmotStatus->commandStatus = EMCMOT_COMMAND_INVALID_PARAMS;
-		tpAbort(&emcmotInternal->coord_tp);
+		tpAbort(&emcmotInternal->chan[0].coord_tp);
 		SET_MOTION_ERROR_FLAG(1);
 		break;
 	    }
 
 	    /* append it to the emcmotInternal->tp */
-	    tpSetId(&emcmotInternal->coord_tp, emcmotCommand->id);
-        int res_addtap = tpAddRigidTap(&emcmotInternal->coord_tp,
+	    tpSetId(&emcmotInternal->chan[0].coord_tp, emcmotCommand->id);
+        int res_addtap = tpAddRigidTap(&emcmotInternal->chan[0].coord_tp,
                                     emcmotCommand->pos,
                                     emcmotCommand->vel,
                                     emcmotCommand->ini_maxvel,
@@ -1589,7 +1589,7 @@ void emcmotCommandHandler_locked(void *arg, long servo_period)
             emcmotStatus->atspeed_next_feed = 0; /* rigid tap always waits for spindle to be at-speed */
             reportError(_("can't add rigid tap move at line %d, error code %d"),
                     emcmotCommand->id, res_addtap);
-		tpAbort(&emcmotInternal->coord_tp);
+		tpAbort(&emcmotInternal->chan[0].coord_tp);
 		SET_MOTION_ERROR_FLAG(1);
 		break;
 	    } else {
@@ -1609,7 +1609,7 @@ void emcmotCommandHandler_locked(void *arg, long servo_period)
 	    if (emcmotCommand->now) { //we set it right away
 		emcmotAioWrite(emcmotCommand->out, emcmotCommand->minLimit);
 	    } else { // we put it on the TP queue, warning: only room for one in there, any new ones will overwrite
-		tpSetAout(&emcmotInternal->coord_tp, emcmotCommand->out,
+		tpSetAout(&emcmotInternal->chan[0].coord_tp, emcmotCommand->out,
 		    emcmotCommand->minLimit, emcmotCommand->maxLimit);
 	    }
 	    break;
@@ -1619,7 +1619,7 @@ void emcmotCommandHandler_locked(void *arg, long servo_period)
 	    if (emcmotCommand->now) { //we set it right away
 		emcmotDioWrite(emcmotCommand->out, emcmotCommand->start);
 	    } else { // we put it on the TP queue, warning: only room for one in there, any new ones will overwrite
-		tpSetDout(&emcmotInternal->coord_tp, emcmotCommand->out,
+		tpSetDout(&emcmotInternal->chan[0].coord_tp, emcmotCommand->out,
 		    emcmotCommand->start, emcmotCommand->end);
 	    }
 	    break;
