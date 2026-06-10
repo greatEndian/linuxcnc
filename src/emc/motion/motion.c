@@ -56,6 +56,11 @@ RTAPI_MP_INT (num_spindles, "number of spindles");
 int motion_num_spindles;
 static int num_joints = EMCMOT_MAX_JOINTS;	/* default number of joints present */
 RTAPI_MP_INT(num_joints, "number of joints used in kinematics");
+/* MCHAN: number of motion channels (independent coordinated planners).
+ * Default 1 = exactly the historic single-channel behavior. */
+static int num_channels = 1;
+RTAPI_MP_INT(num_channels, "number of motion channels (1..EMCMOT_MAX_CHANNELS)");
+int motion_num_channels;	/* validated value, visible to motion module */
 static int num_extrajoints = 0;	/* default number of extra joints present */
 RTAPI_MP_INT(num_extrajoints, "number of extra joints (not used in kinematics)");
 
@@ -322,6 +327,19 @@ int rtapi_app_main(void)
 	    _("MOTION: num_joints is %d, must be between 1 and %d\n"), num_joints, EMCMOT_MAX_JOINTS);
 	hal_exit(mot_comp_id);
 	return -1;
+    }
+
+    /* MCHAN: validate channel count; default 1 keeps historic behavior */
+    if (( num_channels < 1 ) || ( num_channels > EMCMOT_MAX_CHANNELS )) {
+	rtapi_print_msg(RTAPI_MSG_ERR,
+	    _("MOTION: num_channels is %d, must be between 1 and %d\n"), num_channels, EMCMOT_MAX_CHANNELS);
+	hal_exit(mot_comp_id);
+	return -1;
+    }
+    motion_num_channels = num_channels;
+    if (num_channels > 1) {
+	rtapi_print_msg(RTAPI_MSG_INFO,
+	    _("MOTION: multichannel mode, %d channels\n"), num_channels);
     }
 
     if (( num_extrajoints < 0 ) || ( num_extrajoints > num_joints )) {
