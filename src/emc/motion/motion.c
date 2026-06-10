@@ -638,6 +638,10 @@ static int init_hal_io(void)
     // export timing related HAL pins so they can be scoped and/or connected
     CALL_CHECK(hal_pin_u32_newf(HAL_OUT, &(emcmot_hal_data->last_period), mot_comp_id, "motion.servo.last-period"));
 
+    /* MCHAN (MC1): coordinated-TP cost pins (ns per servo cycle) */
+    CALL_CHECK(hal_pin_s32_newf(HAL_OUT, &(emcmot_hal_data->tp_time_last), mot_comp_id, "motion.tp-time-last"));
+    CALL_CHECK(hal_pin_s32_newf(HAL_OUT, &(emcmot_hal_data->tp_time_max), mot_comp_id, "motion.tp-time-max"));
+
     // export timing related HAL pins so they can be scoped
     CALL_CHECK(hal_pin_float_newf(HAL_OUT, &(emcmot_hal_data->tooloffset_x), mot_comp_id, "motion.tooloffset.x"));
     CALL_CHECK(hal_pin_float_newf(HAL_OUT, &(emcmot_hal_data->tooloffset_y), mot_comp_id, "motion.tooloffset.y"));
