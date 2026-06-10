@@ -327,6 +327,10 @@ int joint_is_lockable(int joint_num);
  * from emcmotController() to apply a latched planner-type switch once motion is idle. */
 extern void emcmotApplyPendingPlannerType(void);
 
+/* MCHAN: validated channel count (1..EMCMOT_MAX_CHANNELS), set at module
+ * init from the num_channels loadrt parameter. 1 = historic behavior. */
+extern int motion_num_channels;
+
 /* joint flags */
 
 #define GET_JOINT_ENABLE_FLAG(joint) ((joint)->flag & EMCMOT_JOINT_ENABLE_BIT ? 1 : 0)
