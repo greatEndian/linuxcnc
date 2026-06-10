@@ -174,6 +174,13 @@ typedef struct {
     // realtime overrun detection
     hal_u32_t   *last_period;	/* pin: last period in nanoseconds */
 
+    /* MCHAN (MC1): coordinated-TP cost instrumentation. The multichannel CPU
+     * budget is N x (per-channel TP cost); these pins make that cost
+     * observable at any time. Updated only in COORD motion (holds last value
+     * otherwise). Nanoseconds per servo cycle. */
+    hal_s32_t   *tp_time_last;	/* pin: coord TP execution time, last cycle */
+    hal_s32_t   *tp_time_max;	/* pin: coord TP execution time, max since load */
+
     hal_float_t *tooloffset_x;
     hal_float_t *tooloffset_y;
     hal_float_t *tooloffset_z;
