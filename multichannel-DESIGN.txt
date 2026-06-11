@@ -193,6 +193,15 @@ PHASING (no code until explicitly started)
  5. Axis exchange / composite control (ownership handoff commands)
  [deferred] A-layer: instance-key patch + cross-domain bridge (D8)
 
+FINALIZATION TASKS (do at project end, before publishing)
+----------------------------------------------------------
+ F1. RENAMING (user request 2026-06-11): replace the vendor names in ALL
+     project-owned text - this document, notes.txt, code comments, future
+     docs - as follows:  "Fanuc" -> "Fanuq",  "Siemens" -> "Siemenz".
+     Applies at FINALIZATION, not during development (grep-able then:
+     grep -rn "Fanuc\|Siemens" over repo docs + comments). Git history/
+     past commit messages are immutable and stay as-is.
+
 EFFORT ESTIMATE (honest)
 ------------------------
  D core (phases 1-5): ~2-3 months of working sessions. The A-layer: +2-4 weeks,
