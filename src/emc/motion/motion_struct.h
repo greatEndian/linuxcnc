@@ -42,6 +42,13 @@
 	 * all historic member offsets are unchanged. [0] is unused (channel 0
 	 * uses the legacy command/echo fields above). */
 	emcmot_chan_mailbox_t mchan_cmd[EMCMOT_MAX_CHANNELS];
+	/* MCHAN MC2b: per-channel status snapshots, one full status struct
+	 * per secondary channel, filled by motion at the end of every servo
+	 * cycle (global snapshot + channel-field overlay) using the same
+	 * head/tail split-read protocol as the legacy status. A secondary
+	 * stack's usrmotReadEmcmotStatus() reads its channel's block here;
+	 * channel 0 keeps the legacy `status` field above. [0] unused. */
+	struct emcmot_status_t mchan_status[EMCMOT_MAX_CHANNELS];
     } emcmot_struct_t;
 
 

@@ -617,6 +617,18 @@ void emcmotCommandHandler_locked(void *arg, long servo_period)
 	    case EMCMOT_FREE:
 	    case EMCMOT_COORD:
 	    case EMCMOT_TELEOP:
+		/* MC2b: still ack+ignore for the MACHINE mode machine (MC3),
+		 * but record the request as the channel's VIRTUAL mode so the
+		 * channel's status view follows its own stack's commands -
+		 * stock task waits for the mode it set to show up in status. */
+		emcmotInternal->chan[mchan_active_channel].virt_state =
+		    (emcmotCommand->command == EMCMOT_FREE) ? EMCMOT_MOTION_FREE :
+		    (emcmotCommand->command == EMCMOT_COORD) ? EMCMOT_MOTION_COORD :
+		    EMCMOT_MOTION_TELEOP;
+		rtapi_print_msg(RTAPI_MSG_DBG,
+		    "ch%d: mode command %d recorded as virtual mode (machine modes stay channel 0's)",
+		    mchan_active_channel, emcmotCommand->command);
+		return;
 	    case EMCMOT_SET_TELEOP_VECTOR:
 	    case EMCMOT_JOG_CONT:
 	    case EMCMOT_JOG_INCR:
@@ -1388,8 +1400,12 @@ void emcmotCommandHandler_locked(void *arg, long servo_period)
 	    /* set the velocity for subsequent moves */
 	    /* can do it at any time */
 	    rtapi_print_msg(RTAPI_MSG_DBG, "SET_VEL");
-	    emcmotStatus->vel = emcmotCommand->vel;
-	    tpSetVmax(&emcmotInternal->chan[mchan_active_channel].coord_tp, emcmotStatus->vel, emcmotCommand->ini_maxvel);
+	    /* MC2b: the global status echo is channel 0's; a secondary
+	     * channel's value lives in its TP (vMax) and is overlaid into
+	     * its own status snapshot */
+	    if (mchan_active_channel == 0)
+		emcmotStatus->vel = emcmotCommand->vel;
+	    tpSetVmax(&emcmotInternal->chan[mchan_active_channel].coord_tp, emcmotCommand->vel, emcmotCommand->ini_maxvel);
 	    break;
 
 	case EMCMOT_SET_VEL_LIMIT:
@@ -1443,8 +1459,10 @@ void emcmotCommandHandler_locked(void *arg, long servo_period)
 	    /* set the max acceleration */
 	    /* can do it at any time */
 	    rtapi_print_msg(RTAPI_MSG_DBG, "SET_ACCEL");
-	    emcmotStatus->acc = emcmotCommand->acc;
-	    tpSetAmax(&emcmotInternal->chan[mchan_active_channel].coord_tp, emcmotStatus->acc);
+	    /* MC2b: global echo = channel 0's (see SET_VEL) */
+	    if (mchan_active_channel == 0)
+		emcmotStatus->acc = emcmotCommand->acc;
+	    tpSetAmax(&emcmotInternal->chan[mchan_active_channel].coord_tp, emcmotCommand->acc);
 	    break;
  
 	case EMCMOT_SET_JERK:
