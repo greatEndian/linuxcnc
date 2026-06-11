@@ -3682,14 +3682,21 @@ def lathe_historical_config():
     return False
 
 def aletter_for_jnum(jnum):
+    # MCHAN: a multichannel machine has joints with NO letter in THIS
+    # stack's kins coordinates (they belong to another channel). Report
+    # None instead of crashing; callers skip such joints.
     if lathe_historical_config():
         if jnum == 1: return "Y"
         if jnum == 2: return "Z"
     if kins_is_trivkins:
+        if jnum >= len(trivkinscoords):
+            return None
         return trivkinscoords.upper()[jnum]
     if s.kinematics_type != linuxcnc.KINEMATICS_IDENTITY:
         raise SystemExit("aletter_for_jnum: Must be KINEMATICS_IDENTITY")
     else:
+        if jnum >= len(trajcoordinates):
+            return None
         guess = trajcoordinates.upper()[jnum]
         print("aletter_for_jnum guessing %d --> %s"%(jnum,guess))
         return guess
@@ -3700,6 +3707,8 @@ for jnum in range(num_joints):
     if s.kinematics_type == linuxcnc.KINEMATICS_IDENTITY:
         ja_name = _("Axis ")
         ja_id = aletter_for_jnum(jnum)
+        if ja_id is None:
+            continue # MCHAN: another channel's joint - no menu item here
         if ja_id.lower() in duplicate_coord_letters:
             if ja_id not in gave_individual_homing_message:
                 print(_("\nNote:\nIndividual axis homing is not currently supported for"))
@@ -3947,7 +3956,11 @@ t.bind("<Button-5>", scroll_down)
 t.configure(state="disabled")
 
 if hal_present == 1 :
-    comp = hal.component("axisui")
+    # MCHAN: one axisui component per channel stack - channel 0 keeps the
+    # historic "axisui" name, a secondary channel's GUI gets "axisui.<N>"
+    # so N AXIS instances coexist in one HAL session.
+    _mchan_ch = int(inifile.find("EMCMOT", "MOTION_CHANNEL") or 0)
+    comp = hal.component("axisui" if _mchan_ch == 0 else "axisui.%d" % _mchan_ch)
     comp.newpin("jog.x", hal.HAL_BIT, hal.HAL_OUT)
     comp.newpin("jog.y", hal.HAL_BIT, hal.HAL_OUT)
     comp.newpin("jog.z", hal.HAL_BIT, hal.HAL_OUT)
