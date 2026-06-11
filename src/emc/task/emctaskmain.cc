@@ -139,6 +139,12 @@ static int emctask_shutdown(void);
 extern void backtrace(int signo);
 int _task = 1; // control preview behaviour when remapping
 static int joints = 0;
+/* MCHAN: which motion channel this task stack drives ([EMCMOT]
+ * MOTION_CHANNEL, default 0 = the historic single stack). A channel>0
+ * stack skips the inihal surface (the machine-global INI pins are channel
+ * 0's; per-channel ini pins = MC7) and suffixes its iocontrol component
+ * name. Defined in taskclass.cc (rs274/sai links that without this file). */
+extern int emc_task_motion_channel;
 uint64_t task_beat = 0;  // Task's main loop heartbeat counter
 
 // for operator display on iocontrol signalling a toolchanger fault if io.fault is set
@@ -2984,7 +2990,10 @@ static int emctask_startup()
         return -1;
     }
 
-    if (ini_hal_init(joints)) {
+    /* MCHAN: inihal (ini.* pins) is the MACHINE's INI surface = channel
+     * 0's; a second instance would collide on pin names. Per-channel ini
+     * pins are MC7 work. */
+    if (emc_task_motion_channel == 0 && ini_hal_init(joints)) {
         rcs_print_error("%s: ini_hal_init failed\n", __PRETTY_FUNCTION__);
         return -1;
     }
@@ -3009,7 +3018,7 @@ static int emctask_startup()
 	return -1;
     }
 
-	if (ini_hal_init_pins(joints)) {
+	if (emc_task_motion_channel == 0 && ini_hal_init_pins(joints)) {
         rcs_print_error("%s: ini_hal_init_pins failed\n", __PRETTY_FUNCTION__);
         return -1;
     }
@@ -3104,6 +3113,10 @@ static int iniLoad(const char *filename)
 
     // FIXME: range limit [KINS]JOINTS
     joints = inifile.findSIntV("JOINTS", "KINS", 0);
+
+    /* MCHAN: this stack's motion channel (0 = legacy default) */
+    emc_task_motion_channel = inifile.findSIntV("MOTION_CHANNEL", "EMCMOT", 0);
+    if (emc_task_motion_channel < 0) emc_task_motion_channel = 0;
 
     // EMC debugging flags
     emc_debug = inifile.findUIntV("DEBUG", "EMC", 0);
@@ -3298,7 +3311,8 @@ int main(int argc, char *argv[])
         static int prev_traj_enabled = 0;
         task_beat++;  // Task's heartbeat
 
-        check_ini_hal_items(emcStatus->motion.traj.joints);
+        if (emc_task_motion_channel == 0)
+            check_ini_hal_items(emcStatus->motion.traj.joints);
 	// read command
 	if (0 != emcCommandBuffer->read()) {
 	    // got a new command, so clear out errors

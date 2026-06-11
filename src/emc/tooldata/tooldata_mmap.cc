@@ -74,6 +74,15 @@ typedef struct {
 
 static char* tool_mmap_fname(void) {
     if (*filename) {return filename;}
+    /* MCHAN: full-path override so each channel's stack (task + its GUI,
+     * which inherit the launcher's environment) gets its OWN tool data
+     * region - the fixed $HOME file would cross-contaminate the channels'
+     * tool tables (MC23). Unset = historic behavior. */
+    char* ev = secure_getenv("TOOL_MMAP_FILENAME");
+    if (ev && *ev) {
+        snprintf(filename,sizeof(filename),"%s",ev);
+        return(filename);
+    }
     char* hdir = secure_getenv("HOME");
     if (!hdir) { hdir = (char *) EMC2_TMP_DIR; }
     snprintf(filename,sizeof(filename),"%s/%s",hdir,TOOL_MMAP_FILENAME);
