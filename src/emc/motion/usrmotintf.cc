@@ -174,9 +174,25 @@ int usrmotReadEmcmotStatus(emcmot_status_t * s)
 	return EMCMOT_COMM_ERROR_CONNECT;
     }
     /* MCHAN MC2b: a secondary channel's process reads ITS status snapshot
-     * (filled by motion every cycle); channel 0 keeps the legacy block */
+     * (filled by motion every cycle); channel 0 keeps the legacy block.
+     * H7 TEAR FIX: the snapshot's publish window is microseconds wide, so
+     * the legacy check (head==tail compared INSIDE one local copy) misses
+     * a writer that starts AND finishes during our memcpy. Real seqlock:
+     * sample head from SHMEM before the copy and tail from SHMEM after -
+     * any overlap with a publish shows up as a mismatch. */
     if (usrmot_channel != 0) {
 	src = &emcmotStruct->mchan_status[usrmot_channel];
+	split_read_count = 0;
+	do {
+	    if (split_read_count > 0) esleep(1e-6);
+	    unsigned char h1 = *(volatile unsigned char *) &src->head;
+	    memcpy(s, src, sizeof(emcmot_status_t));
+	    unsigned char h2 = *(volatile unsigned char *) &src->tail;
+	    if (h1 == h2 && s->head == s->tail && s->head == h1) {
+		return EMCMOT_COMM_OK;
+	    }
+	} while (++split_read_count < 8);
+	return EMCMOT_COMM_SPLIT_READ_TIMEOUT;
     }
     split_read_count = 0;
     do {
