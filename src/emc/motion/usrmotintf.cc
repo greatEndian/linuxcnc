@@ -167,16 +167,22 @@ int usrmotWriteEmcmotCommand(emcmot_command_t * c)
 int usrmotReadEmcmotStatus(emcmot_status_t * s)
 {
     int split_read_count;
+    emcmot_status_t *src = emcmotStatus;
 
     /* check for shmem still around */
     if (NULL == emcmotStatus) {
 	return EMCMOT_COMM_ERROR_CONNECT;
     }
+    /* MCHAN MC2b: a secondary channel's process reads ITS status snapshot
+     * (filled by motion every cycle); channel 0 keeps the legacy block */
+    if (usrmot_channel != 0) {
+	src = &emcmotStruct->mchan_status[usrmot_channel];
+    }
     split_read_count = 0;
     do {
 	if(split_read_count > 0) esleep(1e-6);	// Don't busy-loop and give time to process
 	/* copy status struct from shmem to local memory */
-	memcpy(s, emcmotStatus, sizeof(emcmot_status_t));
+	memcpy(s, src, sizeof(emcmot_status_t));
 	/* got it, now check head-tail matche */
 	if (s->head == s->tail) {
 	    /* head and tail match, done */

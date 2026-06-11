@@ -4431,6 +4431,7 @@ EXPORT_SYMBOL(tpGetExecTag);
 EXPORT_SYMBOL(tpGetMotionType);
 EXPORT_SYMBOL(tpGetPos);
 EXPORT_SYMBOL(tpIsDone);
+EXPORT_SYMBOL(tpIsMoving);	/* MCHAN MC2b: channel-idle test for status snapshots */
 EXPORT_SYMBOL(tpPause);
 EXPORT_SYMBOL(tpQueueDepth);
 EXPORT_SYMBOL(tpResume);
