@@ -1235,11 +1235,20 @@ void emcmotCommandHandler_locked(void *arg, long servo_period)
 		/* set the type of planner: 0 = trapezoidal, 1 = S-curve */
 		/* can do it at any time */
 		rtapi_print_msg(RTAPI_MSG_DBG, "SET_PLANNER_TYPE, type(%d)", emcmotCommand->planner_type);
-		// Only 0 and 1 are supported, set to 0 if invalid
-		if (emcmotCommand->planner_type != 0 && emcmotCommand->planner_type != 1) {
-			emcmotStatus->planner_type = 0;
-		} else {
-			emcmotStatus->planner_type = emcmotCommand->planner_type;
+		{
+			/* MCHAN MC21 (adapted): the switch is scoped to the REQUESTING
+			 * channel - state lives in that channel's TP; ch0 mirrors to the
+			 * legacy emcmotStatus->planner_type status field. Instant switch,
+			 * matching upstream semantics (the tp-branch deferred-switch
+			 * machinery was dropped along with its base). */
+			int ch = mchan_active_channel;
+			TP_STRUCT *ptp = &emcmotInternal->chan[ch].coord_tp;
+			/* Only 0 and 1 are supported; coerce anything else to 0. */
+			int req = (emcmotCommand->planner_type == 1) ? 1 : 0;
+			ptp->planner_type = req;
+			if (ch == 0) {
+				emcmotStatus->planner_type = req;
+			}
 		}
 		break;
 

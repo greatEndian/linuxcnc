@@ -62,11 +62,17 @@ emcmot_config_t *emcmotConfig;
 emcmot_command_t *emcmotCommand;
 emcmot_hal_data_t *emcmot_hal_data;
 
+/* MCHAN MC21: planner type is PER TP (tp->planner_type), not global, so one
+ * channel's G64 R cannot flip another channel's planner. Helpers deep in the
+ * call tree (e.g. tcUpdateDistFromAccel) have no tp pointer, so the public
+ * entry points (tpRunCycle / tpAddLine / tpAddCircle / tpAddRigidTap) latch
+ * the active TP's type here. The servo thread services TPs strictly
+ * sequentially (same single-threaded-context pattern as the per-channel
+ * command mailboxes), so a module static is race-free. */
+static int tp_active_planner_type = 0;
+#define TP_LATCH_PLANNER(tp) (tp_active_planner_type = (tp)->planner_type)
 #ifndef GET_TRAJ_PLANNER_TYPE
-#define GET_TRAJ_PLANNER_TYPE() (emcmotStatus->planner_type)
-
-#define SET_TRAK_PLANNER_TYPE(tp) (emcmotStatus->planner_type = tp)
-
+#define GET_TRAJ_PLANNER_TYPE() (tp_active_planner_type)
 #endif
 
 #define GET_TRAJ_HOME_USE_TP() (emcmotStatus->home_use_tp)
@@ -512,6 +518,9 @@ int tpClear(TP_STRUCT * const tp)
 int tpInit(TP_STRUCT * const tp)
 {
     tp->cycleTime = 0.0;
+    tp->planner_type = 0;   /* MCHAN MC21: trapezoidal until commanded (matches
+                               legacy startup; [TRAJ]PLANNER_TYPE arrives per
+                               channel via EMCMOT_SET_PLANNER_TYPE) */
     //Velocity limits
     tp->vLimit = 0.0;
     tp->ini_maxvel = 0.0;
@@ -1642,6 +1651,7 @@ int tpAddRigidTap(TP_STRUCT * const tp,
         double scale,
         struct state_tag_t tag) {
 
+    TP_LATCH_PLANNER(tp);   /* MCHAN MC21 */
     if (tpErrorCheck(tp)) {
         return TP_ERR_FAIL;
     }
@@ -2152,6 +2162,7 @@ int tpAddLine(TP_STRUCT * const tp, EmcPose end, int canon_motion_type,
             double vel, double ini_maxvel, double acc, double ini_maxjerk, unsigned char enables,
             char atspeed, int indexer_jnum, struct state_tag_t tag)
 {
+    TP_LATCH_PLANNER(tp);   /* MCHAN MC21 */
     if (tpErrorCheck(tp) < 0) {
         return TP_ERR_FAIL;
     }
@@ -2236,6 +2247,7 @@ int tpAddCircle(TP_STRUCT * const tp,
         char atspeed,
         struct state_tag_t tag)
 {
+    TP_LATCH_PLANNER(tp);   /* MCHAN MC21 */
     if (tpErrorCheck(tp)<0) {
         return TP_ERR_FAIL;
     }
@@ -4094,6 +4106,7 @@ STATIC int tpHandleRegularCycle(TP_STRUCT * const tp,
 int tpRunCycle(TP_STRUCT * const tp, long period)
 {
     (void)period;
+    TP_LATCH_PLANNER(tp);   /* MCHAN MC21 */
     //Pointers to current and next trajectory component
     TC_STRUCT *tc;
     TC_STRUCT *nexttc;
