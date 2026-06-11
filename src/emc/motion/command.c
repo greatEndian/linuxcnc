@@ -2153,8 +2153,13 @@ void emcmotCommandHandler_locked(void *arg, long servo_period)
 	    break;
 
         case EMCMOT_SET_OFFSET:
+            /* MCHAN MC23: scoped to the requesting channel; ch0 mirrors to
+             * the legacy status field (feeds motion.tooloffset.* HAL pins). */
             rtapi_print_msg(RTAPI_MSG_DBG, "SET_OFFSET");
-            emcmotStatus->tool_offset = emcmotCommand->tool_offset;
+            emcmotInternal->chan[mchan_active_channel].tool_offset = emcmotCommand->tool_offset;
+            if (mchan_active_channel == 0) {
+                emcmotStatus->tool_offset = emcmotCommand->tool_offset;
+            }
             break;
 
 	case EMCMOT_SET_AXIS_POSITION_LIMITS:
