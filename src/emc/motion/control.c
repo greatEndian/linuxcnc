@@ -369,64 +369,111 @@ static void process_inputs(void)
 				*emcmot_hal_data->spindle[spindle_num].spindle_is_atspeed;
     }
     /* compute net feed and spindle scale factors */
-    if ( emcmotStatus->motion_state == EMCMOT_MOTION_COORD ) {
-	/* use the enables that were queued with the current move */
-	enables = emcmotStatus->enables_queued;
-    } else {
-	/* use the enables that are in effect right now */
-	enables = emcmotStatus->enables_new;
-    }
-    /* feed scaling first:  feed_scale, adaptive_feed, and feed_hold */
-    scale = 1.0;
-    if (   (emcmotStatus->motion_state != EMCMOT_MOTION_FREE)
-        && (enables & FS_ENABLED) ) {
-        if (emcmotStatus->motionType == EMC_MOTION_TYPE_TRAVERSE) {
-            scale *= emcmotStatus->rapid_scale;
-        } else {
-            scale *= emcmotStatus->feed_scale;
-        }
-    }
-    if ( enables & AF_ENABLED ) {
-        /* read and clamp adaptive feed HAL pin */
-        double adaptive_feed_in = *emcmot_hal_data->adaptive_feed;
-        // Clip range to +/- MAX_FEED_OVERRIDE from the [DISPLAY] section of the ini file
-        if (adaptive_feed_in > emcmotConfig->maxFeedScale) {
-            adaptive_feed_in = emcmotConfig->maxFeedScale;
-        } else if (adaptive_feed_in < -emcmotConfig->maxFeedScale) {
-            adaptive_feed_in = -emcmotConfig->maxFeedScale;
-        }
-        // Handle case of negative adaptive feed
-        // Actual scale factor is always positive by default
-        double adaptive_feed_out = fabs(adaptive_feed_in);
-        // Case 1: positive to negative direction change
-        if ( adaptive_feed_in < 0.0 && emcmotInternal->chan[0].coord_tp.reverse_run == TC_DIR_FORWARD) {
-            // User commands feed in reverse direction, but we're not running in reverse yet
-            if (tpSetRunDir(&emcmotInternal->chan[0].coord_tp, TC_DIR_REVERSE) != TP_ERR_OK) {
-                // Need to decelerate to a stop first
-                adaptive_feed_out = 0.0;
-            }
-        } else if (adaptive_feed_in > 0.0 && emcmotInternal->chan[0].coord_tp.reverse_run == TC_DIR_REVERSE ) {
-            // User commands feed in forward direction, but we're running in reverse
-            if (tpSetRunDir(&emcmotInternal->chan[0].coord_tp, TC_DIR_FORWARD) != TP_ERR_OK) {
-                // Need to decelerate to a stop first
-                adaptive_feed_out = 0.0;
-            }
-        }
-        //Otherwise, if direction and sign match, we're ok
-        scale *= adaptive_feed_out;
-    }
-    if ( enables & FH_ENABLED ) {
-	/* read feed hold HAL pin */
-	if ( *emcmot_hal_data->feed_hold ) {
-	    scale = 0;
+    /* MCHAN MC22: composed PER CHANNEL into each channel TP. Channel 0 keeps
+     * the exact legacy composition (motion_state / global motionType /
+     * adaptive-feed with ch0-TP reverse-run coupling) and mirrors to the
+     * legacy emcmotStatus fields. Secondary channels are coord-only by
+     * design: their enables come from their own TP (queued while motion is
+     * in flight), rapid-vs-feed from their own executing motion type, the
+     * GLOBAL feed-hold / feed-inhibit pins still apply to them (D5 global
+     * floor), and the adaptive-feed pin is ch0-only until per-channel
+     * motion.N.* pins exist (MC7) - it couples to a single TP's reverse-run. */
+    {
+	int mchan_ch;
+	for (mchan_ch = 0; mchan_ch < motion_num_channels; mchan_ch++) {
+	    TP_STRUCT *ctp = &emcmotInternal->chan[mchan_ch].coord_tp;
+	    unsigned char ch_enables;
+	    if (mchan_ch == 0) {
+		if ( emcmotStatus->motion_state == EMCMOT_MOTION_COORD ) {
+		    /* use the enables that were queued with the current move */
+		    ch_enables = ctp->enables_queued;
+		} else {
+		    /* use the enables that are in effect right now */
+		    ch_enables = ctp->enables_new;
+		}
+	    } else {
+		/* secondary: queued enables while its queue is in flight */
+		if (!tpIsDone(ctp) || tpQueueDepth(ctp) > 0) {
+		    ch_enables = ctp->enables_queued;
+		} else {
+		    ch_enables = ctp->enables_new;
+		}
+	    }
+	    /* feed scaling first:  feed_scale, adaptive_feed, and feed_hold */
+	    scale = 1.0;
+	    if (mchan_ch == 0) {
+		if (   (emcmotStatus->motion_state != EMCMOT_MOTION_FREE)
+		    && (ch_enables & FS_ENABLED) ) {
+		    if (emcmotStatus->motionType == EMC_MOTION_TYPE_TRAVERSE) {
+			scale *= ctp->rapid_scale;
+		    } else {
+			scale *= ctp->feed_scale;
+		    }
+		}
+	    } else if (ch_enables & FS_ENABLED) {
+		/* secondary channels have no FREE state; use their own
+		 * executing motion type for the rapid-vs-feed choice */
+		if (tpGetMotionType(ctp) == EMC_MOTION_TYPE_TRAVERSE) {
+		    scale *= ctp->rapid_scale;
+		} else {
+		    scale *= ctp->feed_scale;
+		}
+	    }
+	    if ( (mchan_ch == 0) && (ch_enables & AF_ENABLED) ) {
+		/* read and clamp adaptive feed HAL pin (ch0-only, see above) */
+		double adaptive_feed_in = *emcmot_hal_data->adaptive_feed;
+		// Clip range to +/- MAX_FEED_OVERRIDE from the [DISPLAY] section of the ini file
+		if (adaptive_feed_in > emcmotConfig->maxFeedScale) {
+		    adaptive_feed_in = emcmotConfig->maxFeedScale;
+		} else if (adaptive_feed_in < -emcmotConfig->maxFeedScale) {
+		    adaptive_feed_in = -emcmotConfig->maxFeedScale;
+		}
+		// Handle case of negative adaptive feed
+		// Actual scale factor is always positive by default
+		double adaptive_feed_out = fabs(adaptive_feed_in);
+		// Case 1: positive to negative direction change
+		if ( adaptive_feed_in < 0.0 && emcmotInternal->chan[0].coord_tp.reverse_run == TC_DIR_FORWARD) {
+		    // User commands feed in reverse direction, but we're not running in reverse yet
+		    if (tpSetRunDir(&emcmotInternal->chan[0].coord_tp, TC_DIR_REVERSE) != TP_ERR_OK) {
+			// Need to decelerate to a stop first
+			adaptive_feed_out = 0.0;
+		    }
+		} else if (adaptive_feed_in > 0.0 && emcmotInternal->chan[0].coord_tp.reverse_run == TC_DIR_REVERSE ) {
+		    // User commands feed in forward direction, but we're running in reverse
+		    if (tpSetRunDir(&emcmotInternal->chan[0].coord_tp, TC_DIR_FORWARD) != TP_ERR_OK) {
+			// Need to decelerate to a stop first
+			adaptive_feed_out = 0.0;
+		    }
+		}
+		//Otherwise, if direction and sign match, we're ok
+		scale *= adaptive_feed_out;
+	    }
+	    if ( ch_enables & FH_ENABLED ) {
+		/* read feed hold HAL pin (global pin = all channels, D5) */
+		if ( *emcmot_hal_data->feed_hold ) {
+		    scale = 0;
+		}
+	    }
+	    /*non maskable (except during spinndle synch move) feed hold inhibit pin */
+	    if ( ch_enables & *emcmot_hal_data->feed_inhibit ) {
+		scale = 0;
+	    }
+	    /* save the resulting combined scale factor for this channel */
+	    ctp->net_feed_scale = scale;
 	}
-    }
-    /*non maskable (except during spinndle synch move) feed hold inhibit pin */
-	if ( enables & *emcmot_hal_data->feed_inhibit ) {
-	    scale = 0;
+	/* channel 0 mirrors to the legacy status fields (GUI/status view and
+	 * the jog/free-mode consumers elsewhere in this file) */
+	emcmotStatus->net_feed_scale = emcmotInternal->chan[0].coord_tp.net_feed_scale;
+	emcmotStatus->enables_queued = emcmotInternal->chan[0].coord_tp.enables_queued;
+	/* leave 'enables' (used by the spindle-scale section below) on the
+	 * legacy ch0 semantics */
+	if ( emcmotStatus->motion_state == EMCMOT_MOTION_COORD ) {
+	    enables = emcmotInternal->chan[0].coord_tp.enables_queued;
+	} else {
+	    enables = emcmotInternal->chan[0].coord_tp.enables_new;
 	}
-    /* save the resulting combined scale factor */
-    emcmotStatus->net_feed_scale = scale;
+	scale = emcmotStatus->net_feed_scale;
+    }
 
     /* now do spindle scaling */
     for (spindle_num=0; spindle_num < emcmotConfig->numSpindles; spindle_num++){

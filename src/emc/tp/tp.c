@@ -268,9 +268,9 @@ STATIC double tpGetFeedScale(TP_STRUCT const * const tp,
         return 1.0;
     } else if (tc->is_blending) {
         //KLUDGE: Don't allow feed override to keep blending from overruning max velocity
-        return fmin(emcmotStatus->net_feed_scale, 1.0);
+        return fmin(tp->net_feed_scale, 1.0);    /* MCHAN MC22: per-channel */
     } else {
-        return emcmotStatus->net_feed_scale;
+        return tp->net_feed_scale;               /* MCHAN MC22: per-channel */
     }
 }
 
@@ -521,6 +521,13 @@ int tpInit(TP_STRUCT * const tp)
     tp->planner_type = 0;   /* MCHAN MC21: trapezoidal until commanded (matches
                                legacy startup; [TRAJ]PLANNER_TYPE arrives per
                                channel via EMCMOT_SET_PLANNER_TYPE) */
+    /* MCHAN MC22: per-channel override state - defaults identical to the
+     * legacy emcmotStatus init in motion.c (init_comm_buffers) */
+    tp->feed_scale = 1.0;
+    tp->rapid_scale = 1.0;
+    tp->net_feed_scale = 1.0;
+    tp->enables_new = FS_ENABLED | SS_ENABLED | FH_ENABLED;
+    tp->enables_queued = tp->enables_new;
     //Velocity limits
     tp->vLimit = 0.0;
     tp->ini_maxvel = 0.0;
@@ -2847,7 +2854,7 @@ int tpCalculateSCurveAccel(TP_STRUCT const * const tp, TC_STRUCT * const tc, TC_
 
     // Check if feed_override = 0 (not pause/abort, but velocity limited to 0)
     bool use_velocity_control = (is_pausing || is_aborting ||
-                                   emcmotStatus->net_feed_scale <= TP_VEL_EPSILON);
+                                   tp->net_feed_scale <= TP_VEL_EPSILON);
     // Normal operation parameters
     double effective_max_vel = tc_target_vel;
     double effective_target_vel = tc_finalvel;
@@ -2932,7 +2939,7 @@ int tpCalculateSCurveAccel(TP_STRUCT const * const tp, TC_STRUCT * const tc, TC_
                 tc->ruckig_last_target_pos = 0.0;
                 tc->ruckig_last_use_velocity_control = 1;
                 tc->ruckig_last_req_pos = 0.0;
-                tc->ruckig_last_feed_override = emcmotStatus->net_feed_scale;
+                tc->ruckig_last_feed_override = tp->net_feed_scale;
             }
         }
     } else {
@@ -2995,7 +3002,7 @@ int tpCalculateSCurveAccel(TP_STRUCT const * const tp, TC_STRUCT * const tc, TC_
                         "  cvel: %.6f, tvel: %.6f\n"
                         "  cacc: %.6f\n"
                         "  maxa: %.6f, maxj: %.6f\n",
-                        emcmotStatus->net_feed_scale,
+                        tp->net_feed_scale,
                         effective_max_vel,
                         replan_pos, target_pos, dx,
                         replan_vel, effective_target_vel,
@@ -3015,7 +3022,7 @@ int tpCalculateSCurveAccel(TP_STRUCT const * const tp, TC_STRUCT * const tc, TC_
                 tc->ruckig_last_target_pos = target_pos;
                 tc->ruckig_last_use_velocity_control = 0;
                 tc->ruckig_last_req_pos = 0.0;
-                tc->ruckig_last_feed_override = emcmotStatus->net_feed_scale;
+                tc->ruckig_last_feed_override = tp->net_feed_scale;
             }
         } else {
             rtapi_print_msg(RTAPI_MSG_DBG, "tpCalculateSCurveAccel: no replan needed, using existing trajectory\n");
@@ -3200,7 +3207,7 @@ STATIC int tpUpdateMovementStatus(TP_STRUCT * const tp, TC_STRUCT const * const 
     if (!tc) {
         // Assume that we have no active segment, so we should clear out the status fields
         emcmotStatus->distance_to_go = 0;
-        emcmotStatus->enables_queued = emcmotStatus->enables_new;
+        tp->enables_queued = tp->enables_new;    /* MCHAN MC22: per-channel */
         emcmotStatus->requested_vel = 0;
         emcmotStatus->current_vel = 0;
         emcmotStatus->spindleSync = 0;
@@ -3227,7 +3234,7 @@ STATIC int tpUpdateMovementStatus(TP_STRUCT * const tp, TC_STRUCT const * const 
     tp->motionType = tc->canon_motion_type;
     tp->activeDepth = tc->active_depth;
     emcmotStatus->distance_to_go = tc->target - tc->progress;
-    emcmotStatus->enables_queued = tc->enables;
+    tp->enables_queued = tc->enables;            /* MCHAN MC22: per-channel */
     // report our line number to the guis
     tp->execId = tc->id;
     emcmotStatus->requested_vel = tc->reqvel;
