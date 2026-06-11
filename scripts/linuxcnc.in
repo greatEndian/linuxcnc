@@ -674,6 +674,13 @@ function Cleanup() {
 	$HALCMD -f "$SHUTDOWN"
     fi
 
+    # MCHAN: stop secondary channel stacks' background processes (their
+    # linuxcncsvr/milltask instances are also covered by the name-kill below)
+    if [ -n "${MCHAN_PIDS:-}" ]; then
+        # shellcheck disable=SC2086
+        kill $MCHAN_PIDS 2> /dev/null
+    fi
+
     # now kill all the other user space components
     for KILL_TASK in linuxcncsvr milltask motion-logger; do
 	if $PIDOF $KILL_TASK >> "$DEBUG_FILE" ; then
@@ -966,6 +973,87 @@ while (( $("$AWK" 'BEGIN {print ('"$chk"' == 0)}') )); do
         break
     fi
     chk=$(halcmd getp ini.traj_max_velocity)
+done
+
+################################################################################
+# 4.3.10.5 MCHAN: start secondary channel stacks (multichannel phase 2)
+#
+# [MCHAN]CHANNEL_INI (repeatable) in the channel-0 INI declares additional
+# STOCK userspace stacks (linuxcncsvr + milltask + DISPLAY, each with its
+# own NML/var/tool files) that drive the SAME motion process through their
+# own command mailbox + status snapshot ([EMCMOT]MOTION_CHANNEL).
+# Per design rule D8 this launcher does not assume exactly one motion
+# process per machine - each stack is defined entirely by its own INI.
+################################################################################
+MCHAN_PIDS=""
+NUM=1
+CH_INI=$($INIVAR -tildeexpand -ini "$INIFILE" -var CHANNEL_INI -sec MCHAN -num $NUM 2> /dev/null)
+while [ -n "$CH_INI" ] ; do
+    case "$CH_INI" in
+        /*) : ;;
+        *) CH_INI="$INI_DIR/$CH_INI" ;;
+    esac
+    echo "MCHAN: starting secondary channel stack: $CH_INI" | tee -a "$PRINT_FILE"
+    CH_NUM=$($INIVAR -ini "$CH_INI" -var MOTION_CHANNEL -sec EMCMOT 2> /dev/null)
+    if [ -z "$CH_NUM" ] || [ "$CH_NUM" = 0 ]; then
+        echo "MCHAN: $CH_INI must set [EMCMOT]MOTION_CHANNEL > 0"
+        Cleanup
+        exit 1
+    fi
+    # send the channel's axis->joint map (claims joint ownership, MC6/D6)
+    CHMAP=$($INIVAR -ini "$INIFILE" -var CHMAP -sec MCHAN 2> /dev/null)
+    CHMAP=${CHMAP:-mchan-chmap}
+    if ! "$CHMAP" "$CH_INI"; then
+        echo "MCHAN: channel axis map rejected for $CH_INI"
+        Cleanup
+        exit 1
+    fi
+    # per-stack tool data region (the channel's task + GUI inherit the env)
+    TOOL_MMAP_FILENAME="${CH_INI%.ini}.tool.mmap"
+    export TOOL_MMAP_FILENAME
+    linuxcncsvr -ini "$CH_INI"
+    INI_FILE_NAME="$CH_INI" milltask -ini "$CH_INI" &
+    MCHAN_PIDS="$MCHAN_PIDS $!"
+    # wire the channel's iocontrol HAL once its pins exist: integrator hook
+    # [MCHAN]CHANNEL_HALFILE in the channel INI, else sim loopbacks
+    MCHAN_T0=$SECONDS
+    while ! $HALCMD show pin iocontrol."$CH_NUM" 2> /dev/null | grep -q user-enable-out; do
+        if [ $((SECONDS - MCHAN_T0)) -ge 15 ]; then
+            echo "MCHAN: iocontrol.$CH_NUM pins never appeared - channel task failed? See $DEBUG_FILE"
+            Cleanup
+            exit 1
+        fi
+        sleep 0.5
+    done
+    CH_HAL=$($INIVAR -tildeexpand -ini "$CH_INI" -var CHANNEL_HALFILE -sec MCHAN -num 1 2> /dev/null)
+    if [ -n "$CH_HAL" ]; then
+        case "$CH_HAL" in
+            /*) : ;;
+            *) CH_HAL="$(dirname "$CH_INI")/$CH_HAL" ;;
+        esac
+        $HALCMD -f "$CH_HAL"
+    else
+        $HALCMD net mchan$CH_NUM-estop-loop iocontrol."$CH_NUM".user-enable-out iocontrol."$CH_NUM".emc-enable-in
+        $HALCMD net mchan$CH_NUM-tool-prep-loop iocontrol."$CH_NUM".tool-prepare iocontrol."$CH_NUM".tool-prepared
+        $HALCMD net mchan$CH_NUM-tool-change-loop iocontrol."$CH_NUM".tool-change iocontrol."$CH_NUM".tool-changed
+    fi
+    # the channel's own DISPLAY, in background
+    CH_DISPLAY=$($INIVAR -ini "$CH_INI" -var DISPLAY -sec DISPLAY 2> /dev/null)
+    # Intentional word split: program + its args
+    # shellcheck disable=SC2086
+    set -- $CH_DISPLAY
+    CH_DISP_PROG=${1:-}
+    [ $# -gt 0 ] && shift
+    if [ -n "$CH_DISP_PROG" ] && [ "$CH_DISP_PROG" != dummy ]; then
+        case $CH_DISP_PROG in
+            linuxcncrsh) $CH_DISP_PROG "$@" -- -ini "$CH_INI" & ;;
+            *) $CH_DISP_PROG -ini "$CH_INI" "$@" & ;;
+        esac
+        MCHAN_PIDS="$MCHAN_PIDS $!"
+    fi
+    unset TOOL_MMAP_FILENAME
+    NUM=$((NUM + 1))
+    CH_INI=$($INIVAR -tildeexpand -ini "$INIFILE" -var CHANNEL_INI -sec MCHAN -num $NUM 2> /dev/null)
 done
 
 # 4.3.11. Run display in foreground
