@@ -127,10 +127,26 @@ struct _inittab builtin_modules[] = {
     { NULL, NULL }
 };
 
+/* MCHAN: each channel's task owns its own iocontrol HAL component -
+ * "iocontrol.<channel>". Channel 0 keeps the historic "iocontrol.0" name
+ * (D7); a secondary stack gets iocontrol.1, iocontrol.2... so N stock
+ * milltasks coexist in one HAL (the integrator wires each channel's
+ * estop/tool loopbacks). Set from [EMCMOT]MOTION_CHANNEL by emctaskmain's
+ * iniLoad before the Task object is constructed. DEFINED here (not in
+ * emctaskmain.cc) because rs274/sai links taskclass.o without
+ * emctaskmain.o - same lesson as tp_active_scurve_peak_scale. */
+int emc_task_motion_channel = 0;
+static std::string mchan_iocontrol_name(void)
+{
+    char buf[32];
+    snprintf(buf, sizeof(buf), "iocontrol.%d", emc_task_motion_channel);
+    return std::string(buf);
+}
+
 Task::Task(EMC_IO_STAT & emcioStatus_in) :
     emcioStatus(emcioStatus_in),
     iocontrol_data{},
-    iocontrol("iocontrol.0"),
+    iocontrol(mchan_iocontrol_name()),
     ini_filename(emc_inifile),
     tool_status(0)
     {
