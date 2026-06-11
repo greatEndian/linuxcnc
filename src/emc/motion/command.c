@@ -418,6 +418,112 @@ void emcmotCommandHandler_locked(void *arg, long servo_period)
 	/* clear status value by default */
 	(*mchan_echo_status) = EMCMOT_COMMAND_OK;
 
+	/* ===== MCHAN MC28: command scope gate (Siemens $MN/$MC split) =======
+	 * Machine-GLOBAL configuration and machine modes are owned by channel
+	 * 0's stack. Secondary stacks run the same stock milltask, so they DO
+	 * send the full init sequence; global-scope commands from ch>0 are
+	 * acknowledged-and-ignored here, with a LOUD divergence error when the
+	 * ignored value disagrees with the machine value (a misconfigured
+	 * channel INI must never be silent), and a LOUD refusal for commands
+	 * that are dangerous to no-op (probe, homing, TCP kins switch).
+	 * Channel-scoped commands fall through to the normal switch. */
+	if (mchan_active_channel != 0) {
+	    switch (emcmotCommand->command) {
+	    /* -- machine config scalars: ignore, ERROR on divergence -- */
+	    case EMCMOT_SET_NUM_JOINTS:
+		if (emcmotCommand->joint != ALL_JOINTS) {
+		    reportError(_("ch%d: [KINS]JOINTS=%d disagrees with the machine value %d - channel INIs must match channel 0 (machine config owner)"),
+			mchan_active_channel, emcmotCommand->joint, ALL_JOINTS);
+		    (*mchan_echo_status) = EMCMOT_COMMAND_INVALID_PARAMS;
+		}
+		return;
+	    case EMCMOT_SET_NUM_SPINDLES:
+		if (emcmotCommand->spindle != emcmotConfig->numSpindles) {
+		    reportError(_("ch%d: [TRAJ]SPINDLES=%d disagrees with the machine value %d - channel INIs must match channel 0 (machine config owner)"),
+			mchan_active_channel, emcmotCommand->spindle, emcmotConfig->numSpindles);
+		    (*mchan_echo_status) = EMCMOT_COMMAND_INVALID_PARAMS;
+		}
+		return;
+	    case EMCMOT_SET_JERK:
+		if (fabs(emcmotCommand->jerk - emcmotStatus->jerk) > 1e-9) {
+		    reportError(_("ch%d: [TRAJ]MAX_LINEAR_JERK=%.3f disagrees with the machine value %.3f - channel INIs must match channel 0 (machine config owner)"),
+			mchan_active_channel, emcmotCommand->jerk, emcmotStatus->jerk);
+		    (*mchan_echo_status) = EMCMOT_COMMAND_INVALID_PARAMS;
+		}
+		return;
+	    case EMCMOT_SET_MAX_FEED_OVERRIDE:
+		if (fabs(emcmotCommand->maxFeedScale - emcmotConfig->maxFeedScale) > 1e-9) {
+		    reportError(_("ch%d: [DISPLAY]MAX_FEED_OVERRIDE=%.3f disagrees with the machine value %.3f - channel INIs must match channel 0 (machine config owner)"),
+			mchan_active_channel, emcmotCommand->maxFeedScale, emcmotConfig->maxFeedScale);
+		    (*mchan_echo_status) = EMCMOT_COMMAND_INVALID_PARAMS;
+		}
+		return;
+
+	    /* -- machine config / machine modes: acknowledge + ignore --
+	     * (joint/axis config uses the GLOBAL joint/axis namespace, which a
+	     * channel INI cannot meaningfully address; FREE/COORD/TELEOP and
+	     * jogs are channel-0 machine modes until MC3's per-channel state
+	     * machines; secondary channels are coord-only by design.) */
+	    case EMCMOT_SET_WORLD_HOME:
+	    case EMCMOT_SET_DEBUG:
+	    case EMCMOT_SETUP_ARC_BLENDS:
+	    case EMCMOT_SET_PROBE_ERR_INHIBIT:
+	    case EMCMOT_ENABLE_WATCHDOG:
+	    case EMCMOT_DISABLE_WATCHDOG:
+	    case EMCMOT_SET_JOINT_POSITION_LIMITS:
+	    case EMCMOT_SET_JOINT_BACKLASH:
+	    case EMCMOT_SET_JOINT_MIN_FERROR:
+	    case EMCMOT_SET_JOINT_MAX_FERROR:
+	    case EMCMOT_SET_JOINT_VEL_LIMIT:
+	    case EMCMOT_SET_JOINT_ACC_LIMIT:
+	    case EMCMOT_SET_JOINT_HOMING_PARAMS:
+	    case EMCMOT_UPDATE_JOINT_HOMING_PARAMS:
+	    case EMCMOT_SET_JOINT_JERK_LIMIT:
+	    case EMCMOT_SET_JOINT_MOTOR_OFFSET:
+	    case EMCMOT_SET_JOINT_COMP:
+	    case EMCMOT_SET_AXIS_POSITION_LIMITS:
+	    case EMCMOT_SET_AXIS_VEL_LIMIT:
+	    case EMCMOT_SET_AXIS_ACC_LIMIT:
+	    case EMCMOT_SET_AXIS_LOCKING_JOINT:
+	    case EMCMOT_SET_AXIS_JERK_LIMIT:
+	    case EMCMOT_SET_SPINDLE_PARAMS:
+	    case EMCMOT_OVERRIDE_LIMITS:
+	    case EMCMOT_JOINT_ACTIVATE:
+	    case EMCMOT_JOINT_DEACTIVATE:
+	    case EMCMOT_FREE:
+	    case EMCMOT_COORD:
+	    case EMCMOT_TELEOP:
+	    case EMCMOT_SET_TELEOP_VECTOR:
+	    case EMCMOT_JOG_CONT:
+	    case EMCMOT_JOG_INCR:
+	    case EMCMOT_JOG_ABS:
+	    case EMCMOT_JOG_ABORT:
+	    case EMCMOT_CLEAR_PROBE_FLAGS:
+		rtapi_print_msg(RTAPI_MSG_DBG,
+		    "ch%d: global-scope command %d acknowledged and ignored (channel 0 owns machine config/modes)",
+		    mchan_active_channel, emcmotCommand->command);
+		return;
+
+	    /* -- dangerous to no-op: refuse loudly -- */
+	    case EMCMOT_PROBE:
+		/* MC25 day-1 guard: one probe input, global trip logic */
+		reportError(_("ch%d: probing is not channel-aware yet (single probe input) - G38 refused on secondary channels"),
+		    mchan_active_channel);
+		(*mchan_echo_status) = EMCMOT_COMMAND_INVALID_COMMAND;
+		return;
+	    case EMCMOT_JOINT_HOME:
+	    case EMCMOT_JOINT_UNHOME:
+		/* MC4: homing is machine-global */
+		reportError(_("ch%d: homing is machine-global - home from channel 0"),
+		    mchan_active_channel);
+		(*mchan_echo_status) = EMCMOT_COMMAND_INVALID_COMMAND;
+		return;
+	    default:
+		break;	/* channel-scoped: process normally below */
+	    }
+	}
+	/* ===== END MCHAN MC28 =============================================== */
+
 	/* ...and process command */
 
         joint = 0;
