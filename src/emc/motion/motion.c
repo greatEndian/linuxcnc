@@ -259,6 +259,11 @@ static int tp_init() {
     /* MCHAN: one planner per channel. chan[0] is the historic planner;
      * secondary channels start with empty queues. With num_channels=1 the
      * loop runs once = exactly the original behavior. */
+    /* MCHAN MC19: channel 0's TP owns the legacy emcmotStatus motion-status
+     * mirror. Set BEFORE tpCreate so the create-time tpClear performs the
+     * historic global writes (bit-identity); chan[] shmem is zeroed, so
+     * secondary TPs are non-owners by default. */
+    emcmotInternal->chan[0].coord_tp.status_owner = 1;
     for (int ch = 0; ch < motion_num_channels; ch++) {
 	if (-1 == tpCreate(&emcmotInternal->chan[ch].coord_tp, DEFAULT_TC_QUEUE_SIZE, mot_comp_id)) {
 	    rtapi_print_msg(RTAPI_MSG_ERR,

@@ -503,13 +503,20 @@ int tpClear(TP_STRUCT * const tp)
     tp->reverse_run = 0;
     tp->synchronized = 0;
     tp->uu_per_rev = 0.0;
-    emcmotStatus->current_vel = 0.0;
-    emcmotStatus->requested_vel = 0.0;
-    emcmotStatus->distance_to_go = 0.0;
-    ZERO_EMC_POSE(emcmotStatus->dtg);
+    tp->current_vel = 0.0;
+    tp->requested_vel = 0.0;
+    tp->distance_to_go = 0.0;
+    ZERO_EMC_POSE(tp->dtg);
+    tp->spindleSync = 0;
+    if (tp->status_owner) {    /* MCHAN MC19: ch0 mirrors the legacy view */
+        emcmotStatus->current_vel = 0.0;
+        emcmotStatus->requested_vel = 0.0;
+        emcmotStatus->distance_to_go = 0.0;
+        ZERO_EMC_POSE(emcmotStatus->dtg);
 
-    // equivalent to: SET_MOTION_INPOS_FLAG(1):
-    emcmotStatus->motionFlag |= EMCMOT_MOTION_INPOS_BIT;
+        // equivalent to: SET_MOTION_INPOS_FLAG(1):
+        emcmotStatus->motionFlag |= EMCMOT_MOTION_INPOS_BIT;
+    }
 
     return tpClearDIOs(tp);
 }
@@ -3222,20 +3229,33 @@ STATIC int tpUpdateMovementStatus(TP_STRUCT * const tp, TC_STRUCT const * const 
 
     if (!tc) {
         // Assume that we have no active segment, so we should clear out the status fields
-        emcmotStatus->distance_to_go = 0;
+        /* MCHAN MC19: per-channel status; owner mirrors the legacy view */
+        tp->distance_to_go = 0;
         tp->enables_queued = tp->enables_new;    /* MCHAN MC22: per-channel */
-        emcmotStatus->requested_vel = 0;
-        emcmotStatus->current_vel = 0;
-        emcmotStatus->spindleSync = 0;
+        tp->requested_vel = 0;
+        tp->current_vel = 0;
+        tp->spindleSync = 0;
+        tp->current_acc = 0;
+        tp->current_jerk = 0;
+        tp->current_dir.x = 0;
+        tp->current_dir.y = 0;
+        tp->current_dir.z = 0;
+        emcPoseZero(&tp->dtg);
+        if (tp->status_owner) {
+            emcmotStatus->distance_to_go = 0;
+            emcmotStatus->requested_vel = 0;
+            emcmotStatus->current_vel = 0;
+            emcmotStatus->spindleSync = 0;
 
-        // Clear S-curve motion state
-        emcmotStatus->current_acc = 0;
-        emcmotStatus->current_jerk = 0;
-        emcmotStatus->current_dir.x = 0;
-        emcmotStatus->current_dir.y = 0;
-        emcmotStatus->current_dir.z = 0;
+            // Clear S-curve motion state
+            emcmotStatus->current_acc = 0;
+            emcmotStatus->current_jerk = 0;
+            emcmotStatus->current_dir.x = 0;
+            emcmotStatus->current_dir.y = 0;
+            emcmotStatus->current_dir.z = 0;
 
-        emcPoseZero(&emcmotStatus->dtg);
+            emcPoseZero(&emcmotStatus->dtg);
+        }
 
         tp->motionType = 0;
         tp->activeDepth = 0;
@@ -3249,29 +3269,38 @@ STATIC int tpUpdateMovementStatus(TP_STRUCT * const tp, TC_STRUCT const * const 
             tc->id, tc->canon_motion_type, tc->motion_type);
     tp->motionType = tc->canon_motion_type;
     tp->activeDepth = tc->active_depth;
-    emcmotStatus->distance_to_go = tc->target - tc->progress;
+    tp->distance_to_go = tc->target - tc->progress;    /* MCHAN MC19 */
     tp->enables_queued = tc->enables;            /* MCHAN MC22: per-channel */
     // report our line number to the guis
     tp->execId = tc->id;
-    emcmotStatus->requested_vel = tc->reqvel;
-    emcmotStatus->current_vel = tc->currentvel;
+    tp->requested_vel = tc->reqvel;
+    tp->current_vel = tc->currentvel;
 
     // Output accurate S-curve motion state (for accurate jerk calculation)
-    emcmotStatus->current_acc = tc->currentacc;
-    emcmotStatus->current_jerk = tc->currentjerk;
+    tp->current_acc = tc->currentacc;                  /* MCHAN MC19 */
+    tp->current_jerk = tc->currentjerk;
 
     // Get current motion direction unit vector (precise tangent at current progress)
     PmCartesian dir;
     if (tcGetCurrentTangentUnitVector(tc, &dir) == 0) {
-        emcmotStatus->current_dir = dir;
+        tp->current_dir = dir;
     } else {
         // If direction unavailable, use zero vector
-        emcmotStatus->current_dir.x = 0;
-        emcmotStatus->current_dir.y = 0;
-        emcmotStatus->current_dir.z = 0;
+        tp->current_dir.x = 0;
+        tp->current_dir.y = 0;
+        tp->current_dir.z = 0;
     }
 
-    emcPoseSub(&tc_pos, &tp->currentPos, &emcmotStatus->dtg);
+    emcPoseSub(&tc_pos, &tp->currentPos, &tp->dtg);
+    if (tp->status_owner) {    /* MCHAN MC19: ch0 mirrors the legacy view */
+        emcmotStatus->distance_to_go = tp->distance_to_go;
+        emcmotStatus->requested_vel = tp->requested_vel;
+        emcmotStatus->current_vel = tp->current_vel;
+        emcmotStatus->current_acc = tp->current_acc;
+        emcmotStatus->current_jerk = tp->current_jerk;
+        emcmotStatus->current_dir = tp->current_dir;
+        emcmotStatus->dtg = tp->dtg;
+    }
     return TP_ERR_OK;
 }
 
@@ -3489,7 +3518,8 @@ STATIC tp_err_t tpCheckAtSpeed(TP_STRUCT * const tp, TC_STRUCT * const tc)
         } else {
             rtapi_print_msg(RTAPI_MSG_DBG, "Index seen on spindle %d\n", tp->spindle.spindle_num);
             /* passed index, start the move */
-            emcmotStatus->spindleSync = 1;
+            tp->spindleSync = 1;    /* MCHAN MC19: per-channel sync state */
+            if (tp->status_owner) emcmotStatus->spindleSync = 1;
             tp->spindle.waiting_for_index = MOTION_INVALID_ID;
             tc->sync_accel = 1;
             tp->spindle.revs = 0;
@@ -3544,7 +3574,7 @@ STATIC tp_err_t tpActivateSegment(TP_STRUCT * const tp, TC_STRUCT * const tc) {
 
     // Do at speed checks that only happen once
     int needs_atspeed = tc->atspeed ||
-        (tc->synchronized == TC_SYNC_POSITION && !(emcmotStatus->spindleSync));
+        (tc->synchronized == TC_SYNC_POSITION && !(tp->spindleSync));    /* MC19 */
 
     if (needs_atspeed){
         int s;
@@ -3580,7 +3610,7 @@ STATIC tp_err_t tpActivateSegment(TP_STRUCT * const tp, TC_STRUCT * const tc) {
     tc->blending_next = 0;
     tc->on_final_decel = 0;
 
-    if (TC_SYNC_POSITION == tc->synchronized && !(emcmotStatus->spindleSync)) {
+    if (TC_SYNC_POSITION == tc->synchronized && !(tp->spindleSync)) {    /* MC19 */
         tp_debug_print("Setting up position sync\n");
         // if we aren't already synced, wait
         tp->spindle.waiting_for_index = tc->id;
@@ -3716,7 +3746,8 @@ STATIC int tpDoParabolicBlending(TP_STRUCT * const tp, TC_STRUCT * const tc,
 #endif
 
     //Update velocity status based on both tc and nexttc
-    emcmotStatus->current_vel = tc->currentvel + nexttc->currentvel;
+    tp->current_vel = tc->currentvel + nexttc->currentvel;    /* MCHAN MC19 */
+    if (tp->status_owner) emcmotStatus->current_vel = tp->current_vel;
 
     return TP_ERR_OK;
 }
@@ -3836,13 +3867,19 @@ STATIC int tpUpdateCycle(TP_STRUCT * const tp,
 /**
  * Send default values to status structure.
  */
-STATIC int tpUpdateInitialStatus(TP_STRUCT const * const tp) {
+STATIC int tpUpdateInitialStatus(TP_STRUCT * const tp) {
+    /* MCHAN MC19: per-channel status; owner mirrors the legacy view */
     // Update queue length
-    emcmotStatus->tcqlen = tcqLen(&tp->queue);
+    tp->tcqlen = tcqLen(&tp->queue);
     // Set default value for requested speed
-    emcmotStatus->requested_vel = 0.0;
+    tp->requested_vel = 0.0;
     //FIXME test if we can do this safely
-    emcmotStatus->current_vel = 0.0;
+    tp->current_vel = 0.0;
+    if (tp->status_owner) {
+        emcmotStatus->tcqlen = tp->tcqlen;
+        emcmotStatus->requested_vel = 0.0;
+        emcmotStatus->current_vel = 0.0;
+    }
     return TP_ERR_OK;
 }
 
@@ -4190,7 +4227,8 @@ int tpRunCycle(TP_STRUCT * const tp, long period)
      * spindle motion.*/
     switch (tc->synchronized) {
         case TC_SYNC_NONE:
-            emcmotStatus->spindleSync = 0;
+            tp->spindleSync = 0;    /* MCHAN MC19 */
+            if (tp->status_owner) emcmotStatus->spindleSync = 0;
             break;
         case TC_SYNC_VELOCITY:
             tp_debug_print("sync velocity\n");
@@ -4382,8 +4420,9 @@ int tpIsMoving(TP_STRUCT const * const tp)
 {
 
     //TODO may be better to explicitly check velocities on the first 2 segments, but this is messy
-    if (emcmotStatus->current_vel >= TP_VEL_EPSILON ) {
-        tp_debug_print("TP moving, current_vel = %.16g\n", emcmotStatus->current_vel);
+    /* MCHAN MC19: this TP's own velocity, not the global (= ch0's) view */
+    if (tp->current_vel >= TP_VEL_EPSILON ) {
+        tp_debug_print("TP moving, current_vel = %.16g\n", tp->current_vel);
         return true;
     } else if (tp->spindle.waiting_for_index != MOTION_INVALID_ID || tp->spindle.waiting_for_atspeed != MOTION_INVALID_ID) {
         tp_debug_print("TP moving, waiting for index or atspeed\n");
