@@ -908,6 +908,14 @@ static int init_comm_buffers(void)
 	emcmotStruct->mchan_cmd[ch].commandEcho = 0;
 	emcmotStruct->mchan_cmd[ch].commandNumEcho = 0;
 	emcmotStruct->mchan_cmd[ch].commandStatus = 0;
+	/* MC6: all axes unmapped until the channel's task declares its map */
+	for (int ax = 0; ax < EMCMOT_MAX_AXIS; ax++) {
+	    emcmotInternal->chan[ch].axis_to_joint[ax] = -1;
+	}
+    }
+    /* MC6/D6: channel 0 owns every joint by default (= legacy behavior) */
+    for (int jn = 0; jn < EMCMOT_MAX_JOINTS; jn++) {
+	emcmotInternal->joint_owner[jn] = 0;
     }
 
     /* init more stuff */

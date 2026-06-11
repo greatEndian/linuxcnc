@@ -132,6 +132,7 @@ extern "C" {
 	EMCMOT_SET_PLANNER_TYPE,	/* set planner type (0=trapezoidal, 1=S-curve) */
 	EMCMOT_SET_SCURVE_PEAK_SCALE,	/* set S-curve rest-to-rest peak scale (0.5=faithful..1.0=full) */
 	EMCMOT_SET_SWITCHKINS_TYPE,	/* G43_4_RTCP: command a switchkins kinematics type (0=default,1,2) */
+	EMCMOT_SET_CHANNEL_AXIS_MAP,	/* MCHAN: map this channel's axis (.axis) to a global joint (.joint; -1 unmaps) */
 	EMCMOT_SET_TERM_COND,	/* set termination condition (stop, blend) */
 	EMCMOT_SET_NUM_JOINTS,	/* set the number of joints */
 	EMCMOT_SET_NUM_SPINDLES, /* set the number of spindles */
@@ -761,6 +762,13 @@ Suggestion: Split this in to an Error and a Status flag register..
  * area, axis ownership). */
 typedef struct emcmot_channel_t {
     TP_STRUCT coord_tp;	/* this channel's coordinated-mode planner */
+    /* MCHAN (MC6): this channel's axis-letter -> global-joint map. Index is
+     * the channel-local axis (0=X..8=W in the channel's own letter space),
+     * value is the global joint number, -1 = unmapped. Channel 0 does not
+     * consult this (it uses the legacy kinematics path); secondary channels
+     * are identity-mapped subsets of the global joints. Set at config time
+     * via EMCMOT_SET_CHANNEL_AXIS_MAP through the channel's own mailbox. */
+    int axis_to_joint[EMCMOT_MAX_AXIS];
 } emcmot_channel_t;
 
 typedef struct emcmot_internal_t {
@@ -778,6 +786,12 @@ typedef struct emcmot_internal_t {
      * pre-multichannel code. Future per-channel state (mode machines, axis
      * ownership) lives here too. */
     emcmot_channel_t chan[EMCMOT_MAX_CHANNELS];
+    /* MCHAN (MC6/D6): which channel owns each global joint. Default 0 (the
+     * historic channel owns everything = legacy behavior). A secondary
+     * channel claims a joint by mapping an axis onto it; claiming a joint
+     * owned by another secondary channel is rejected. Runtime-dynamic by
+     * design (axis exchange lands in phase 5). */
+    int joint_owner[EMCMOT_MAX_JOINTS];
     int idForStep;      /* status id while stepping */
     } emcmot_internal_t;
 
