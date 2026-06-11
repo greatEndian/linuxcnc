@@ -30,8 +30,15 @@
  * conservative cornering), 1.0 = physically-correct (full jerk-feasible). The
  * clamp defends the pre-INI window where shmem is still zeroed -> default 0.5. */
 extern emcmot_status_t *emcmotStatus;
+/* MCHAN MC21 (completion): the scale is PER CHANNEL now - tp.c latches the
+ * active TP's value at its public entry points (this code runs below them
+ * with no tp pointer). Same clamp: out-of-range/unset -> faithful 0.5. */
+double tp_active_scurve_peak_scale = 0.0;   /* written by tp.c's entry latch;
+                                               standalone users of this file
+                                               (motion-logger) leave it 0 ->
+                                               faithful 0.5 */
 static double scurve_peak_scale(void) {
-    double s = emcmotStatus ? emcmotStatus->scurve_peak_scale : 0.5;
+    double s = tp_active_scurve_peak_scale;
     return (s >= 0.1 && s <= 1.0) ? s : 0.5;
 }
 
