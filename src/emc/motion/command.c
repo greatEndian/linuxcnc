@@ -563,9 +563,18 @@ void emcmotCommandHandler_locked(void *arg, long servo_period)
 		    mchan_active_channel);
 		(*mchan_echo_status) = EMCMOT_COMMAND_INVALID_COMMAND;
 		return;
-	    case EMCMOT_JOINT_HOME:
 	    case EMCMOT_JOINT_UNHOME:
-		/* MC4: homing is machine-global */
+		/* MC4 + D3: stock task UNHOMES on every state transition
+		 * (estop/machine-on, emcJointUnhome(-2)) - refusing would
+		 * break a stock secondary stack's power-up sequence. The
+		 * machine's homing state is channel 0's, so ack+ignore. */
+		rtapi_print_msg(RTAPI_MSG_DBG,
+		    "ch%d: JOINT_UNHOME acknowledged and ignored (homing state is channel 0's)",
+		    mchan_active_channel);
+		return;
+	    case EMCMOT_JOINT_HOME:
+		/* MC4: homing is machine-global; an operator-initiated home
+		 * from a secondary GUI must fail VISIBLY */
 		reportError(_("ch%d: homing is machine-global - home from channel 0"),
 		    mchan_active_channel);
 		(*mchan_echo_status) = EMCMOT_COMMAND_INVALID_COMMAND;

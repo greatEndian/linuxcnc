@@ -194,6 +194,8 @@ static void update_status(void);
 
 /* MCHAN (MC2b): per-channel status snapshots for secondary stacks */
 static void mchan_update_status(void);
+/* MCHAN: EmcPose axis-component setter (defined near the executor) */
+static void mchan_pose_set_axis(EmcPose *p, int ax, double v);
 
 static void handle_kinematicsSwitch(void);
 
@@ -952,6 +954,13 @@ static void set_operating_mode(void)
 
     axis_jog_abort_all(1);
 
+	/* MCHAN: machine disable is the global stop floor (D5) - abort the
+	 * secondary channels' planners too (their joints just froze; their
+	 * queues must not resume on re-enable) */
+	for (int mch = 1; mch < motion_num_channels; mch++) {
+	    tpClear(&emcmotInternal->chan[mch].coord_tp);
+	}
+
 	SET_MOTION_ENABLE_FLAG(0);
 	/* don't clear the motion error flag, since that may signify why we
 	   just went into disabled state */
@@ -983,6 +992,23 @@ static void set_operating_mode(void)
                 axis_sync_teleop_tp_to_carte_pos(0, pcmd_p);
             }
 	}
+	/* MCHAN: resync each secondary channel's planner to its mapped
+	 * joints' commanded positions (mirror of channel 0's tpSetPos
+	 * above) so the first move after re-enable starts where the
+	 * joints actually are */
+	for (int mch = 1; mch < motion_num_channels; mch++) {
+	    emcmot_channel_t *c = &emcmotInternal->chan[mch];
+	    EmcPose cpose;
+	    int any = 0;
+	    ZERO_EMC_POSE(cpose);
+	    for (int ax = 0; ax < EMCMOT_MAX_AXIS; ax++) {
+		int jn = c->axis_to_joint[ax];
+		if (jn < 0) continue;
+		mchan_pose_set_axis(&cpose, ax, joints[jn].pos_cmd);
+		any = 1;
+	    }
+	    if (any) tpSetPos(&c->coord_tp, &cpose);
+	}
 	SET_MOTION_ENABLE_FLAG(1);
 	/* clear any outstanding motion errors when going into enabled state */
 	SET_MOTION_ERROR_FLAG(0);
@@ -1001,6 +1027,10 @@ static void set_operating_mode(void)
 		    joint = &joints[joint_num];
 		    if (coord_cubic_active && *(emcmot_hal_data->eoffset_active)) {
 		        //skip
+		    } else if (emcmotInternal->joint_owner[joint_num] != 0) {
+		        /* MCHAN: never drain a secondary channel's joint -
+		         * its stream is live mid-motion (found at phase-2
+		         * bring-up: ch0 mode changes wiped ch1's joints) */
 		    } else {
 		        cubicDrain(&(joint->cubic));
 		    }
@@ -1048,6 +1078,11 @@ static void set_operating_mode(void)
 		tpSetPos(&emcmotInternal->chan[0].coord_tp, &emcmotStatus->carte_pos_cmd);
 		/* drain the cubics so they'll synch up */
 		for (joint_num = 0; joint_num < NO_OF_KINS_JOINTS; joint_num++) {
+		    /* MCHAN: a secondary channel's joints are NOT channel
+		     * 0's to drain - their streams may be live mid-motion
+		     * (found at phase-2 bring-up: every ch0 COORD entry
+		     * wiped ch1's in-flight interpolators) */
+		    if (emcmotInternal->joint_owner[joint_num] != 0) continue;
 		    /* point to joint data */
 		    joint = &joints[joint_num];
 		    cubicDrain(&(joint->cubic));

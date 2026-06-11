@@ -381,7 +381,15 @@ STATIC inline double tpGetSignedSpindlePosition(spindle_status_t *status) {
 
 /* space for trajectory planner queues, plus 10 more for safety */
 /*! \todo FIXME-- default is used; dynamic is not honored */
-	TC_STRUCT queueTcSpace[DEFAULT_TC_QUEUE_SIZE + 10];
+/* MCHAN ROOT-CAUSE FIX (found at phase-2 bring-up, first time TWO queues
+ * were populated SIMULTANEOUSLY): this used to be ONE array handed to
+ * EVERY tpCreate caller - all channel TPs shared the same segment storage
+ * and overwrote each other's queued moves (single-channel use never
+ * noticed; the old single-TP code was correct by accident). Now one slice
+ * per planner, handed out in tpCreate order: motion creates chan[0]'s TP
+ * first, so slice 0 keeps the historic address = D7 bit-identical. */
+	TC_STRUCT queueTcSpace[EMCMOT_MAX_CHANNELS][DEFAULT_TC_QUEUE_SIZE + 10];
+	static int queueTcSlot = 0;
 
 /**
  * Create the trajectory planner structure with an empty queue.
@@ -434,7 +442,15 @@ int tpCreate(TP_STRUCT * const tp, int _queueSize,int id)
     } else {
         tp->queueSize = _queueSize;
     }
-    TC_STRUCT * const tcSpace = queueTcSpace;
+    /* MCHAN: every planner gets its OWN segment storage (see queueTcSpace
+     * above). Refuse loudly if more planners than slices are requested. */
+    if (queueTcSlot >= EMCMOT_MAX_CHANNELS) {
+        rtapi_print_msg(RTAPI_MSG_ERR,
+            "tpCreate: out of TC queue storage slices (%d planners max)\n",
+            EMCMOT_MAX_CHANNELS);
+        return TP_ERR_FAIL;
+    }
+    TC_STRUCT * const tcSpace = queueTcSpace[queueTcSlot++];
 
     /* create the queue */
     if (-1 == tcqCreate(&tp->queue, tp->queueSize, tcSpace)) {
