@@ -153,6 +153,25 @@ typedef struct {
     unsigned char enables_new;  /* commanded FS/SS/AF/FH enable bits */
     unsigned char enables_queued; /* enables in effect for the executing segment */
 
+    /* MCHAN MC19: per-channel motion status. This TP's own view of the
+     * values that were historically scribbled into the global emcmotStatus
+     * by every TP each cycle. Only the status OWNER (channel 0's TP, flag
+     * set by motion at init; chan[] shmem is zero-initialized so secondary
+     * TPs default to 0) mirrors them into emcmotStatus for the legacy
+     * GUI/HAL view; per-channel status export to the channel stacks is
+     * phase-2 work. spindleSync also FIXES a real cross-channel bug: the
+     * sync decision used to read the other channel's global flag. */
+    int status_owner;
+    double distance_to_go;
+    EmcPose dtg;
+    double requested_vel;
+    double current_vel;
+    double current_acc;
+    double current_jerk;
+    PmCartesian current_dir;
+    int spindleSync;
+    int tcqlen;
+
 } TP_STRUCT;
 
 
