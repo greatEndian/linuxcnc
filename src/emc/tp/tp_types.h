@@ -136,6 +136,11 @@ typedef struct {
 
     syncdio_t syncdio; //record tpSetDout's here
 
+    int planner_type;       /* MCHAN MC21: 0=trapezoidal 1=S-curve, PER TP so
+                               one channel's G64 R cannot switch another
+                               channel's planner; mirrored to the global
+                               emcmotStatus->planner_type for channel 0 only */
+
 } TP_STRUCT;
 
 
