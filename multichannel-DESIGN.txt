@@ -186,12 +186,62 @@ TIMING BUDGET (frozen 2026-06-10, user decision)
 PHASING (no code until explicitly started)
 ------------------------------------------
  0. THIS DOCUMENT + 2-channel sim config skeleton                     [frozen]
- 1. Motion core: coord_tp[N], per-channel cmd/status, static owners   <- MC1/MC2 gate
- 2. N-stack launcher + 2-channel SIM, two independent programs        <- "it exists"
+ 1. Motion core: coord_tp[N], per-channel cmd/status, static owners   [DONE]
+ 2. N-stack launcher + 2-channel SIM, two independent programs        [DONE 2026-06-11]
  3. Per-channel jog/modes + homing/estop rules                        <- MC3/4/5
  4. Waiting-M rendezvous M200-M229 (transport-agnostic)               <- Fanuc semantics
  5. Axis exchange / composite control (ownership handoff commands)
  [deferred] A-layer: instance-key patch + cross-domain bridge (D8)
+
+PHASE 2 RESULT (2026-06-11) - "it exists" ACHIEVED
+---------------------------------------------------
+Two complete STOCK userspace stacks (linuxcncsvr + milltask + AXIS GUI,
+each with its own NML buffer set / var file / tool table) run two
+independent G-code programs SIMULTANEOUSLY against ONE motion process.
+Acceptance: ~/cnc-dev/mchan-dev/drive-2ch.sh 20/20 (MDI isolation both
+directions, simultaneous program execution with exact geometry, mid-move
+abort on one channel while the other completes, NAK-free sessions).
+Single command: linuxcnc ch0-mchan.ini -> both stacks + two AXIS GUIs.
+
+CHANNEL INI SCHEMA (canonical; dev pair in ~/cnc-dev/mchan-dev/):
+ channel 0 = a plain single-machine INI + num_channels=N on motmod +
+   [MCHAN]CHANNEL_INI = <chN.ini> (repeatable) + optional [MCHAN]CHMAP.
+ channel N>0 INI differs ONLY in:
+   [EMCMOT]MOTION_CHANNEL=N (same SHMEM_KEY!), [LINUXCNC]+[EMC]NML_FILE
+   (own keys + own TCP port - linuxcncsvr serves TCP), [RS274NGC]
+   PARAMETER_FILE, [EMCIO]TOOL_TABLE, [CHANNEL]MAP="X:3 Y:4 Z:5" (sent by
+   mchan-chmap before the stack starts), own [TRAJ]COORDINATES +
+   [AXIS_*] (= the channel envelope, MC24), NO [HAL] section, distinct/
+   absent POSITION_FILE. MC28 scalars must match channel 0's.
+   Optional [MCHAN]CHANNEL_HALFILE = integrator's iocontrol.N wiring
+   (default: launcher wires sim estop/tool loopbacks).
+
+ROOT CAUSE FIXED AT BRING-UP (the big one): tp.c queueTcSpace was ONE
+static array shared by EVERY tpCreate - all planners shared segment
+storage; queues overwrote each other. Only visible with TWO populated
+queues at once, so every earlier single-queue test passed "correctly by
+accident". Now one slice per planner (slice 0 = historic = D7).
+
+PHASE-2 FACTS (operational):
+ - ch>0 power-on requires channel 0 out of hardware estop first: ch0's
+   task state machine enforces the D5 floor (Fanuc machine-power
+   semantics). Power order: ch0, then the rest.
+ - HAL component names per stack: inihal (ch0 only - secondaries skip the
+   ini.* surface entirely until MC7), iocontrol.<N>, axisui.<N>; per-stack
+   tool data region via TOOL_MMAP_FILENAME env (set by the launcher).
+ - Stock task sends JOINT_UNHOME on every state transition -> MC28 gate
+   ack+ignores it for ch>0 (refusing broke power-up; JOINT_HOME stays a
+   loud refusal). D3 rule of thumb: anything a stock task sends in normal
+   sequences must not hard-fail.
+ - kins letter spaces must be DISJOINT across channels (D2): channel 0's
+   coordinates= covers ONLY its joints; other channels' joints are
+   letterless in ch0's space (AXIS now tolerates letterless joints).
+ - mchan-chmap currently lives in ~/cnc-dev/mchan-dev/ (graduate into
+   bin/ at the next deploy milestone).
+NEW REGISTER ITEM:
+ MC30 emcmot error ring is single-reader global: N milltasks STEAL each
+      other's reportError messages -> per-channel error rings (or tag +
+      filter) in phase 3.                                          [MEDIUM]
 
 FINALIZATION TASKS (do at project end, before publishing)
 ----------------------------------------------------------
