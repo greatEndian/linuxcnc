@@ -1186,6 +1186,66 @@ static void handle_jjogwheels(void)
     first_pass = 0;
 }
 
+/* MCHAN (MC3-lite): axis component (0=X..8=W) of an EmcPose */
+static double mchan_pose_axis(EmcPose const *p, int ax)
+{
+    switch (ax) {
+    case 0: return p->tran.x;
+    case 1: return p->tran.y;
+    case 2: return p->tran.z;
+    case 3: return p->a;
+    case 4: return p->b;
+    case 5: return p->c;
+    case 6: return p->u;
+    case 7: return p->v;
+    case 8: return p->w;
+    }
+    return 0.0;
+}
+
+/* MCHAN (MC3-lite): run the secondary channels' coordinated pipelines.
+ * Each secondary channel is coord-only: its planner output drives exactly
+ * the joints it has mapped (and which it therefore owns - those joints are
+ * excluded from channel 0's free/teleop/coord handling). A channel with no
+ * mapped joints just keeps its planner clock ticking. Mirrors the channel-0
+ * COORD pattern: fill the cubic interpolators from the TP as needed, then
+ * interpolate. Loop body never runs at num_channels=1. */
+static void mchan_run_secondary(long period)
+{
+    for (int ch = 1; ch < motion_num_channels; ch++) {
+	emcmot_channel_t *c = &emcmotInternal->chan[ch];
+	int ref_jn = -1;
+	for (int ax = 0; ax < EMCMOT_MAX_AXIS; ax++) {
+	    if (c->axis_to_joint[ax] >= 0) {
+		ref_jn = c->axis_to_joint[ax];
+		break;
+	    }
+	}
+	if (ref_jn < 0) {
+	    /* nothing mapped: keep the planner clock aligned */
+	    tpRunCycle(&c->coord_tp, period);
+	    continue;
+	}
+	while (cubicNeedNextPoint(&(joints[ref_jn].cubic))) {
+	    EmcPose pos;
+	    tpRunCycle(&c->coord_tp, period);
+	    tpGetPos(&c->coord_tp, &pos);
+	    for (int ax = 0; ax < EMCMOT_MAX_AXIS; ax++) {
+		int jn = c->axis_to_joint[ax];
+		if (jn < 0) continue;
+		joints[jn].coarse_pos = mchan_pose_axis(&pos, ax);
+		cubicAddPoint(&(joints[jn].cubic), joints[jn].coarse_pos);
+	    }
+	}
+	for (int ax = 0; ax < EMCMOT_MAX_AXIS; ax++) {
+	    int jn = c->axis_to_joint[ax];
+	    if (jn < 0) continue;
+	    joints[jn].pos_cmd = cubicInterpolate(&(joints[jn].cubic), 0,
+		&(joints[jn].vel_cmd), &(joints[jn].acc_cmd), &(joints[jn].jerk_cmd));
+	}
+    }
+}
+
 static void get_pos_cmds(long period)
 {
     int joint_num, result;
@@ -1211,6 +1271,14 @@ static void get_pos_cmds(long period)
 
     /* RUN MOTION CALCULATIONS: */
 
+    /* MCHAN (MC3-lite): secondary channels execute whenever the machine is
+     * enabled, independent of channel 0's motion state. When disabled, the
+     * DISABLED case below holds ALL joints (including secondary-owned ones)
+     * at feedback - the global-stop floor (D5). */
+    if (GET_MOTION_ENABLE_FLAG()) {
+	mchan_run_secondary(period);
+    }
+
     /* run traj planner code depending on the state */
     switch ( emcmotStatus->motion_state) {
     case EMCMOT_MOTION_FREE:
@@ -1226,6 +1294,9 @@ static void get_pos_cmds(long period)
             }
             // extra joint is not managed herein after homing:
             if (IS_EXTRA_JOINT(joint_num) && get_homed(joint_num)) continue;
+	    /* MCHAN: joints owned by a secondary channel are driven by that
+	     * channel's planner (mchan_run_secondary), not free-planned here */
+	    if (emcmotInternal->joint_owner[joint_num] != 0) continue;
 
 	    if(joint->acc_limit > emcmotStatus->acc)
 		joint->acc_limit = emcmotStatus->acc;
@@ -1374,6 +1445,9 @@ static void get_pos_cmds(long period)
 	    {
 		/* copy to joint structures and spline them up */
 		for (joint_num = 0; joint_num < NO_OF_KINS_JOINTS; joint_num++) {
+		    /* MCHAN: secondary-owned joints are splined by their
+		     * channel's planner, not by channel 0's kins output */
+		    if (emcmotInternal->joint_owner[joint_num] != 0) continue;
 		    if(!isfinite(positions[joint_num]))
 		    {
                        reportError(_("kinematicsInverse gave non-finite joint location on joint %d"),
@@ -1409,6 +1483,8 @@ static void get_pos_cmds(long period)
 	/* there is data in the interpolators */
 	/* run interpolation */
 	for (joint_num = 0; joint_num < NO_OF_KINS_JOINTS; joint_num++) {
+	    /* MCHAN: secondary-owned joints interpolate in mchan_run_secondary */
+	    if (emcmotInternal->joint_owner[joint_num] != 0) continue;
 	    /* point to joint struct */
 	    joint = &joints[joint_num];
 	    /* interpolate to get new position and velocity */
@@ -1460,6 +1536,9 @@ static void get_pos_cmds(long period)
 	if(result == 0)
 	{
 	    for (joint_num = 0; joint_num < NO_OF_KINS_JOINTS; joint_num++) {
+		/* MCHAN: secondary-owned joints are driven by their channel's
+		 * planner, not by channel 0's teleop kins output */
+		if (emcmotInternal->joint_owner[joint_num] != 0) continue;
 		if(!isfinite(positions[joint_num]))
 		{
 		   reportError(_("kinematicsInverse gave non-finite joint location on joint %d"),
