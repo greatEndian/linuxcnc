@@ -767,6 +767,12 @@ typedef struct emcmot_channel_t {
      * are identity-mapped subsets of the global joints. Set at config time
      * via EMCMOT_SET_CHANNEL_AXIS_MAP through the channel's own mailbox. */
     int axis_to_joint[EMCMOT_MAX_AXIS];
+    /* MCHAN MC23: this channel's active tool offset (G43/G43.x H). One
+     * channel's tool change must not overwrite another channel's offset.
+     * Channel 0 mirrors to the legacy emcmotStatus->tool_offset, which
+     * feeds the single motion.tooloffset.* HAL pin set and the legacy
+     * status view (per-channel pins/status = MC7/MC19 work). */
+    EmcPose tool_offset;
 } emcmot_channel_t;
 
 typedef struct emcmot_internal_t {

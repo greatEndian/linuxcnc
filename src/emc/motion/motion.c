@@ -953,6 +953,8 @@ static int init_comm_buffers(void)
 	for (int ax = 0; ax < EMCMOT_MAX_AXIS; ax++) {
 	    emcmotInternal->chan[ch].axis_to_joint[ax] = -1;
 	}
+	/* MC23: no tool offset until the channel's task applies one */
+	ZERO_EMC_POSE(emcmotInternal->chan[ch].tool_offset);
     }
     /* MC6/D6: channel 0 owns every joint by default (= legacy behavior) */
     for (int jn = 0; jn < EMCMOT_MAX_JOINTS; jn++) {
