@@ -960,6 +960,10 @@ static int init_comm_buffers(void)
 	}
 	/* MC23: no tool offset until the channel's task applies one */
 	ZERO_EMC_POSE(emcmotInternal->chan[ch].tool_offset);
+	/* MC2b: clean per-channel status snapshot + virtual mode (DISABLED
+	 * = legacy machine-off startup; the channel's stack sets its mode) */
+	memset(&emcmotStruct->mchan_status[ch], 0, sizeof(emcmotStruct->mchan_status[ch]));
+	emcmotInternal->chan[ch].virt_state = EMCMOT_MOTION_DISABLED;
     }
     /* MC6/D6: channel 0 owns every joint by default (= legacy behavior) */
     for (int jn = 0; jn < EMCMOT_MAX_JOINTS; jn++) {

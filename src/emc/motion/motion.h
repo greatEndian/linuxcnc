@@ -785,6 +785,13 @@ typedef struct emcmot_channel_t {
         double acc_limit;
         double jerk_limit;
     } axis_lim[EMCMOT_MAX_AXIS];
+    /* MCHAN MC2b: the channel's VIRTUAL operating mode. The machine mode
+     * machine stays channel 0's until MC3; a secondary stack's stock task
+     * still sends FREE/COORD/TELEOP and then watches status for the mode to
+     * follow, so the MC28 gate records the request here and the channel's
+     * status view reflects it (execution remains coord-only by design).
+     * Zero-init = EMCMOT_MOTION_DISABLED, matching legacy startup. */
+    motion_state_t virt_state;
 } emcmot_channel_t;
 
 typedef struct emcmot_internal_t {

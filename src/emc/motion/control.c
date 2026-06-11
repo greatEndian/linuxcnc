@@ -18,6 +18,7 @@
 
 #ifdef SWITCHKINS_DEBUG
 #include <stdio.h>  // rtpreempt only, consolidate to stderr
+#include <stddef.h> // offsetof (MCHAN MC2b status snapshot ranges)
 #endif
 
 #include <rtapi.h>
@@ -30,6 +31,7 @@
 #include "../tp/tp.h"
 #include "simple_tp.h"
 #include "motion.h"
+#include "motion_struct.h" /* emcmot_struct_t (MCHAN MC2b mailbox/status) */
 #include "mot_priv.h"
 #include "config.h"
 #include "homing.h"
@@ -190,6 +192,9 @@ static void output_to_hal(void);
 */
 static void update_status(void);
 
+/* MCHAN (MC2b): per-channel status snapshots for secondary stacks */
+static void mchan_update_status(void);
+
 static void handle_kinematicsSwitch(void);
 
 /***********************************************************************
@@ -285,6 +290,9 @@ void emcmotController(void *arg, long period)
     emcmotStatus->heartbeat++;
     /* set tail to head, to indicate work complete */
     emcmotStatus->tail = emcmotStatus->head;
+    /* MCHAN (MC2b): publish the secondary channels' status views from the
+     * now-complete global status + per-channel state (no-op at 1 channel) */
+    mchan_update_status();
 /* end of controller function */
 }
 
@@ -1254,6 +1262,22 @@ static double mchan_pose_axis(EmcPose const *p, int ax)
     return 0.0;
 }
 
+/* MCHAN (MC2b): set axis component (0=X..8=W) of an EmcPose */
+static void mchan_pose_set_axis(EmcPose *p, int ax, double v)
+{
+    switch (ax) {
+    case 0: p->tran.x = v; break;
+    case 1: p->tran.y = v; break;
+    case 2: p->tran.z = v; break;
+    case 3: p->a = v; break;
+    case 4: p->b = v; break;
+    case 5: p->c = v; break;
+    case 6: p->u = v; break;
+    case 7: p->v = v; break;
+    case 8: p->w = v; break;
+    }
+}
+
 /* MCHAN (MC3-lite): run the secondary channels' coordinated pipelines.
  * Each secondary channel is coord-only: its planner output drives exactly
  * the joints it has mapped (and which it therefore owns - those joints are
@@ -1294,6 +1318,106 @@ static void mchan_run_secondary(long period)
 	    joints[jn].pos_cmd = cubicInterpolate(&(joints[jn].cubic), 0,
 		&(joints[jn].vel_cmd), &(joints[jn].acc_cmd), &(joints[jn].jerk_cmd));
 	}
+    }
+}
+
+/* MCHAN (MC2b): fill each secondary channel's status snapshot. Runs at the
+ * very end of the controller cycle, after the global status is complete
+ * (tail written). Body = global snapshot (joints/spindles/io stay shared
+ * machine state) + overlay of every channel-scoped field from the channel's
+ * own TP/mailbox/state. Same single-writer head/tail split-read protocol as
+ * the legacy status: head is bumped first, the body copy SKIPS the tail
+ * byte, tail is written last. Never runs at num_channels=1 (D7). */
+static void mchan_update_status(void)
+{
+    for (int ch = 1; ch < motion_num_channels; ch++) {
+	emcmot_channel_t *c = &emcmotInternal->chan[ch];
+	TP_STRUCT *tp = &c->coord_tp;
+	emcmot_chan_mailbox_t *mb = &emcmotStruct->mchan_cmd[ch];
+	emcmot_status_t *cs = &emcmotStruct->mchan_status[ch];
+	const size_t off_body = offsetof(emcmot_status_t, commandEcho);
+	const size_t off_tail = offsetof(emcmot_status_t, tail);
+	const size_t off_post = offsetof(emcmot_status_t, external_offsets_applied);
+	int enabled = GET_MOTION_ENABLE_FLAG();
+	int inpos;
+
+	cs->head++;
+	/* global snapshot in two ranges so the tail byte is never written
+	 * with a stale value mid-copy */
+	memcpy((char *)cs + off_body, (char *)emcmotStatus + off_body,
+	       off_tail - off_body);
+	memcpy((char *)cs + off_post, (char *)emcmotStatus + off_post,
+	       sizeof(emcmot_status_t) - off_post);
+
+	/* command handshake: this channel's mailbox echo */
+	cs->commandEcho = mb->commandEcho;
+	cs->commandNumEcho = mb->commandNumEcho;
+	cs->commandStatus = mb->commandStatus;
+
+	/* channel-scoped traj state from the channel's TP (MC19/21/22/28) */
+	cs->feed_scale = tp->feed_scale;
+	cs->rapid_scale = tp->rapid_scale;
+	cs->net_feed_scale = tp->net_feed_scale;
+	cs->enables_new = tp->enables_new;
+	cs->enables_queued = tp->enables_queued;
+	cs->planner_type = tp->planner_type;
+	cs->scurve_peak_scale = tp->scurve_peak_scale;
+	cs->distance_to_go = tp->distance_to_go;
+	cs->dtg = tp->dtg;
+	cs->current_vel = tp->current_vel;
+	cs->requested_vel = tp->requested_vel;
+	cs->current_acc = tp->current_acc;
+	cs->current_jerk = tp->current_jerk;
+	cs->current_dir = tp->current_dir;
+	cs->spindleSync = tp->spindleSync;
+	cs->tcqlen = tp->tcqlen;
+	cs->tag = tp->execTag;
+	cs->vel = tp->vMax;
+	cs->acc = tp->aMax;
+	cs->id = tpGetExecId(tp);
+	cs->depth = tpQueueDepth(tp);
+	cs->activeDepth = tpActiveDepth(tp);
+	cs->queueFull = tcqFull(&tp->queue);
+	cs->motionType = tpGetMotionType(tp);
+	cs->paused = tp->pausing;
+	cs->tool_offset = c->tool_offset;
+
+	/* channel pose: commanded from its TP; "actual" composed from the
+	 * mapped joints' feedback through the identity letter map */
+	tpGetPos(tp, &cs->carte_pos_cmd);
+	cs->carte_pos_cmd_ok = 1;
+	ZERO_EMC_POSE(cs->carte_pos_fb);
+	for (int ax = 0; ax < EMCMOT_MAX_AXIS; ax++) {
+	    int jn = c->axis_to_joint[ax];
+	    if (jn >= 0)
+		mchan_pose_set_axis(&cs->carte_pos_fb, ax, joints[jn].pos_fb);
+	}
+	cs->carte_pos_fb_ok = 1;
+
+	/* virtual mode (recorded by the MC28 gate) + per-channel flags.
+	 * inpos = this channel's planner idle; enable/estop = global floor */
+	inpos = (!tpIsMoving(tp) && tpQueueDepth(tp) == 0);
+	cs->motion_state = !enabled ? EMCMOT_MOTION_DISABLED :
+	    (c->virt_state == EMCMOT_MOTION_DISABLED) ? EMCMOT_MOTION_FREE :
+	    c->virt_state;
+	cs->motionFlag = 0;
+	if (enabled)
+	    cs->motionFlag |= EMCMOT_MOTION_ENABLE_BIT;
+	if (inpos)
+	    cs->motionFlag |= EMCMOT_MOTION_INPOS_BIT;
+	if (c->virt_state == EMCMOT_MOTION_COORD)
+	    cs->motionFlag |= EMCMOT_MOTION_COORD_BIT;
+	else if (c->virt_state == EMCMOT_MOTION_TELEOP)
+	    cs->motionFlag |= EMCMOT_MOTION_TELEOP_BIT;
+
+	/* not this channel's: ch0's jog machinery and probe (MC25 day-1
+	 * refusal) must not leak into the channel's task decisions */
+	cs->overrideLimitMask = 0;
+	cs->jogging_active = 0;
+	cs->probing = 0;
+	cs->probeTripped = 0;
+
+	cs->tail = cs->head;
     }
 }
 
