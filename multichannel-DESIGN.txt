@@ -100,6 +100,79 @@ Build/test:
  MC15 hardware risk during dev                     -> SIM-FIRST: 2-channel lathe sim bench
  MC16 debugging interleaved channels               -> per-channel log prefixes day 1
  MC17 NML cross-talk                               -> distinct .nml per ch + dup-key guard
+Found during phase-1 implementation (2026-06-11):
+ MC18 stale mailbox echo can swallow a restarted    -> seed task commandNum from current
+      task's first command (echo==fresh num)           echo at connect (harden later)
+ MC19 tpUpdateInitialStatus writes GLOBAL           -> per-channel status block
+      emcmotStatus from ch>0 TPs every cycle
+ MC20 SET_LINE captures GLOBAL enables_new          -> per-channel enables (see MC22)
+
+G-CODE x N-CHANNEL INTERACTION AUDIT (2026-06-11, acknowledged by user)
+-----------------------------------------------------------------------
+Method: every G/M-code family traced interp -> canon -> NML -> EMCMOT handler
+on branch multichannel@d0944730; classified by which state it mutates.
+
+CATEGORY A - per-channel-safe by construction (verified, no action):
+ modal state/G90/G91/G20/G21/G17-19/G40-42/G93-95/G4/O-codes (own Interp);
+ G54-59/G92/G10 (own PARAMETER_FILE - add distinct-var-file config guard a la
+ MC17); G64 P/Q -> SET_TERM_COND routed to chan[].coord_tp; G33/G76 TP side
+ (SET_SPINDLESYNC routed); queued M62-65 (tpSetDout/Aout routed).
+
+CATEGORY B - GLOBAL-STATE LEAKS confirmed in code -> new register items:
+ MC21 G64 R planner switch is global (emcmotStatus->planner_type, read by ALL
+      TPs via tp.c GET_TRAJ_PLANNER_TYPE; single global defer-latch)
+      -> chan[].planner_type + per-channel latch; TP tagged with its channel.
+      SCURVE_PEAK_SCALE pin/INI likewise becomes per-channel.        [HIGH]
+ MC22 feed/rapid override + M48-M53 enables are global (feed_scale,
+      rapid_scale, enables_new; net_feed_scale computed once) -> per-channel
+      scale+enables, per-channel net_feed_scale, motion.N.feed-hold etc.;
+      global pins stay as all-channel floor (Fanuc per-path override).
+      WORST HAZARD: ch1 GUI knob silently slows ch2 cut.         [CRITICAL]
+ MC23 tool offset global (EMCMOT_SET_OFFSET -> emcmotStatus->tool_offset,
+      single HAL pin set, used by probe reporting) -> chan[].tool_offset +
+      motion.N.tooloffset.* (per-path tool comp, both vendors).      [HIGH]
+ MC24 axis-LETTER module is one global 9-slot array (limits/jog/inRange/
+      limits_ok) while every channel has its own letter space -> per-channel
+      axis state (subsumes part of MC3; explicit because G-code range checks
+      validate against the wrong envelope today).                [CRITICAL]
+ MC25 G38 probing: TP routed BUT one probe_input pin + global probing state
+      + global trip logic -> per-channel probe state, INI-assignable probe
+      pin per channel (Fanuc per-path skip signal); day-1 guard = mutual
+      exclusion w/ clear "probe busy (channel N)" error.           [MEDIUM]
+ MC26 spindles: per-index state ok, NO channel ownership (any channel can
+      M3/M5/S any spindle) -> enforce [CHANNEL_N]SPINDLES ownership, loud
+      error on foreign spindle; cross-channel use = phase-5 exchange
+      (Fanuc path-spindle assignment).                               [HIGH]
+ MC27 M62-M68/M66 share one global motion.digital/analog-* namespace and
+      immediate writes are unarbitrated -> per-channel index ranges in INI
+      (e.g. ch0 0-31, ch1 32-63) enforced in motion + motion.N.* aliases
+      (Fanuc per-path PMC interface areas).                        [MEDIUM]
+ MC28 startup CONFIG STORM: every channel's milltask sends the full init
+      sequence (SET_NUM_JOINTS, traj/axis limits, maxFeedScale, ...) into
+      global state - last to boot wins, divergent INIs silently reconfigure
+      the machine -> classify EVERY config command machine-global vs
+      channel-scoped (Siemens $MN_* vs $MC_* machine-data split); globals
+      accepted from ch0 stack ONLY; divergence -> refuse to start. [CRITICAL]
+
+CATEGORY C - machine-global by NATURE -> policy + guard, not per-channel:
+ MC29 G43.4/G43.5/G49 switchkins: kinematicsSwitch() flips the WHOLE
+      machine's kinematics (one module per machine) while other channels may
+      be driving joints -> day-1 rule: switchkins command allowed only when
+      requesting channel owns ALL mapped joints (in practice: single active
+      channel), else clean refusal. Per-channel kins instances (Fanuc 30i
+      per-path TCP) = explicit FUTURE project, NOT in phases 1-5.    [HIGH]
+ (E-stop/enable/hard-limits global floor = D5; homing = MC4 - already frozen.)
+
+PHASING IMPACT: MC21-MC24 + MC28 gate phases 1-2 (load-bearing for two real
+stacks; same disease as MC19/MC20 = the per-channel status/state block work).
+MC25-MC27 + MC29 land in phase 3 with sim tests.
+
+RELATED PROJECT - NO OVERLAP (checked 2026-06-11): joco-nz/linuxcnc-fleet
+("linuxcnc-Headless-UI"): gRPC sidecar wrapping the Python bindings + central
+gateway for fleets of SEPARATE machines; explicitly no core/RT changes, no
+multi-channel anything. COMPLEMENTARY layer ABOVE us: sidecar-per-channel
+would see our N stacks as N machines -> candidate remote multi-channel UI
+(D3 keeps GUI integrator's-choice) + matches the appliance/HMI/MES roadmap.
 
 TIMING BUDGET (frozen 2026-06-10, user decision)
 ------------------------------------------------
