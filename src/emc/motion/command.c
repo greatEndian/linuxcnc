@@ -1053,8 +1053,10 @@ void emcmotCommandHandler_locked(void *arg, long servo_period)
 	case EMCMOT_SET_LINE:
 	    /* emcmotInternal->chan[mchan_active_channel].coord_tp up a linear move */
 	    /* requires motion enabled, coordinated mode, not on limits */
+	    /* MCHAN (MC3-lite): secondary channels are coord-only by design,
+	     * so only the global enable gate applies to them (D5 floor). */
 	    rtapi_print_msg(RTAPI_MSG_DBG, "SET_LINE");
-	    if (!GET_MOTION_COORD_FLAG() || !GET_MOTION_ENABLE_FLAG()) {
+	    if ((mchan_active_channel == 0 && !GET_MOTION_COORD_FLAG()) || !GET_MOTION_ENABLE_FLAG()) {
 		reportError(_("need to be enabled, in coord mode for linear move"));
 		(*mchan_echo_status) = EMCMOT_COMMAND_INVALID_COMMAND;
 		SET_MOTION_ERROR_FLAG(1);
@@ -1122,8 +1124,9 @@ void emcmotCommandHandler_locked(void *arg, long servo_period)
 	case EMCMOT_SET_CIRCLE:
 	    /* emcmotInternal->chan[mchan_active_channel].coord_tp up a circular move */
 	    /* requires coordinated mode, enable on, not on limits */
+	    /* MCHAN (MC3-lite): secondary channels are coord-only (see SET_LINE) */
 	    rtapi_print_msg(RTAPI_MSG_DBG, "SET_CIRCLE");
-	    if (!GET_MOTION_COORD_FLAG() || !GET_MOTION_ENABLE_FLAG()) {
+	    if ((mchan_active_channel == 0 && !GET_MOTION_COORD_FLAG()) || !GET_MOTION_ENABLE_FLAG()) {
 		reportError(_("need to be enabled, in coord mode for circular move"));
 		(*mchan_echo_status) = EMCMOT_COMMAND_INVALID_COMMAND;
 		SET_MOTION_ERROR_FLAG(1);
@@ -1344,6 +1347,10 @@ void emcmotCommandHandler_locked(void *arg, long servo_period)
 					break;
 				}
 				emcmotInternal->joint_owner[map_jn] = mchan_active_channel;
+				/* prime the joint's interpolator so the channel's
+				 * executor starts feeding it (mirrors the FREE->COORD
+				 * transition priming on channel 0) */
+				cubicDrain(&(joints[map_jn].cubic));
 			}
 			emcmotInternal->chan[mchan_active_channel].axis_to_joint[map_ax] = map_jn;
 		}
