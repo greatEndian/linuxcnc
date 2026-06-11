@@ -47,6 +47,12 @@ static emcmot_internal_t *emcmotInternal = NULL;
 static emcmot_error_t *emcmotError = NULL;
 static emcmot_struct_t *emcmotStruct = NULL;
 
+/* MCHAN: which motion channel this PROCESS talks to (0 = the historic
+ * channel). Set once from [EMCMOT]MOTION_CHANNEL in usrmotIniLoad(); each
+ * channel's task stack carries its own INI, so nothing above this layer
+ * needs a channel parameter. */
+static int usrmot_channel = 0;
+
 /* usrmotIniLoad() loads params (SHMEM_KEY, COMM_TIMEOUT)
    from named INI file */
 int usrmotIniLoad(const char *filename)
@@ -71,6 +77,19 @@ int usrmotIniLoad(const char *filename)
             rcs_print("USRMOT: ERROR: Invalid [EMCMOT]COMM_TIMEOUT\n");
         }
     }
+    /* MCHAN: optional channel selection (default 0 = historic behavior) */
+    if (inifile.isSet("MOTION_CHANNEL", "EMCMOT")) {
+        if (auto inival = inifile.findInt("MOTION_CHANNEL", "EMCMOT")) {
+            if (*inival >= 0 && *inival < EMCMOT_MAX_CHANNELS) {
+                usrmot_channel = *inival;
+            } else {
+                rcs_print("USRMOT: ERROR: [EMCMOT]MOTION_CHANNEL %d out of range (0..%d)\n",
+                          *inival, EMCMOT_MAX_CHANNELS - 1);
+            }
+        } else {
+            rcs_print("USRMOT: ERROR: Invalid [EMCMOT]MOTION_CHANNEL\n");
+        }
+    }
     return 0;
 }
 
@@ -92,6 +111,30 @@ int usrmotWriteEmcmotCommand(emcmot_command_t * c)
     if (NULL == emcmotCommand) {
         rcs_print("USRMOT: ERROR: can't connect to shared memory\n");
 	return EMCMOT_COMM_ERROR_CONNECT;
+    }
+
+    /* MCHAN: secondary channels use their own mailbox + echo; channel 0
+     * keeps the historic command/status path below, untouched. */
+    if (usrmot_channel != 0) {
+	emcmot_chan_mailbox_t *mb = &emcmotStruct->mchan_cmd[usrmot_channel];
+	rtapi_mutex_get(&mb->mutex);
+	mb->command = *c;
+	rtapi_mutex_give(&mb->mutex);
+	end = etime() + EMCMOT_COMM_TIMEOUT;
+	while (etime() < end) {
+	    if (mb->commandNumEcho == commandNum) {
+		if (mb->commandStatus == EMCMOT_COMMAND_OK) {
+		    return EMCMOT_COMM_OK;
+		} else {
+		    rcs_print("USRMOT: ERROR: invalid command (channel %d)\n", usrmot_channel);
+		    return EMCMOT_COMM_ERROR_COMMAND;
+		}
+	    }
+	    esleep(25e-6);
+	}
+	rcs_print("USRMOT: ERROR: command %u timeout (seq: %d, channel %d)\n",
+		  c->command, commandNum, usrmot_channel);
+	return EMCMOT_COMM_ERROR_TIMEOUT;
     }
 
     /* copy entire command structure to shared memory */

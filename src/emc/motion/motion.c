@@ -940,6 +940,16 @@ static int init_comm_buffers(void)
     emcmotStatus->commandNumEcho = 0;
     emcmotStatus->commandStatus = 0;
 
+    /* MCHAN: init the secondary-channel command mailboxes */
+    for (int ch = 0; ch < EMCMOT_MAX_CHANNELS; ch++) {
+	emcmotStruct->mchan_cmd[ch].mutex = 0;
+	emcmotStruct->mchan_cmd[ch].command.command = 0;
+	emcmotStruct->mchan_cmd[ch].command.commandNum = 0;
+	emcmotStruct->mchan_cmd[ch].commandEcho = 0;
+	emcmotStruct->mchan_cmd[ch].commandNumEcho = 0;
+	emcmotStruct->mchan_cmd[ch].commandStatus = 0;
+    }
+
     /* init more stuff */
     emcmotInternal->head = 0;
     emcmotConfig->head = 0;
