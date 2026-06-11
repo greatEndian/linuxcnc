@@ -99,28 +99,38 @@ static cmd_status_t *mchan_echo_status;
  * To revert this feature entirely: delete the three PLANNER_SWITCH_DEFER blocks in
  * command.c, the declaration in mot_priv.h, and the call in control.c; then restore
  * the original EMCMOT_SET_PLANNER_TYPE handler body (see ORIGINAL note in that block). */
-static int planner_type_switch_pending = 0;  /* 1 = a deferred switch is queued */
-static int planner_type_pending_value  = 0;   /* requested type (0/1), applied at idle */
+/* MCHAN MC21: one latch PER CHANNEL - a deferred switch on one channel must not
+ * block or leak into another. The applied state lives in the channel TP itself
+ * (tp->planner_type); emcmotStatus->planner_type stays as channel 0's mirror
+ * for the legacy GUI/status view. */
+static int planner_type_switch_pending[EMCMOT_MAX_CHANNELS];  /* 1 = deferred switch queued */
+static int planner_type_pending_value[EMCMOT_MAX_CHANNELS];   /* requested type (0/1) */
 
-/* True when the coordinated trajectory queue is idle (safe to switch planner type). */
-static int planner_switch_motion_idle(void)
+/* True when CHANNEL ch's coordinated trajectory queue is idle. */
+static int planner_switch_channel_idle(int ch)
 {
-    return tpIsDone(&emcmotInternal->chan[mchan_active_channel].coord_tp)
-        && (tpQueueDepth(&emcmotInternal->chan[mchan_active_channel].coord_tp) == 0);
+    return tpIsDone(&emcmotInternal->chan[ch].coord_tp)
+        && (tpQueueDepth(&emcmotInternal->chan[ch].coord_tp) == 0);
 }
 
-/* Apply a latched planner-type switch once motion has gone idle. Called every servo
- * cycle from emcmotController(). No-op unless a switch is pending and the queue is idle. */
+/* Apply latched planner-type switches for any channel whose queue has gone idle.
+ * Called every servo cycle from emcmotController(). */
 void emcmotApplyPendingPlannerType(void)
 {
-    if (!planner_type_switch_pending) {
-        return;
-    }
-    if (planner_switch_motion_idle()) {
-        emcmotStatus->planner_type = planner_type_pending_value;
-        planner_type_switch_pending = 0;
-        rtapi_print_msg(RTAPI_MSG_INFO,
-            "planner switch applied (type %d)", planner_type_pending_value);
+    int ch;
+    for (ch = 0; ch < motion_num_channels; ch++) {
+        if (!planner_type_switch_pending[ch]) {
+            continue;
+        }
+        if (planner_switch_channel_idle(ch)) {
+            emcmotInternal->chan[ch].coord_tp.planner_type = planner_type_pending_value[ch];
+            if (ch == 0) {
+                emcmotStatus->planner_type = planner_type_pending_value[ch];
+            }
+            planner_type_switch_pending[ch] = 0;
+            rtapi_print_msg(RTAPI_MSG_INFO,
+                "ch%d: planner switch applied (type %d)", ch, planner_type_pending_value[ch]);
+        }
     }
 }
 /* ===== END PLANNER_SWITCH_DEFER ==================================================== */
@@ -1263,6 +1273,11 @@ void emcmotCommandHandler_locked(void *arg, long servo_period)
 		 */
 		rtapi_print_msg(RTAPI_MSG_DBG, "SET_PLANNER_TYPE, type(%d)", emcmotCommand->planner_type);
 		{
+			/* MCHAN MC21: the switch is scoped to the REQUESTING channel -
+			 * state lives in that channel's TP; ch0 mirrors to the legacy
+			 * emcmotStatus->planner_type status field. */
+			int ch = mchan_active_channel;
+			TP_STRUCT *ptp = &emcmotInternal->chan[ch].coord_tp;
 			/* Only 0 and 1 are supported; coerce anything else to 0. */
 			int req = (emcmotCommand->planner_type == 1) ? 1 : 0;
 			/* G64_R_PLANNER guard (parity with initraj/inihal, which force
@@ -1273,22 +1288,25 @@ void emcmotCommandHandler_locked(void *arg, long servo_period)
 				reportError(_("S-curve planner refused: no usable jerk limit - set [TRAJ]MAX_LINEAR_JERK and per-axis [AXIS_*]MAX_JERK"));
 				break;
 			}
-			if (planner_switch_motion_idle()) {
+			if (planner_switch_channel_idle(ch)) {
 				/* idle: instant switch, drop any stale pending request */
-				emcmotStatus->planner_type = req;
-				planner_type_switch_pending = 0;
-			} else if (req != emcmotStatus->planner_type) {
+				ptp->planner_type = req;
+				if (ch == 0) {
+					emcmotStatus->planner_type = req;
+				}
+				planner_type_switch_pending[ch] = 0;
+			} else if (req != ptp->planner_type) {
 				/* moving: defer until the queue drains (never abort) */
-				planner_type_pending_value = req;
-				if (!planner_type_switch_pending) {
-					planner_type_switch_pending = 1;
+				planner_type_pending_value[ch] = req;
+				if (!planner_type_switch_pending[ch]) {
+					planner_type_switch_pending[ch] = 1;
 					/* operator-facing: reportError() surfaces in the GUI (unlike
 					 * rtapi_print_msg, which only hits the RTAPI log/terminal). */
 					reportError(_("planner switch deferred until queued motion completes (requested type %d)"), req);
 				}
 			} else {
 				/* request already equals current type: cancel any pending switch */
-				planner_type_switch_pending = 0;
+				planner_type_switch_pending[ch] = 0;
 			}
 		}
 		/* ===== END PLANNER_SWITCH_DEFER ==================================== */
