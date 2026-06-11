@@ -205,26 +205,26 @@ STATIC double tpGetTangentKinkRatio(void) {
     return fmax(fmin(emcmotConfig->arcBlendTangentKinkRatio,max_ratio),min_ratio);
 }
 
-STATIC int tpGetMachineAccelBounds(PmCartesian  * const acc_bound) {
+/* MCHAN MC24: bounds are PER CHANNEL now (tp->xyz_*_bound, maintained by the
+ * SET_AXIS_VEL/ACC_LIMIT handlers; ch0's values track the legacy axis module
+ * exactly). The _axis_get_* function pointers remain registered for ABI
+ * stability but are no longer consulted here. */
+STATIC int tpGetMachineAccelBounds(TP_STRUCT const * const tp, PmCartesian  * const acc_bound) {
     if (!acc_bound) {
         return TP_ERR_FAIL;
     }
 
-    acc_bound->x = _axis_get_acc_limit(0); //0==>x
-    acc_bound->y = _axis_get_acc_limit(1); //1==>y
-    acc_bound->z = _axis_get_acc_limit(2); //2==>z
+    *acc_bound = tp->xyz_acc_bound;
     return TP_ERR_OK;
 }
 
 
-STATIC int tpGetMachineVelBounds(PmCartesian  * const vel_bound) {
+STATIC int tpGetMachineVelBounds(TP_STRUCT const * const tp, PmCartesian  * const vel_bound) {
     if (!vel_bound) {
         return TP_ERR_FAIL;
     }
 
-    vel_bound->x = _axis_get_vel_limit(0); //0==>x
-    vel_bound->y = _axis_get_vel_limit(1); //1==>y
-    vel_bound->z = _axis_get_vel_limit(2); //2==>z
+    *vel_bound = tp->xyz_vel_bound;
     return TP_ERR_OK;
 }
 
@@ -552,7 +552,7 @@ int tpInit(TP_STRUCT * const tp)
        rtapi_print("!!!tpInit: NULL emcmotStatus, bye\n\n");
        return -1;
     }
-    tpGetMachineAccelBounds(&acc_bound);
+    tpGetMachineAccelBounds(tp, &acc_bound);
     tpGetMachineActiveLimit(&tp->aMax, &acc_bound);
     //Angular limits
     tp->wMax = 0.0;
@@ -570,7 +570,7 @@ int tpInit(TP_STRUCT * const tp)
     ZERO_EMC_POSE(tp->currentPos);
 
     PmCartesian vel_bound;
-    tpGetMachineVelBounds(&vel_bound);
+    tpGetMachineVelBounds(tp, &vel_bound);
     tpGetMachineActiveLimit(&tp->vMax, &vel_bound);
 
     return tpClear(tp);
@@ -1047,8 +1047,8 @@ tp_err_t tpCreateLineArcBlend(TP_STRUCT * const tp, TC_STRUCT * const prev_tc, T
     PmCartesian acc_bound, vel_bound;
 
     //Get machine limits
-    tpGetMachineAccelBounds(&acc_bound);
-    tpGetMachineVelBounds(&vel_bound);
+    tpGetMachineAccelBounds(tp, &acc_bound);
+    tpGetMachineVelBounds(tp, &vel_bound);
 
     //Populate blend geometry struct
     BlendGeom3 geom;
@@ -1206,8 +1206,8 @@ tp_err_t tpCreateArcLineBlend(TP_STRUCT * const tp, TC_STRUCT * const prev_tc, T
     PmCartesian acc_bound, vel_bound;
 
     //Get machine limits
-    tpGetMachineAccelBounds(&acc_bound);
-    tpGetMachineVelBounds(&vel_bound);
+    tpGetMachineAccelBounds(tp, &acc_bound);
+    tpGetMachineVelBounds(tp, &vel_bound);
 
     //Populate blend geometry struct
     BlendGeom3 geom;
@@ -1357,8 +1357,8 @@ tp_err_t tpCreateArcArcBlend(TP_STRUCT * const tp, TC_STRUCT * const prev_tc, TC
     PmCartesian acc_bound, vel_bound;
 
     //Get machine limits
-    tpGetMachineAccelBounds(&acc_bound);
-    tpGetMachineVelBounds(&vel_bound);
+    tpGetMachineAccelBounds(tp, &acc_bound);
+    tpGetMachineVelBounds(tp, &vel_bound);
 
     //Populate blend geometry struct
     BlendGeom3 geom;
@@ -1519,8 +1519,8 @@ tp_err_t tpCreateLineLineBlend(TP_STRUCT * const tp, TC_STRUCT * const prev_tc,
     PmCartesian acc_bound, vel_bound;
 
     //Get machine limits
-    tpGetMachineAccelBounds(&acc_bound);
-    tpGetMachineVelBounds(&vel_bound);
+    tpGetMachineAccelBounds(tp, &acc_bound);
+    tpGetMachineVelBounds(tp, &vel_bound);
 
     // Setup blend data structures
     BlendGeom3 geom;
@@ -2036,7 +2036,7 @@ STATIC int tpSetupTangent(TP_STRUCT const * const tp,
 
     //TODO store this in TP struct instead?
     PmCartesian acc_bound;
-    tpGetMachineAccelBounds(&acc_bound);
+    tpGetMachineAccelBounds(tp, &acc_bound);
 
     PmCartesian acc_scale;
     findAccelScale(&acc_diff,&acc_bound,&acc_scale);

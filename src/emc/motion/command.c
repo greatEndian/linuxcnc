@@ -292,6 +292,47 @@ STATIC int inRange(EmcPose pos, int id, char *move_type)
     double targets[EMCMOT_MAX_AXIS];
     const char axis_letters[] = "XYZABCUVW";
 
+    /* ===== MCHAN MC24: secondary channels validate against THEIR OWN axis
+     * envelope and their MAPPED joints. The pose is in the channel's local
+     * letter space (identity-mapped joint subsets, see D2/MC6); the global
+     * axis module and the global kinematics belong to channel 0. */
+    if (mchan_active_channel != 0) {
+        const emcmot_channel_t *chn = &emcmotInternal->chan[mchan_active_channel];
+        double tgt[EMCMOT_MAX_AXIS];
+        int ax;
+        tgt[0] = pos.tran.x; tgt[1] = pos.tran.y; tgt[2] = pos.tran.z;
+        tgt[3] = pos.a; tgt[4] = pos.b; tgt[5] = pos.c;
+        tgt[6] = pos.u; tgt[7] = pos.v; tgt[8] = pos.w;
+        for (ax = 0; ax < EMCMOT_MAX_AXIS; ax++) {
+            int jn = chn->axis_to_joint[ax];
+            if (jn < 0) {
+                continue;   /* letter not mapped on this channel */
+            }
+            if (tgt[ax] > chn->axis_lim[ax].max_pos_limit) {
+                reportError(_("ch%d: %s move on line %d would exceed %c's %s limit"),
+                    mchan_active_channel, move_type, id, axis_letters[ax], _("positive"));
+                in_range = 0;
+            }
+            if (tgt[ax] < chn->axis_lim[ax].min_pos_limit) {
+                reportError(_("ch%d: %s move on line %d would exceed %c's %s limit"),
+                    mchan_active_channel, move_type, id, axis_letters[ax], _("negative"));
+                in_range = 0;
+            }
+            /* mapped joint envelope (identity mapping: local value = joint) */
+            joint = &joints[jn];
+            if (GET_JOINT_ACTIVE_FLAG(joint)) {
+                if (tgt[ax] > joint->max_pos_limit ||
+                    tgt[ax] < joint->min_pos_limit) {
+                    reportError(_("ch%d: %s move on line %d exceeds joint %d's limits"),
+                        mchan_active_channel, move_type, id, jn);
+                    in_range = 0;
+                }
+            }
+        }
+        return in_range;
+    }
+    /* ===== END MCHAN MC24 (channel 0 = legacy path below) ============== */
+
     if (EMCMOT_MAX_AXIS != 9) {
         rtapi_print_msg(RTAPI_MSG_ERR, "BUG: %s(): invalid number of axes defined", __func__);
     } else {
@@ -565,11 +606,10 @@ void emcmotCommandHandler_locked(void *arg, long servo_period)
 	    case EMCMOT_SET_JOINT_JERK_LIMIT:
 	    case EMCMOT_SET_JOINT_MOTOR_OFFSET:
 	    case EMCMOT_SET_JOINT_COMP:
-	    case EMCMOT_SET_AXIS_POSITION_LIMITS:
-	    case EMCMOT_SET_AXIS_VEL_LIMIT:
-	    case EMCMOT_SET_AXIS_ACC_LIMIT:
+	    /* (MC24: SET_AXIS position/vel/acc/jerk limits are now CHANNEL-
+	     * scoped and fall through; only the locking-joint config - jog/
+	     * indexer machinery, MC3 - stays channel-0-owned.) */
 	    case EMCMOT_SET_AXIS_LOCKING_JOINT:
-	    case EMCMOT_SET_AXIS_JERK_LIMIT:
 	    case EMCMOT_SET_SPINDLE_PARAMS:
 	    case EMCMOT_OVERRIDE_LIMITS:
 	    case EMCMOT_JOINT_ACTIVATE:
@@ -2292,8 +2332,15 @@ void emcmotCommandHandler_locked(void *arg, long servo_period)
             if ((emcmotCommand->axis < 0) || (emcmotCommand->axis >= EMCMOT_MAX_AXIS)) {
                 break;
             }
-            axis_set_min_pos_limit(emcmotCommand->axis, emcmotCommand->minLimit);
-            axis_set_max_pos_limit(emcmotCommand->axis, emcmotCommand->maxLimit);
+            /* MCHAN MC24: ch0 = legacy axis module; secondary channels get
+             * their own envelope (used by inRange for their moves) */
+            if (mchan_active_channel == 0) {
+                axis_set_min_pos_limit(emcmotCommand->axis, emcmotCommand->minLimit);
+                axis_set_max_pos_limit(emcmotCommand->axis, emcmotCommand->maxLimit);
+            } else {
+                emcmotInternal->chan[mchan_active_channel].axis_lim[emcmotCommand->axis].min_pos_limit = emcmotCommand->minLimit;
+                emcmotInternal->chan[mchan_active_channel].axis_lim[emcmotCommand->axis].max_pos_limit = emcmotCommand->maxLimit;
+            }
 	    break;
 
         case EMCMOT_SET_AXIS_VEL_LIMIT:
@@ -2305,8 +2352,20 @@ void emcmotCommandHandler_locked(void *arg, long servo_period)
             if ((emcmotCommand->axis < 0) || (emcmotCommand->axis >= EMCMOT_MAX_AXIS)) {
                 break;
             }
-            axis_set_vel_limit(emcmotCommand->axis, emcmotCommand->vel);
-            axis_set_ext_offset_vel_limit(emcmotCommand->axis, emcmotCommand->ext_offset_vel);
+            /* MCHAN MC24: per-channel; the channel TP's XYZ planning bound
+             * follows (ch0's tracks the legacy axis module exactly) */
+            if (mchan_active_channel == 0) {
+                axis_set_vel_limit(emcmotCommand->axis, emcmotCommand->vel);
+                axis_set_ext_offset_vel_limit(emcmotCommand->axis, emcmotCommand->ext_offset_vel);
+            } else {
+                emcmotInternal->chan[mchan_active_channel].axis_lim[emcmotCommand->axis].vel_limit = emcmotCommand->vel;
+            }
+            {
+                TP_STRUCT *ctp = &emcmotInternal->chan[mchan_active_channel].coord_tp;
+                if (emcmotCommand->axis == 0) ctp->xyz_vel_bound.x = emcmotCommand->vel;
+                else if (emcmotCommand->axis == 1) ctp->xyz_vel_bound.y = emcmotCommand->vel;
+                else if (emcmotCommand->axis == 2) ctp->xyz_vel_bound.z = emcmotCommand->vel;
+            }
             break;
 
         case EMCMOT_SET_AXIS_ACC_LIMIT:
@@ -2318,8 +2377,18 @@ void emcmotCommandHandler_locked(void *arg, long servo_period)
             if ((emcmotCommand->axis < 0) || (emcmotCommand->axis >= EMCMOT_MAX_AXIS)) {
                 break;
             }
-            axis_set_acc_limit(emcmotCommand->axis, emcmotCommand->acc);
-            axis_set_ext_offset_acc_limit(emcmotCommand->axis, emcmotCommand->ext_offset_acc);
+            if (mchan_active_channel == 0) {
+                axis_set_acc_limit(emcmotCommand->axis, emcmotCommand->acc);
+                axis_set_ext_offset_acc_limit(emcmotCommand->axis, emcmotCommand->ext_offset_acc);
+            } else {
+                emcmotInternal->chan[mchan_active_channel].axis_lim[emcmotCommand->axis].acc_limit = emcmotCommand->acc;
+            }
+            {
+                TP_STRUCT *ctp = &emcmotInternal->chan[mchan_active_channel].coord_tp;
+                if (emcmotCommand->axis == 0) ctp->xyz_acc_bound.x = emcmotCommand->acc;
+                else if (emcmotCommand->axis == 1) ctp->xyz_acc_bound.y = emcmotCommand->acc;
+                else if (emcmotCommand->axis == 2) ctp->xyz_acc_bound.z = emcmotCommand->acc;
+            }
             break;
 
 		case EMCMOT_SET_AXIS_JERK_LIMIT:
@@ -2331,7 +2400,11 @@ void emcmotCommandHandler_locked(void *arg, long servo_period)
 			if ((emcmotCommand->axis < 0) || (emcmotCommand->axis >= EMCMOT_MAX_AXIS)) {
 			break;
 			}
-			axis_set_jerk_limit(emcmotCommand->axis, emcmotCommand->jerk);
+			if (mchan_active_channel == 0) {
+				axis_set_jerk_limit(emcmotCommand->axis, emcmotCommand->jerk);
+			} else {
+				emcmotInternal->chan[mchan_active_channel].axis_lim[emcmotCommand->axis].jerk_limit = emcmotCommand->jerk;
+			}
 			break;
 
         case EMCMOT_SET_AXIS_LOCKING_JOINT:
