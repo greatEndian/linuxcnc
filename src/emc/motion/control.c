@@ -1357,14 +1357,21 @@ static void mchan_run_secondary(long period)
 }
 
 /* MCHAN (MC2b): fill each secondary channel's status snapshot. Runs at the
- * very end of the controller cycle, after the global status is complete
- * (tail written). Body = global snapshot (joints/spindles/io stay shared
- * machine state) + overlay of every channel-scoped field from the channel's
- * own TP/mailbox/state. Same single-writer head/tail split-read protocol as
- * the legacy status: head is bumped first, the body copy SKIPS the tail
- * byte, tail is written last. Never runs at num_channels=1 (D7). */
+ * very end of the controller cycle, after the global status is complete.
+ *
+ * H7 TEAR FIX (found by the user dragging ch0's feed slider - ch0 values
+ * flashed in ch1's GUI): the snapshot is now BUILT in a motmod-PRIVATE
+ * staging buffer (global copy + channel overlays where no reader can see
+ * them) and PUBLISHED to shmem in one short head/tail-protected window.
+ * The old code overlaid in place: a reader landing between the global
+ * copy and the overlay consumed raw channel-0 values, and the legacy
+ * "head==tail inside one copy" check cannot detect a writer that starts
+ * AND finishes inside the reader's copy (proven: 3580 undetected tears /
+ * 44M reads with mc2c-tear). The reader side (usrmotintf) now does a real
+ * seqlock check to close that half. Never runs at num_channels=1 (D7). */
 static void mchan_update_status(void)
 {
+    static emcmot_status_t st;	/* staging - private to motmod */
     for (int ch = 1; ch < motion_num_channels; ch++) {
 	emcmot_channel_t *c = &emcmotInternal->chan[ch];
 	TP_STRUCT *tp = &c->coord_tp;
@@ -1375,84 +1382,87 @@ static void mchan_update_status(void)
 	const size_t off_post = offsetof(emcmot_status_t, external_offsets_applied);
 	int enabled = GET_MOTION_ENABLE_FLAG();
 	int inpos;
+	unsigned char h;
 
-	cs->head++;
-	/* global snapshot in two ranges so the tail byte is never written
-	 * with a stale value mid-copy */
-	memcpy((char *)cs + off_body, (char *)emcmotStatus + off_body,
-	       off_tail - off_body);
-	memcpy((char *)cs + off_post, (char *)emcmotStatus + off_post,
-	       sizeof(emcmot_status_t) - off_post);
+	/* ---- build the channel's view in private staging ---- */
+	memcpy(&st, emcmotStatus, sizeof(emcmot_status_t));
 
 	/* command handshake: this channel's mailbox echo */
-	cs->commandEcho = mb->commandEcho;
-	cs->commandNumEcho = mb->commandNumEcho;
-	cs->commandStatus = mb->commandStatus;
+	st.commandEcho = mb->commandEcho;
+	st.commandNumEcho = mb->commandNumEcho;
+	st.commandStatus = mb->commandStatus;
 
 	/* channel-scoped traj state from the channel's TP (MC19/21/22/28) */
-	cs->feed_scale = tp->feed_scale;
-	cs->rapid_scale = tp->rapid_scale;
-	cs->net_feed_scale = tp->net_feed_scale;
-	cs->enables_new = tp->enables_new;
-	cs->enables_queued = tp->enables_queued;
-	cs->planner_type = tp->planner_type;
-	cs->scurve_peak_scale = tp->scurve_peak_scale;
-	cs->distance_to_go = tp->distance_to_go;
-	cs->dtg = tp->dtg;
-	cs->current_vel = tp->current_vel;
-	cs->requested_vel = tp->requested_vel;
-	cs->current_acc = tp->current_acc;
-	cs->current_jerk = tp->current_jerk;
-	cs->current_dir = tp->current_dir;
-	cs->spindleSync = tp->spindleSync;
-	cs->tcqlen = tp->tcqlen;
-	cs->tag = tp->execTag;
-	cs->vel = tp->vMax;
-	cs->acc = tp->aMax;
-	cs->id = tpGetExecId(tp);
-	cs->depth = tpQueueDepth(tp);
-	cs->activeDepth = tpActiveDepth(tp);
-	cs->queueFull = tcqFull(&tp->queue);
-	cs->motionType = tpGetMotionType(tp);
-	cs->paused = tp->pausing;
-	cs->tool_offset = c->tool_offset;
+	st.feed_scale = tp->feed_scale;
+	st.rapid_scale = tp->rapid_scale;
+	st.net_feed_scale = tp->net_feed_scale;
+	st.enables_new = tp->enables_new;
+	st.enables_queued = tp->enables_queued;
+	st.planner_type = tp->planner_type;
+	st.scurve_peak_scale = tp->scurve_peak_scale;
+	st.distance_to_go = tp->distance_to_go;
+	st.dtg = tp->dtg;
+	st.current_vel = tp->current_vel;
+	st.requested_vel = tp->requested_vel;
+	st.current_acc = tp->current_acc;
+	st.current_jerk = tp->current_jerk;
+	st.current_dir = tp->current_dir;
+	st.spindleSync = tp->spindleSync;
+	st.tcqlen = tp->tcqlen;
+	st.tag = tp->execTag;
+	st.vel = tp->vMax;
+	st.acc = tp->aMax;
+	st.id = tpGetExecId(tp);
+	st.depth = tpQueueDepth(tp);
+	st.activeDepth = tpActiveDepth(tp);
+	st.queueFull = tcqFull(&tp->queue);
+	st.motionType = tpGetMotionType(tp);
+	st.paused = tp->pausing;
+	st.tool_offset = c->tool_offset;
 
 	/* channel pose: commanded from its TP; "actual" composed from the
 	 * mapped joints' feedback through the identity letter map */
-	tpGetPos(tp, &cs->carte_pos_cmd);
-	cs->carte_pos_cmd_ok = 1;
-	ZERO_EMC_POSE(cs->carte_pos_fb);
+	tpGetPos(tp, &st.carte_pos_cmd);
+	st.carte_pos_cmd_ok = 1;
+	ZERO_EMC_POSE(st.carte_pos_fb);
 	for (int ax = 0; ax < EMCMOT_MAX_AXIS; ax++) {
 	    int jn = c->axis_to_joint[ax];
 	    if (jn >= 0)
-		mchan_pose_set_axis(&cs->carte_pos_fb, ax, joints[jn].pos_fb);
+		mchan_pose_set_axis(&st.carte_pos_fb, ax, joints[jn].pos_fb);
 	}
-	cs->carte_pos_fb_ok = 1;
+	st.carte_pos_fb_ok = 1;
 
 	/* virtual mode (recorded by the MC28 gate) + per-channel flags.
 	 * inpos = this channel's planner idle; enable/estop = global floor */
 	inpos = (!tpIsMoving(tp) && tpQueueDepth(tp) == 0);
-	cs->motion_state = !enabled ? EMCMOT_MOTION_DISABLED :
+	st.motion_state = !enabled ? EMCMOT_MOTION_DISABLED :
 	    (c->virt_state == EMCMOT_MOTION_DISABLED) ? EMCMOT_MOTION_FREE :
 	    c->virt_state;
-	cs->motionFlag = 0;
+	st.motionFlag = 0;
 	if (enabled)
-	    cs->motionFlag |= EMCMOT_MOTION_ENABLE_BIT;
+	    st.motionFlag |= EMCMOT_MOTION_ENABLE_BIT;
 	if (inpos)
-	    cs->motionFlag |= EMCMOT_MOTION_INPOS_BIT;
+	    st.motionFlag |= EMCMOT_MOTION_INPOS_BIT;
 	if (c->virt_state == EMCMOT_MOTION_COORD)
-	    cs->motionFlag |= EMCMOT_MOTION_COORD_BIT;
+	    st.motionFlag |= EMCMOT_MOTION_COORD_BIT;
 	else if (c->virt_state == EMCMOT_MOTION_TELEOP)
-	    cs->motionFlag |= EMCMOT_MOTION_TELEOP_BIT;
+	    st.motionFlag |= EMCMOT_MOTION_TELEOP_BIT;
 
 	/* not this channel's: ch0's jog machinery and probe (MC25 day-1
 	 * refusal) must not leak into the channel's task decisions */
-	cs->overrideLimitMask = 0;
-	cs->jogging_active = 0;
-	cs->probing = 0;
-	cs->probeTripped = 0;
+	st.overrideLimitMask = 0;
+	st.jogging_active = 0;
+	st.probing = 0;
+	st.probeTripped = 0;
 
-	cs->tail = cs->head;
+	/* ---- publish: head -> body (tail byte skipped) -> tail ---- */
+	h = (unsigned char)(cs->head + 1);
+	cs->head = h;
+	memcpy((char *)cs + off_body, (char *)&st + off_body,
+	       off_tail - off_body);
+	memcpy((char *)cs + off_post, (char *)&st + off_post,
+	       sizeof(emcmot_status_t) - off_post);
+	cs->tail = h;
     }
 }
 
