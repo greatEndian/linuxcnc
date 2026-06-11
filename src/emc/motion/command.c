@@ -1239,6 +1239,65 @@ void emcmotCommandHandler_locked(void *arg, long servo_period)
 			emcmotStatus->planner_type = emcmotCommand->planner_type;
 		}
 		break;
+
+	case EMCMOT_SET_CHANNEL_AXIS_MAP:
+		/* MCHAN (MC6): map this channel's axis letter (.axis, 0=X..8=W in
+		 * the channel's own letter space) onto a global joint (.joint;
+		 * -1 unmaps). Sent by the channel's task at config time through
+		 * its own mailbox. Ownership (D6): a secondary channel claims the
+		 * joint; claiming one owned by another secondary channel is
+		 * rejected (MC9 pattern - clean GUI error, never silent). */
+		rtapi_print_msg(RTAPI_MSG_DBG, "SET_CHANNEL_AXIS_MAP ch=%d axis=%d joint=%d",
+			mchan_active_channel, emcmotCommand->axis, emcmotCommand->joint);
+		{
+			int map_ax = emcmotCommand->axis;
+			int map_jn = emcmotCommand->joint;
+			if (map_ax < 0 || map_ax >= EMCMOT_MAX_AXIS) {
+				reportError(_("channel %d: axis index %d out of range (0..%d)"),
+					mchan_active_channel, map_ax, EMCMOT_MAX_AXIS - 1);
+				(*mchan_echo_status) = EMCMOT_COMMAND_INVALID_PARAMS;
+				break;
+			}
+			if (map_jn >= ALL_JOINTS) {
+				reportError(_("channel %d: joint %d out of range (machine has %d joints)"),
+					mchan_active_channel, map_jn, ALL_JOINTS);
+				(*mchan_echo_status) = EMCMOT_COMMAND_INVALID_PARAMS;
+				break;
+			}
+			if (map_jn < 0) {
+				/* unmap; release ownership back to channel 0 if this
+				 * channel held the joint and no other of its axes maps it */
+				int old_jn = emcmotInternal->chan[mchan_active_channel].axis_to_joint[map_ax];
+				emcmotInternal->chan[mchan_active_channel].axis_to_joint[map_ax] = -1;
+				if (old_jn >= 0 && mchan_active_channel != 0
+				    && emcmotInternal->joint_owner[old_jn] == mchan_active_channel) {
+					int still_used = 0;
+					for (int ax2 = 0; ax2 < EMCMOT_MAX_AXIS; ax2++) {
+						if (emcmotInternal->chan[mchan_active_channel].axis_to_joint[ax2] == old_jn) {
+							still_used = 1;
+							break;
+						}
+					}
+					if (!still_used) {
+						emcmotInternal->joint_owner[old_jn] = 0;
+					}
+				}
+				break;
+			}
+			if (mchan_active_channel != 0) {
+				int owner = emcmotInternal->joint_owner[map_jn];
+				if (owner != 0 && owner != mchan_active_channel) {
+					reportError(_("channel %d: joint %d is already owned by channel %d"),
+						mchan_active_channel, map_jn, owner);
+					(*mchan_echo_status) = EMCMOT_COMMAND_INVALID_PARAMS;
+					break;
+				}
+				emcmotInternal->joint_owner[map_jn] = mchan_active_channel;
+			}
+			emcmotInternal->chan[mchan_active_channel].axis_to_joint[map_ax] = map_jn;
+		}
+		break;
+
 				
 	case EMCMOT_PAUSE:
 	    /* pause the motion */
