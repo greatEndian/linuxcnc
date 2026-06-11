@@ -1141,7 +1141,7 @@ void emcmotCommandHandler_locked(void *arg, long servo_period)
 					emcmotCommand->ini_maxvel,
 					emcmotCommand->acc,
 					emcmotCommand->ini_maxjerk, 
-					emcmotStatus->enables_new,
+					emcmotInternal->chan[mchan_active_channel].coord_tp.enables_new, /* MCHAN MC22/MC20 */
 					issue_atspeed,
 					emcmotCommand->turn,
 					emcmotCommand->tag);
@@ -1201,7 +1201,7 @@ void emcmotCommandHandler_locked(void *arg, long servo_period)
                             emcmotCommand->center, emcmotCommand->normal,
                             emcmotCommand->turn, emcmotCommand->motion_type,
                             emcmotCommand->vel, emcmotCommand->ini_maxvel,
-                            emcmotCommand->acc, emcmotCommand->ini_maxjerk, emcmotStatus->enables_new,
+                            emcmotCommand->acc, emcmotCommand->ini_maxjerk, emcmotInternal->chan[mchan_active_channel].coord_tp.enables_new, /* MCHAN MC22/MC20 */
 			    issue_atspeed, emcmotCommand->tag);
         if (res_addcircle < 0) {
             reportError(_("can't add circular move at line %d, error code %d"),
@@ -1509,11 +1509,16 @@ void emcmotCommandHandler_locked(void *arg, long servo_period)
 	case EMCMOT_FEED_SCALE:
 	    /* override speed */
 	    /* can happen at any time */
+	    /* MCHAN MC22: scoped to the requesting channel; ch0 mirrors to the
+	     * legacy status field for the GUI/status view. */
 	    rtapi_print_msg(RTAPI_MSG_DBG, "FEED SCALE");
 	    if (emcmotCommand->scale < 0.0) {
 		emcmotCommand->scale = 0.0;	/* clamp it */
 	    }
-	    emcmotStatus->feed_scale = emcmotCommand->scale;
+	    emcmotInternal->chan[mchan_active_channel].coord_tp.feed_scale = emcmotCommand->scale;
+	    if (mchan_active_channel == 0) {
+		emcmotStatus->feed_scale = emcmotCommand->scale;
+	    }
 	    break;
 
 	case EMCMOT_RAPID_SCALE:
@@ -1523,7 +1528,10 @@ void emcmotCommandHandler_locked(void *arg, long servo_period)
 	    if (emcmotCommand->scale < 0.0) {
 		emcmotCommand->scale = 0.0;	/* clamp it */
 	    }
-	    emcmotStatus->rapid_scale = emcmotCommand->scale;
+	    emcmotInternal->chan[mchan_active_channel].coord_tp.rapid_scale = emcmotCommand->scale;
+	    if (mchan_active_channel == 0) {
+		emcmotStatus->rapid_scale = emcmotCommand->scale;
+	    }
 	    break;
 
 	case EMCMOT_FS_ENABLE:
@@ -1531,10 +1539,13 @@ void emcmotCommandHandler_locked(void *arg, long servo_period)
 	    /* can happen at any time */
 	    if ( emcmotCommand->mode != 0 ) {
 		rtapi_print_msg(RTAPI_MSG_DBG, "FEED SCALE: ON");
-		emcmotStatus->enables_new |= FS_ENABLED;
+		emcmotInternal->chan[mchan_active_channel].coord_tp.enables_new |= FS_ENABLED;
             } else {
 		rtapi_print_msg(RTAPI_MSG_DBG, "FEED SCALE: OFF");
-		emcmotStatus->enables_new &= ~FS_ENABLED;
+		emcmotInternal->chan[mchan_active_channel].coord_tp.enables_new &= ~FS_ENABLED;
+	    }
+	    if (mchan_active_channel == 0) {
+		emcmotStatus->enables_new = emcmotInternal->chan[0].coord_tp.enables_new;
 	    }
 	    break;
 
@@ -1543,10 +1554,13 @@ void emcmotCommandHandler_locked(void *arg, long servo_period)
 	    /* can happen at any time */
 	    if ( emcmotCommand->mode != 0 ) {
 		rtapi_print_msg(RTAPI_MSG_DBG, "FEED HOLD: ENABLED");
-		emcmotStatus->enables_new |= FH_ENABLED;
+		emcmotInternal->chan[mchan_active_channel].coord_tp.enables_new |= FH_ENABLED;
             } else {
 		rtapi_print_msg(RTAPI_MSG_DBG, "FEED HOLD: DISABLED");
-		emcmotStatus->enables_new &= ~FH_ENABLED;
+		emcmotInternal->chan[mchan_active_channel].coord_tp.enables_new &= ~FH_ENABLED;
+	    }
+	    if (mchan_active_channel == 0) {
+		emcmotStatus->enables_new = emcmotInternal->chan[0].coord_tp.enables_new;
 	    }
 	    break;
 
@@ -1565,22 +1579,32 @@ void emcmotCommandHandler_locked(void *arg, long servo_period)
 	    /* can happen at any time */
 	    if ( emcmotCommand->mode != 0 ) {
 		rtapi_print_msg(RTAPI_MSG_DBG, "SPINDLE SCALE: ON");
-		emcmotStatus->enables_new |= SS_ENABLED;
+		emcmotInternal->chan[mchan_active_channel].coord_tp.enables_new |= SS_ENABLED;
             } else {
 		rtapi_print_msg(RTAPI_MSG_DBG, "SPINDLE SCALE: OFF");
-		emcmotStatus->enables_new &= ~SS_ENABLED;
+		emcmotInternal->chan[mchan_active_channel].coord_tp.enables_new &= ~SS_ENABLED;
+	    }
+	    if (mchan_active_channel == 0) {
+		emcmotStatus->enables_new = emcmotInternal->chan[0].coord_tp.enables_new;
 	    }
 	    break;
 
 	case EMCMOT_AF_ENABLE:
 	    /* enable/disable adaptive feedrate override from HAL pin */
 	    /* can happen at any time */
+	    /* MCHAN MC22 residual: the adaptive-feed HAL pin itself is single/
+	     * global and couples to ch0's TP reverse-run - until motion.N.*
+	     * pins (MC7) exist, AF only takes effect on channel 0 (see
+	     * process_inputs). The enable bit is still tracked per channel. */
 	    if ( emcmotCommand->flags != 0 ) {
 		rtapi_print_msg(RTAPI_MSG_DBG, "ADAPTIVE FEED: ON");
-		emcmotStatus->enables_new |= AF_ENABLED;
+		emcmotInternal->chan[mchan_active_channel].coord_tp.enables_new |= AF_ENABLED;
             } else {
 		rtapi_print_msg(RTAPI_MSG_DBG, "ADAPTIVE FEED: OFF");
-		emcmotStatus->enables_new &= ~AF_ENABLED;
+		emcmotInternal->chan[mchan_active_channel].coord_tp.enables_new &= ~AF_ENABLED;
+	    }
+	    if (mchan_active_channel == 0) {
+		emcmotStatus->enables_new = emcmotInternal->chan[0].coord_tp.enables_new;
 	    }
 	    break;
 
@@ -1753,7 +1777,7 @@ void emcmotCommandHandler_locked(void *arg, long servo_period)
 				emcmotCommand->ini_maxvel,
 				emcmotCommand->acc,
 				emcmotCommand->ini_maxjerk,
-				emcmotStatus->enables_new,
+				emcmotInternal->chan[mchan_active_channel].coord_tp.enables_new, /* MCHAN MC22/MC20 */
 				0,
 				-1,
 				emcmotCommand->tag)) {
@@ -1804,7 +1828,7 @@ void emcmotCommandHandler_locked(void *arg, long servo_period)
                                     emcmotCommand->ini_maxvel,
                                     emcmotCommand->acc,
 									emcmotCommand->ini_maxjerk,
-                                    emcmotStatus->enables_new,
+                                    emcmotInternal->chan[mchan_active_channel].coord_tp.enables_new, /* MCHAN MC22/MC20 */
                                     emcmotCommand->scale,
                                     emcmotCommand->tag);
         if (res_addtap < 0) {

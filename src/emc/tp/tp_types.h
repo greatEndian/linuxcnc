@@ -141,6 +141,18 @@ typedef struct {
                                channel's planner; mirrored to the global
                                emcmotStatus->planner_type for channel 0 only */
 
+    /* MCHAN MC22: feed/rapid override and enables are PER CHANNEL so one
+     * channel's override knob / feed-hold cannot scale another channel's
+     * motion. Commanded state is written by the (mailbox-routed) command
+     * handlers; net_feed_scale is composed each servo cycle by motion's
+     * process_inputs() from this state + the HAL hold pins. Channel 0
+     * mirrors to the legacy emcmotStatus fields. */
+    double feed_scale;          /* commanded feed override for this channel */
+    double rapid_scale;         /* commanded rapid override for this channel */
+    double net_feed_scale;      /* composed result, read by the TP run/queue code */
+    unsigned char enables_new;  /* commanded FS/SS/AF/FH enable bits */
+    unsigned char enables_queued; /* enables in effect for the executing segment */
+
 } TP_STRUCT;
 
 
