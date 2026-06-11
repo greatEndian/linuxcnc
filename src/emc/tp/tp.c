@@ -70,7 +70,11 @@ emcmot_hal_data_t *emcmot_hal_data;
  * sequentially (same single-threaded-context pattern as the per-channel
  * command mailboxes), so a module static is race-free. */
 static int tp_active_planner_type = 0;
-#define TP_LATCH_PLANNER(tp) (tp_active_planner_type = (tp)->planner_type)
+/* defined in sp_scurve.c (its reader; also linked standalone by motion-logger);
+ * 0.0 -> faithful 0.5 fallback */
+extern double tp_active_scurve_peak_scale;
+#define TP_LATCH_PLANNER(tp) (tp_active_planner_type = (tp)->planner_type, \
+                              tp_active_scurve_peak_scale = (tp)->scurve_peak_scale)
 #ifndef GET_TRAJ_PLANNER_TYPE
 #define GET_TRAJ_PLANNER_TYPE() (tp_active_planner_type)
 #endif
@@ -528,6 +532,7 @@ int tpInit(TP_STRUCT * const tp)
     tp->net_feed_scale = 1.0;
     tp->enables_new = FS_ENABLED | SS_ENABLED | FH_ENABLED;
     tp->enables_queued = tp->enables_new;
+    tp->scurve_peak_scale = 0.0;    /* unset -> sp_scurve faithful default */
     //Velocity limits
     tp->vLimit = 0.0;
     tp->ini_maxvel = 0.0;

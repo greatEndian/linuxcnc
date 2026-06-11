@@ -153,6 +153,11 @@ typedef struct {
     unsigned char enables_new;  /* commanded FS/SS/AF/FH enable bits */
     unsigned char enables_queued; /* enables in effect for the executing segment */
 
+    double scurve_peak_scale;   /* MCHAN MC21 (completion): per-channel G64 R
+                                   cornering scale; 0.0 = unset -> sp_scurve
+                                   falls back to the faithful 0.5 exactly like
+                                   the legacy zeroed-shmem window */
+
 } TP_STRUCT;
 
 
