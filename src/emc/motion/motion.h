@@ -770,6 +770,18 @@ typedef struct emcmot_channel_t {
      * feeds the single motion.tooloffset.* HAL pin set and the legacy
      * status view (per-channel pins/status = MC7/MC19 work). */
     EmcPose tool_offset;
+    /* MCHAN MC24: this channel's own axis-LETTER envelope (the legacy axis
+     * module remains channel 0's). Used by inRange() for secondary-channel
+     * moves; vel/acc also mirrored into the channel TP's xyz bounds. Zero
+     * until the channel's task configures them (same strictness as the
+     * legacy startup). */
+    struct {
+        double min_pos_limit;
+        double max_pos_limit;
+        double vel_limit;
+        double acc_limit;
+        double jerk_limit;
+    } axis_lim[EMCMOT_MAX_AXIS];
 } emcmot_channel_t;
 
 typedef struct emcmot_internal_t {

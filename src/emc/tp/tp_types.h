@@ -172,6 +172,14 @@ typedef struct {
     int spindleSync;
     int tcqlen;
 
+    /* MCHAN MC24: this channel's XYZ planning bounds (blend-arc geometry
+     * used to read the GLOBAL axis module's vel/acc limits - wrong envelope
+     * for any channel but 0). Written by the SET_AXIS_VEL/ACC_LIMIT command
+     * handlers: channel 0's mirror the legacy axis module values, secondary
+     * channels get their own. Zero until configured (= legacy startup). */
+    PmCartesian xyz_vel_bound;
+    PmCartesian xyz_acc_bound;
+
 } TP_STRUCT;
 
 
