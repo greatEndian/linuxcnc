@@ -446,6 +446,115 @@ STATIC int is_feed_type(int motion_type)
 
   This function runs with the emcmotCommand struct locked.
   */
+/* MCHAN MC3: jog a SECONDARY channel's owned joint with its own free
+ * planner, independent of channel 0's machine mode (Fanuc 2-path
+ * standard: jog one path while the other runs AUTO - D-MC3-4). The jog
+ * is joint-space through the channel's letter map (D-MC3-2; identity
+ * mapping makes it equal to world jog on these machines). Limits =
+ * intersection of the channel envelope (MC24) and the global joint
+ * limits. No axis_jog_abort_all() here - that is channel 0's jog
+ * machinery and must not be disturbed. */
+static void mchan_jog(int code)
+{
+    emcmot_channel_t *c = &emcmotInternal->chan[mchan_active_channel];
+    emcmot_joint_t *joint;
+    int ax = -1, jn = -1, i;
+    double lo, hi, vmax, amax, tmp;
+
+    if (emcmotCommand->joint >= 0) {
+	/* joint-flavored jog (GUI joint tab uses GLOBAL joint numbers) */
+	jn = emcmotCommand->joint;
+	if (jn >= ALL_JOINTS ||
+	    emcmotInternal->joint_owner[jn] != mchan_active_channel) {
+	    reportError(_("ch%d: joint %d is not this channel's (jog refused)"),
+		mchan_active_channel, jn);
+	    (*mchan_echo_status) = EMCMOT_COMMAND_INVALID_PARAMS;
+	    return;
+	}
+	for (i = 0; i < EMCMOT_MAX_AXIS; i++) {
+	    if (c->axis_to_joint[i] == jn) { ax = i; break; }
+	}
+    } else {
+	/* axis-flavored jog: the channel's OWN letter space */
+	ax = emcmotCommand->axis;
+	if (ax < 0 || ax >= EMCMOT_MAX_AXIS || c->axis_to_joint[ax] < 0) {
+	    reportError(_("ch%d: axis %d is not mapped on this channel (jog refused)"),
+		mchan_active_channel, ax);
+	    (*mchan_echo_status) = EMCMOT_COMMAND_INVALID_PARAMS;
+	    return;
+	}
+	jn = c->axis_to_joint[ax];
+    }
+    joint = &joints[jn];
+
+    if (!GET_MOTION_ENABLE_FLAG()) {
+	reportError(_("ch%d: can't jog when machine is not enabled"), mchan_active_channel);
+	(*mchan_echo_status) = EMCMOT_COMMAND_INVALID_COMMAND;
+	return;
+    }
+    if (*(emcmot_hal_data->jog_inhibit)) {
+	reportError(_("ch%d: cannot jog while jog-inhibit is active"), mchan_active_channel);
+	(*mchan_echo_status) = EMCMOT_COMMAND_INVALID_COMMAND;
+	return;
+    }
+    if (get_homing_is_active()) {
+	reportError(_("ch%d: can't jog while homing (homing is machine-global)"), mchan_active_channel);
+	(*mchan_echo_status) = EMCMOT_COMMAND_INVALID_COMMAND;
+	return;
+    }
+    if (c->virt_state == EMCMOT_MOTION_COORD &&
+	(tpQueueDepth(&c->coord_tp) || tpIsMoving(&c->coord_tp))) {
+	reportError(_("ch%d: running in auto/mdi - switch this channel to manual to jog"),
+	    mchan_active_channel);
+	(*mchan_echo_status) = EMCMOT_COMMAND_INVALID_COMMAND;
+	return;
+    }
+
+    /* effective travel = channel envelope intersect joint limits (D-MC3) */
+    lo = c->axis_lim[ax].min_pos_limit;
+    hi = c->axis_lim[ax].max_pos_limit;
+    if (joint->min_pos_limit > lo) lo = joint->min_pos_limit;
+    if (joint->max_pos_limit < hi) hi = joint->max_pos_limit;
+    vmax = fabs(emcmotCommand->vel);
+    if (vmax > joint->vel_limit) vmax = joint->vel_limit;
+    if (c->axis_lim[ax].vel_limit > 0 && vmax > c->axis_lim[ax].vel_limit)
+	vmax = c->axis_lim[ax].vel_limit;
+    amax = joint->acc_limit;
+    if (c->axis_lim[ax].acc_limit > 0 && amax > c->axis_lim[ax].acc_limit)
+	amax = c->axis_lim[ax].acc_limit;
+
+    switch (code) {
+    case EMCMOT_JOG_CONT:
+	joint->free_tp.pos_cmd = (emcmotCommand->vel > 0.0) ? hi : lo;
+	break;
+    case EMCMOT_JOG_INCR:
+	if (emcmotCommand->vel > 0.0)
+	    tmp = joint->free_tp.pos_cmd + emcmotCommand->offset;
+	else
+	    tmp = joint->free_tp.pos_cmd - emcmotCommand->offset;
+	if (tmp > hi || tmp < lo) return;	/* silently stop at limit (legacy) */
+	joint->free_tp.pos_cmd = tmp;
+	break;
+    default:	/* EMCMOT_JOG_ABS */
+	tmp = emcmotCommand->offset;
+	if (tmp > hi) tmp = hi;
+	if (tmp < lo) tmp = lo;
+	joint->free_tp.pos_cmd = tmp;
+	break;
+    }
+    joint->free_tp.status = 0;
+    joint->free_tp.max_vel = vmax;
+    joint->free_tp.max_acc = amax;
+    joint->kb_jjog_active = 1;
+    joint->free_tp.enable = 1;
+    SET_JOINT_ERROR_FLAG(joint, 0);
+    /* jogging implies manual mode for this channel (a GUI in joint tab
+     * may jog before its task sent FREE) */
+    if (c->virt_state != EMCMOT_MOTION_FREE &&
+	c->virt_state != EMCMOT_MOTION_TELEOP)
+	c->virt_state = EMCMOT_MOTION_FREE;
+}
+
 void emcmotCommandHandler_locked(void *arg, long servo_period)
 {
     (void)arg;
@@ -542,25 +651,82 @@ void emcmotCommandHandler_locked(void *arg, long servo_period)
 	    case EMCMOT_JOINT_ACTIVATE:
 	    case EMCMOT_JOINT_DEACTIVATE:
 	    case EMCMOT_FREE:
-	    case EMCMOT_COORD:
-	    case EMCMOT_TELEOP:
-		/* MC2b: still ack+ignore for the MACHINE mode machine (MC3),
-		 * but record the request as the channel's VIRTUAL mode so the
-		 * channel's status view follows its own stack's commands -
-		 * stock task waits for the mode it set to show up in status. */
-		emcmotInternal->chan[mchan_active_channel].virt_state =
-		    (emcmotCommand->command == EMCMOT_FREE) ? EMCMOT_MOTION_FREE :
-		    (emcmotCommand->command == EMCMOT_COORD) ? EMCMOT_MOTION_COORD :
-		    EMCMOT_MOTION_TELEOP;
-		rtapi_print_msg(RTAPI_MSG_DBG,
-		    "ch%d: mode command %d recorded as virtual mode (machine modes stay channel 0's)",
-		    mchan_active_channel, emcmotCommand->command);
+	    case EMCMOT_TELEOP: {
+		/* MC3 (D-MC3-1/3): the channel's OWN mode machine, Fanuc-
+		 * independent. Leaving COORD is only legal when this
+		 * channel's planner is idle; the owned joints are then
+		 * handed to the per-joint jog planners at their current
+		 * commanded positions and their interpolators drained
+		 * (channel-local mirror of set_operating_mode). */
+		emcmot_channel_t *c3 = &emcmotInternal->chan[mchan_active_channel];
+		if (c3->virt_state == EMCMOT_MOTION_COORD &&
+		    (tpQueueDepth(&c3->coord_tp) || tpIsMoving(&c3->coord_tp))) {
+		    reportError(_("ch%d: cannot leave coord mode while running"),
+			mchan_active_channel);
+		    (*mchan_echo_status) = EMCMOT_COMMAND_INVALID_COMMAND;
+		    return;
+		}
+		if (c3->virt_state == EMCMOT_MOTION_COORD) {
+		    for (int a3 = 0; a3 < EMCMOT_MAX_AXIS; a3++) {
+			int j3 = c3->axis_to_joint[a3];
+			if (j3 < 0) continue;
+			joints[j3].free_tp.curr_pos = joints[j3].pos_cmd;
+			joints[j3].free_tp.enable = 0;
+			cubicDrain(&(joints[j3].cubic));
+		    }
+		}
+		c3->virt_state = (emcmotCommand->command == EMCMOT_FREE) ?
+		    EMCMOT_MOTION_FREE : EMCMOT_MOTION_TELEOP;
 		return;
-	    case EMCMOT_SET_TELEOP_VECTOR:
+	    }
+	    case EMCMOT_COORD: {
+		/* MC3: FREE->COORD resync = the channel TP starts exactly
+		 * where its joints are (zero-jump rule, pattern proven at
+		 * enable-resync and first light) */
+		emcmot_channel_t *c3 = &emcmotInternal->chan[mchan_active_channel];
+		if (c3->virt_state != EMCMOT_MOTION_COORD) {
+		    EmcPose p3;
+		    ZERO_EMC_POSE(p3);
+		    int any3 = 0;
+		    for (int a3 = 0; a3 < EMCMOT_MAX_AXIS; a3++) {
+			int j3 = c3->axis_to_joint[a3];
+			if (j3 < 0) continue;
+			switch (a3) {
+			case 0: p3.tran.x = joints[j3].pos_cmd; break;
+			case 1: p3.tran.y = joints[j3].pos_cmd; break;
+			case 2: p3.tran.z = joints[j3].pos_cmd; break;
+			case 3: p3.a = joints[j3].pos_cmd; break;
+			case 4: p3.b = joints[j3].pos_cmd; break;
+			case 5: p3.c = joints[j3].pos_cmd; break;
+			case 6: p3.u = joints[j3].pos_cmd; break;
+			case 7: p3.v = joints[j3].pos_cmd; break;
+			default: p3.w = joints[j3].pos_cmd; break;
+			}
+			joints[j3].free_tp.enable = 0;
+			cubicDrain(&(joints[j3].cubic));
+			any3 = 1;
+		    }
+		    if (any3) tpSetPos(&c3->coord_tp, &p3);
+		}
+		c3->virt_state = EMCMOT_MOTION_COORD;
+		return;
+	    }
 	    case EMCMOT_JOG_CONT:
 	    case EMCMOT_JOG_INCR:
 	    case EMCMOT_JOG_ABS:
-	    case EMCMOT_JOG_ABORT:
+		/* MC3: per-channel jog (D-MC3-2/4) */
+		mchan_jog(emcmotCommand->command);
+		return;
+	    case EMCMOT_JOG_ABORT: {
+		/* stop THIS channel's jogs only */
+		emcmot_channel_t *c3 = &emcmotInternal->chan[mchan_active_channel];
+		for (int a3 = 0; a3 < EMCMOT_MAX_AXIS; a3++) {
+		    int j3 = c3->axis_to_joint[a3];
+		    if (j3 >= 0) joints[j3].free_tp.enable = 0;
+		}
+		return;
+	    }
+	    case EMCMOT_SET_TELEOP_VECTOR:
 	    case EMCMOT_CLEAR_PROBE_FLAGS:
 		rtapi_print_msg(RTAPI_MSG_DBG,
 		    "ch%d: global-scope command %d acknowledged and ignored (channel 0 owns machine config/modes)",

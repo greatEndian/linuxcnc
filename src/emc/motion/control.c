@@ -1332,6 +1332,30 @@ static void mchan_run_secondary(long period)
 	    tpRunCycle(&c->coord_tp, period);
 	    continue;
 	}
+	/* MC3 (D-MC3-5): the channel's OWN mode decides how its joints
+	 * are driven. FREE/TELEOP = per-joint jog planners (legacy free-
+	 * mode pattern, no cubic); COORD = the channel TP below. The
+	 * machine-disable case never reaches here (executor is enable-
+	 * gated; D5 floor holds the joints). */
+	if (c->virt_state == EMCMOT_MOTION_FREE ||
+	    c->virt_state == EMCMOT_MOTION_TELEOP) {
+	    for (int ax = 0; ax < EMCMOT_MAX_AXIS; ax++) {
+		int jn = c->axis_to_joint[ax];
+		if (jn < 0) continue;
+		emcmot_joint_t *j = &joints[jn];
+		j->free_tp.max_jerk = j->jerk_limit;
+		simple_tp_update(&(j->free_tp), servo_period);
+		j->jerk_cmd = j->free_tp.curr_jerk;
+		j->pos_cmd = j->free_tp.curr_pos;
+		j->vel_cmd = j->free_tp.curr_vel;
+		j->acc_cmd = 0.0;
+		j->coarse_pos = j->free_tp.curr_pos;
+		if (!j->free_tp.active) {
+		    j->kb_jjog_active = 0;
+		}
+	    }
+	    continue;
+	}
 	while (cubicNeedNextPoint(&(joints[ref_jn].cubic))) {
 	    EmcPose pos;
 	    tpRunCycle(&c->coord_tp, period);
