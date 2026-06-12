@@ -80,8 +80,14 @@ RT/motion core:
       of the 1 ms budget; ~33% of an eventual 250 us period. Permanent budget
       tripwire test committed; re-measure after every motion-core change.
  MC2  task<->motion handshake is single mailbox    -> per-channel cmd/status areas
- MC3  per-channel free/coord/teleop state machines -> hairiest piece; explicit per-ch
-      (jog ch2 while ch1 runs a program)              state struct; sim-gated early
+ MC3  per-channel free/coord/teleop state machines -> JOG+MODES DONE
+      2026-06-12 (D-MC3-1..6): chan[].virt_state transitions w/ idle
+      refusal + zero-jump resync both directions; per-channel jog
+      (joint- and axis-flavored via letter map, envelope-intersect-joint
+      clamps, own free_tp drive in the mode-aware executor); jog one
+      channel while the other runs AUTO = proven live. Task layer
+      additionally refuses mid-run mode switches (stock). Remaining
+      MC3 scope: per-channel homing interplay = MC4, handwheels = MC7.
  MC4  homing module is global                      -> phase 1: home only when ALL idle
  MC5  estop vs abort semantics                     -> D5 (global floor + HAL policy)
  MC6  per-channel kins mapping                     -> INI joint map, identity subsets
