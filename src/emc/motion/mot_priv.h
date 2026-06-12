@@ -129,6 +129,14 @@ typedef struct {
     hal_bit_t *feed_hold;	/* RPI: set TRUE to stop motion maskable with g53 P1*/
     hal_bit_t *feed_inhibit;	/* RPI: set TRUE to stop motion (non maskable)*/
     hal_bit_t *homing_inhibit;	/* RPI: set TRUE to inhibit homing*/
+    hal_bit_t *mchan_homing_own_idle; /* MCHAN D-MC4 HOMING_INTERLOCK:
+                                FALSE (default) = 'all' - homing starts
+                                only when EVERY channel is idle (safe);
+                                TRUE = 'own' - only the requesting
+                                channel must be idle (re-home one head
+                                while the other cuts; integrator enables
+                                per machine once homing directions are
+                                proven safe / MC31 zones exist) */
     hal_bit_t *jog_inhibit;	/* RPI: set TRUE to inhibit jogging*/
     hal_bit_t *jog_stop;	/* RPI: set TRUE to stop jogging following accel values*/
     hal_bit_t *jog_stop_immediate;	/* RPI: set TRUE to stop jogging immediately*/
@@ -281,6 +289,8 @@ extern void emcmot_config_change(void);
  * serving (0 outside handler passes). reportError() routes channel-
  * scoped messages to that channel's own error ring (MC30). */
 extern int mchan_active_channel;
+/* MCHAN: owner of the current (exclusive) homing session */
+extern int mchan_homing_session_ch;
 extern void reportError(const char *fmt, ...) __attribute__((format(printf,1,2))); /* Use the rtapi_print call */
 
 

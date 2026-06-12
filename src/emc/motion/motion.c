@@ -560,6 +560,7 @@ static int init_hal_io(void)
     CALL_CHECK(hal_pin_bit_newf(HAL_IN, &(emcmot_hal_data->feed_hold), mot_comp_id, "motion.feed-hold"));
     CALL_CHECK(hal_pin_bit_newf(HAL_IN, &(emcmot_hal_data->feed_inhibit), mot_comp_id, "motion.feed-inhibit"));
     CALL_CHECK(hal_pin_bit_newf(HAL_IN, &(emcmot_hal_data->homing_inhibit), mot_comp_id, "motion.homing-inhibit"));
+    CALL_CHECK(hal_pin_bit_newf(HAL_IN, &(emcmot_hal_data->mchan_homing_own_idle), mot_comp_id, "motion.mchan-homing-own-idle"));
     CALL_CHECK(hal_pin_bit_newf(HAL_IN, &(emcmot_hal_data->jog_inhibit), mot_comp_id, "motion.jog-inhibit"));
     CALL_CHECK(hal_pin_bit_newf(HAL_IN, &(emcmot_hal_data->jog_stop), mot_comp_id, "motion.jog-stop"));
     CALL_CHECK(hal_pin_bit_newf(HAL_IN, &(emcmot_hal_data->jog_stop_immediate), mot_comp_id, "motion.jog-stop-immediate"));
@@ -698,6 +699,7 @@ static int init_hal_io(void)
     *(emcmot_hal_data->feed_hold) = 0;
     *(emcmot_hal_data->feed_inhibit) = 0;
     *(emcmot_hal_data->homing_inhibit) = 0;
+    *(emcmot_hal_data->mchan_homing_own_idle) = 0;	/* MCHAN: default = 'all' interlock */
     *(emcmot_hal_data->jog_inhibit) = 0;
     *(emcmot_hal_data->jog_stop) = 0;
     *(emcmot_hal_data->jog_stop_immediate) = 0;
