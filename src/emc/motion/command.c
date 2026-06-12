@@ -86,6 +86,17 @@ static int rehomeAll;
  * below; both are selected per mailbox by emcmotCommandHandler(). Outside a
  * handler pass these always hold the channel-0 (legacy) view. */
 static int mchan_active_channel = 0;
+
+/* MCHAN: a SECONDARY channel's command failure must NEVER set the GLOBAL
+ * motion error flag - channel 0's task reads that flag as RCS ERROR and
+ * ABORTS ITS RUNNING PROGRAM (user-found at the lathe bring-up: a ch1
+ * limit refusal killed ch0's cut). The refusal still reaches the failing
+ * channel through its own mailbox echo status + reportError; its own TP
+ * is aborted where the legacy code did so. Channel 0 keeps the historic
+ * global flag behavior (D7). */
+#define SET_MOTION_ERROR_FLAG_SCOPED(v) do { \
+	if (mchan_active_channel == 0) SET_MOTION_ERROR_FLAG(v); \
+    } while (0)
 static cmd_code_t   *mchan_echo_cmd;
 static int          *mchan_echo_num;
 static cmd_status_t *mchan_echo_status;
@@ -1236,19 +1247,19 @@ void emcmotCommandHandler_locked(void *arg, long servo_period)
 	    if ((mchan_active_channel == 0 && !GET_MOTION_COORD_FLAG()) || !GET_MOTION_ENABLE_FLAG()) {
 		reportError(_("need to be enabled, in coord mode for linear move"));
 		(*mchan_echo_status) = EMCMOT_COMMAND_INVALID_COMMAND;
-		SET_MOTION_ERROR_FLAG(1);
+		SET_MOTION_ERROR_FLAG_SCOPED(1);
 		break;
 	    } else if (!inRange(emcmotCommand->pos, emcmotCommand->id, "Linear")) {
 		reportError(_("invalid params in linear command"));
 		(*mchan_echo_status) = EMCMOT_COMMAND_INVALID_PARAMS;
 		tpAbort(&emcmotInternal->chan[mchan_active_channel].coord_tp);
-		SET_MOTION_ERROR_FLAG(1);
+		SET_MOTION_ERROR_FLAG_SCOPED(1);
 		break;
 	    } else if (!limits_ok()) {
 		reportError(_("can't do linear move with limits exceeded"));
 		(*mchan_echo_status) = EMCMOT_COMMAND_INVALID_PARAMS;
 		tpAbort(&emcmotInternal->chan[mchan_active_channel].coord_tp);
-		SET_MOTION_ERROR_FLAG(1);
+		SET_MOTION_ERROR_FLAG_SCOPED(1);
 		break;
 	    }
 
@@ -1280,7 +1291,7 @@ void emcmotCommandHandler_locked(void *arg, long servo_period)
                     emcmotCommand->id, res_addline);
             (*mchan_echo_status) = EMCMOT_COMMAND_BAD_EXEC;
             tpAbort(&emcmotInternal->chan[mchan_active_channel].coord_tp);
-            SET_MOTION_ERROR_FLAG(1);
+            SET_MOTION_ERROR_FLAG_SCOPED(1);
             break;
         } else if (res_addline != 0) {
             //TODO make this hand-shake more explicit
@@ -1306,18 +1317,18 @@ void emcmotCommandHandler_locked(void *arg, long servo_period)
 	    if ((mchan_active_channel == 0 && !GET_MOTION_COORD_FLAG()) || !GET_MOTION_ENABLE_FLAG()) {
 		reportError(_("need to be enabled, in coord mode for circular move"));
 		(*mchan_echo_status) = EMCMOT_COMMAND_INVALID_COMMAND;
-		SET_MOTION_ERROR_FLAG(1);
+		SET_MOTION_ERROR_FLAG_SCOPED(1);
 		break;
 	    } else if (!inRange(emcmotCommand->pos, emcmotCommand->id, "Circular")) {
 		(*mchan_echo_status) = EMCMOT_COMMAND_INVALID_PARAMS;
 		tpAbort(&emcmotInternal->chan[mchan_active_channel].coord_tp);
-		SET_MOTION_ERROR_FLAG(1);
+		SET_MOTION_ERROR_FLAG_SCOPED(1);
 		break;
 	    } else if (!limits_ok()) {
 		reportError(_("can't do circular move with limits exceeded"));
 		(*mchan_echo_status) = EMCMOT_COMMAND_INVALID_PARAMS;
 		tpAbort(&emcmotInternal->chan[mchan_active_channel].coord_tp);
-		SET_MOTION_ERROR_FLAG(1);
+		SET_MOTION_ERROR_FLAG_SCOPED(1);
 		break;
 	    }
             if(emcmotStatus->atspeed_next_feed) {
@@ -1337,7 +1348,7 @@ void emcmotCommandHandler_locked(void *arg, long servo_period)
                     emcmotCommand->id, res_addcircle);
 		(*mchan_echo_status) = EMCMOT_COMMAND_BAD_EXEC;
 		tpAbort(&emcmotInternal->chan[mchan_active_channel].coord_tp);
-		SET_MOTION_ERROR_FLAG(1);
+		SET_MOTION_ERROR_FLAG_SCOPED(1);
 		break;
         } else if (res_addcircle != 0) {
             //FIXME! This is a band-aid for a single issue, but there may be
@@ -1839,18 +1850,18 @@ void emcmotCommandHandler_locked(void *arg, long servo_period)
 	    if (!GET_MOTION_COORD_FLAG() || !GET_MOTION_ENABLE_FLAG()) {
 		reportError(_("need to be enabled, in coord mode for probe move"));
 		(*mchan_echo_status) = EMCMOT_COMMAND_INVALID_COMMAND;
-		SET_MOTION_ERROR_FLAG(1);
+		SET_MOTION_ERROR_FLAG_SCOPED(1);
 		break;
 	    } else if (!inRange(emcmotCommand->pos, emcmotCommand->id, "Probe")) {
 		(*mchan_echo_status) = EMCMOT_COMMAND_INVALID_PARAMS;
 		tpAbort(&emcmotInternal->chan[mchan_active_channel].coord_tp);
-		SET_MOTION_ERROR_FLAG(1);
+		SET_MOTION_ERROR_FLAG_SCOPED(1);
 		break;
 	    } else if (!limits_ok()) {
 		reportError(_("can't do probe move with limits exceeded"));
 		(*mchan_echo_status) = EMCMOT_COMMAND_INVALID_PARAMS;
 		tpAbort(&emcmotInternal->chan[mchan_active_channel].coord_tp);
-		SET_MOTION_ERROR_FLAG(1);
+		SET_MOTION_ERROR_FLAG_SCOPED(1);
 		break;
 	    } else if (!(emcmotCommand->probe_type & 1)) {
                 // if suppress errors = off...
@@ -1867,7 +1878,7 @@ void emcmotCommandHandler_locked(void *arg, long servo_period)
 
                     (*mchan_echo_status) = EMCMOT_COMMAND_BAD_EXEC;
                     tpAbort(&emcmotInternal->chan[mchan_active_channel].coord_tp);
-                    SET_MOTION_ERROR_FLAG(1);
+                    SET_MOTION_ERROR_FLAG_SCOPED(1);
                     break;
                 }
             }
@@ -1888,7 +1899,7 @@ void emcmotCommandHandler_locked(void *arg, long servo_period)
 		reportError(_("can't add probe move"));
 		(*mchan_echo_status) = EMCMOT_COMMAND_BAD_EXEC;
 		tpAbort(&emcmotInternal->chan[mchan_active_channel].coord_tp);
-		SET_MOTION_ERROR_FLAG(1);
+		SET_MOTION_ERROR_FLAG_SCOPED(1);
 		break;
 	    } else {
 		emcmotStatus->probing = 1;
@@ -1909,18 +1920,18 @@ void emcmotCommandHandler_locked(void *arg, long servo_period)
 	    if (!GET_MOTION_COORD_FLAG() || !GET_MOTION_ENABLE_FLAG()) {
 		reportError(_("need to be enabled, in coord mode for rigid tap move"));
 		(*mchan_echo_status) = EMCMOT_COMMAND_INVALID_COMMAND;
-		SET_MOTION_ERROR_FLAG(1);
+		SET_MOTION_ERROR_FLAG_SCOPED(1);
 		break;
 	    } else if (!inRange(emcmotCommand->pos, emcmotCommand->id, "Rigid tap")) {
 		(*mchan_echo_status) = EMCMOT_COMMAND_INVALID_PARAMS;
 		tpAbort(&emcmotInternal->chan[mchan_active_channel].coord_tp);
-		SET_MOTION_ERROR_FLAG(1);
+		SET_MOTION_ERROR_FLAG_SCOPED(1);
 		break;
 	    } else if (!limits_ok()) {
 		reportError(_("can't do rigid tap move with limits exceeded"));
 		(*mchan_echo_status) = EMCMOT_COMMAND_INVALID_PARAMS;
 		tpAbort(&emcmotInternal->chan[mchan_active_channel].coord_tp);
-		SET_MOTION_ERROR_FLAG(1);
+		SET_MOTION_ERROR_FLAG_SCOPED(1);
 		break;
 	    }
 
@@ -1940,7 +1951,7 @@ void emcmotCommandHandler_locked(void *arg, long servo_period)
             reportError(_("can't add rigid tap move at line %d, error code %d"),
                     emcmotCommand->id, res_addtap);
 		tpAbort(&emcmotInternal->chan[mchan_active_channel].coord_tp);
-		SET_MOTION_ERROR_FLAG(1);
+		SET_MOTION_ERROR_FLAG_SCOPED(1);
 		break;
 	    } else {
 		SET_MOTION_ERROR_FLAG(0);
