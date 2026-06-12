@@ -206,12 +206,21 @@ static rtapi_msg_handler_t old_handler = NULL;
 void reportError(const char *fmt, ...)
 {
     va_list args;
+    /* MCHAN MC30: an error raised while serving a SECONDARY channel's
+     * command goes to THAT channel's ring, so it appears in that
+     * channel's GUI - not stolen by whichever task polls first.
+     * Machine-level errors (control loop, mchan_active_channel == 0)
+     * keep the legacy ring = channel 0's console (D7). */
+    emcmot_error_t *ring = emcmotError;
+    if (mchan_active_channel > 0 && 0 != emcmotStruct) {
+	ring = &emcmotStruct->mchan_error[mchan_active_channel];
+    }
 
     va_start(args, fmt);
 
-    //Report trough emcmotError() so they are shown
+    //Report trough the (per-channel MC30) error ring so they are shown
     //in the gui in the configured language.
-    emcmotErrorPutfv(emcmotError, fmt, args);
+    emcmotErrorPutfv(ring, fmt, args);
 
     va_end(args);
 
@@ -927,6 +936,10 @@ static int init_comm_buffers(void)
 
     /* init error struct */
     emcmotErrorInit(emcmotError);
+    /* MCHAN MC30: per-channel error rings */
+    for (int ech = 0; ech < EMCMOT_MAX_CHANNELS; ech++) {
+	emcmotErrorInit(&emcmotStruct->mchan_error[ech]);
+    }
 
     /*
      * DO NOT init the command struct!

@@ -49,6 +49,15 @@
 	 * stack's usrmotReadEmcmotStatus() reads its channel's block here;
 	 * channel 0 keeps the legacy `status` field above. [0] unused. */
 	struct emcmot_status_t mchan_status[EMCMOT_MAX_CHANNELS];
+	/* MCHAN MC30: per-channel ERROR rings. The single legacy ring is a
+	 * one-reader queue: with N milltasks polling it, whichever task
+	 * reads first STEALS the message - the user saw channel 1's limit
+	 * refusals popping up in channel 0's GUI. Channel-scoped errors
+	 * (reportError during that channel's command handling) now go to
+	 * the channel's own ring; machine-level errors (control loop,
+	 * RTAPI error prints) stay on the legacy ring = channel 0's
+	 * console, the machine owner's panel. [0] unused. */
+	struct emcmot_error_t mchan_error[EMCMOT_MAX_CHANNELS];
     } emcmot_struct_t;
 
 

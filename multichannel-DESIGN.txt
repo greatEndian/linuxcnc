@@ -239,11 +239,14 @@ PHASE-2 FACTS (operational):
  - mchan-chmap currently lives in ~/cnc-dev/mchan-dev/ (graduate into
    bin/ at the next deploy milestone).
 NEW REGISTER ITEMS:
- MC30 emcmot error ring is single-reader global: N milltasks STEAL each
-      other's reportError messages -> per-channel error rings (or tag +
-      filter) in phase 3. CONFIRMED LIVE 2026-06-11: ch1's MC24 refusal
-      message was drained by ch0's error queue (reproducer: provoke a
-      motion-side refusal on ch1, 'get error' on ch0).             [MEDIUM]
+ MC30 emcmot error ring single-reader steal -> DONE 2026-06-12: per-
+      channel error rings (mchan_error[] appended to emcmot shmem);
+      reportError() routes by mchan_active_channel (channel-scoped
+      refusals -> the channel's OWN ring/GUI); machine-level errors
+      (control loop, RTAPI prints) stay on the legacy ring = channel
+      0's console (the machine owner's panel - documented semantics).
+      Proof: 3x ch1 limit refusals -> all messages on ch1's queue while
+      ch0 polled concurrently read ERROR OK every time.            [DONE]
  MC31 RT INTERFERENCE ZONES (the machine's collision GUARANTEE): per-
       channel geometric zones checked in motion every servo cycle,
       feed-hold/alarm BEFORE contact - Fanuc Tool Post Interference

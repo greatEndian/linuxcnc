@@ -85,7 +85,7 @@ static int rehomeAll;
  * chan[mchan_active_channel].coord_tp, and echoes through the pointer trio
  * below; both are selected per mailbox by emcmotCommandHandler(). Outside a
  * handler pass these always hold the channel-0 (legacy) view. */
-static int mchan_active_channel = 0;
+int mchan_active_channel = 0;	/* exported: reportError routes by it (MC30) */
 
 /* MCHAN: a SECONDARY channel's command failure must NEVER set the GLOBAL
  * motion error flag - channel 0's task reads that flag as RCS ERROR and

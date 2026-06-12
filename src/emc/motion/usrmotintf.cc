@@ -268,13 +268,20 @@ int usrmotReadEmcmotError(char *e)
     if (emcmotError == NULL) {
 	return -1;
     }
+    /* MCHAN MC30: a secondary channel's stack drains its OWN error ring
+     * (channel-scoped refusals land there); the legacy ring stays the
+     * machine console read by channel 0's stack. */
+    emcmot_error_t *ring = emcmotError;
+    if (usrmot_channel != 0 && 0 != emcmotStruct) {
+	ring = &emcmotStruct->mchan_error[usrmot_channel];
+    }
 
     char data[EMCMOT_ERROR_LEN];
     struct dbuf d;
     dbuf_init(&d, (unsigned char *)data, EMCMOT_ERROR_LEN);
 
     /* returns 0 if something, -1 if not */
-    int result = emcmotErrorGet(emcmotError, data);
+    int result = emcmotErrorGet(ring, data);
     if(result < 0) return result;
 
     struct dbuf_iter di;
