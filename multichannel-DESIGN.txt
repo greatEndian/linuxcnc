@@ -193,6 +193,29 @@ PHASING (no code until explicitly started)
  5. Axis exchange / composite control (ownership handoff commands)
  [deferred] A-layer: instance-key patch + cross-domain bridge (D8)
 
+MC3 DESIGN DECISIONS (2026-06-12, user-approved q1/q2/q3 = yes/yes/yes)
+------------------------------------------------------------------------
+ D-MC3-1 MODE MODEL: per-channel INDEPENDENT modes (Fanuc 2-path
+   standard, web-verified; Siemens BAG = channels in a group share the
+   mode). Per-channel chan[].virt_state is the BASE MECHANISM; Siemens-
+   style coupling is a CONSTRAINT ON TOP, reserved as
+       [MCHAN] MODE_GROUPS = 0+1     (absent = Fanuc independent;
+                                      mixed setups = real multi-BAG)
+   implemented later in the single mode-request funnel (MC28 gate):
+   group switch fans out when ALL members idle, else clean refusal;
+   fault/stop coupling stays D5's HAL-pin policy. STANDING RULE: no new
+   code may assume "the machine has one mode" - key everything off
+   chan[].virt_state and the door stays open.
+ D-MC3-2 JOG SPACE: joint-space jog on the channel's OWNED joints via
+   its letter map (identity machines: == world jog). Per-channel teleop/
+   axis-module clone deferred to non-identity per-channel kins (future).
+ D-MC3-3 TRANSITIONS (channel-local mirror of set_operating_mode):
+   COORD->FREE only when the channel TP is idle, else refusal;
+   FREE->COORD resync = tpSetPos(mapped joints) + cubic prime;
+   machine disable (D5) overrides all; re-enable resync exists.
+ D-MC3-4 JOG DURING OTHER CHANNEL'S AUTO: allowed by default (Fanuc);
+   iron protection = proximity display today, MC31 zones later.
+
 PHASE 2 RESULT (2026-06-11) - "it exists" ACHIEVED
 ---------------------------------------------------
 Two complete STOCK userspace stacks (linuxcncsvr + milltask + AXIS GUI,
