@@ -238,10 +238,41 @@ PHASE-2 FACTS (operational):
    letterless in ch0's space (AXIS now tolerates letterless joints).
  - mchan-chmap currently lives in ~/cnc-dev/mchan-dev/ (graduate into
    bin/ at the next deploy milestone).
-NEW REGISTER ITEM:
+NEW REGISTER ITEMS:
  MC30 emcmot error ring is single-reader global: N milltasks STEAL each
       other's reportError messages -> per-channel error rings (or tag +
-      filter) in phase 3.                                          [MEDIUM]
+      filter) in phase 3. CONFIRMED LIVE 2026-06-11: ch1's MC24 refusal
+      message was drained by ch0's error queue (reproducer: provoke a
+      motion-side refusal on ch1, 'get error' on ch0).             [MEDIUM]
+ MC31 RT INTERFERENCE ZONES (the machine's collision GUARANTEE): per-
+      channel geometric zones checked in motion every servo cycle,
+      feed-hold/alarm BEFORE contact - Fanuc Tool Post Interference
+      Check / Siemens protection areas equivalent. The combined preview
+      (below) is the HUMAN aid; MC31 is the guard. Phase 3/4.        [HIGH]
+
+COMBINED MULTI-CHANNEL PREVIEW (built 2026-06-11, ~/cnc-dev/mchan-dev/)
+------------------------------------------------------------------------
+User-approved schema (file format = API; a future graphical configurator
+emits exactly these keys):
+  [CHANNEL] ORIGIN = x y z   ; channel origin in the MACHINE world frame
+            ORIENT = rx ry rz; deg, Rz*Ry*Rx (opposed heads etc.)
+            COLOR  = R,G,B   ; 8-bit preview color
+  [MCHAN]   INTERFERE = 0+1  ; declared who-may-meet intent
+            PROXIMITY_WARN = 25  ; live distance warn radius, mm
+Workspace boxes are DERIVED ([AXIS_*] limits + ORIGIN, never duplicated);
+mchan-lint computes the real overlap matrix and cross-checks INTERFERE
+(intent vs geometry, plain-language output).
+Tools: mchan-preview.py (per-channel interp canon extraction -> world
+frame JSON; numeric selftest) + mchan-preview-view.py (pure-Tk combined
+viewer: static paths per channel color, envelope boxes, computed shared
+zones in red, triads; --live mode = per-channel NML status, tool markers
+with real tool geometry, trails, auto re-extraction of loaded programs,
+live tool-to-tool distance with warn radius).
+Reference machine embodying it all: lathe-ch0/ch1.ini = 2-spindle lathe,
+2x XYZC (8 joints), ORIGIN 500, world X 200..300 = part-handover zone.
+KEY TRUTH (documented for operators): spatial path overlap is necessary
+but NOT sufficient for collision - TIME coincidence decides; the live
+view shows the now, MC31 zones give the guarantee.
 
 FINALIZATION TASKS (do at project end, before publishing)
 ----------------------------------------------------------
