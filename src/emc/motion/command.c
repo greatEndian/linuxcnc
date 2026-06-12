@@ -530,6 +530,54 @@ STATIC int is_feed_type(int motion_type)
 
   This function runs with the emcmotCommand struct locked.
   */
+/* MCHAN D-MC4: per-channel homing helpers. One global homing engine,
+ * scoped per session by the permit mask; sessions are exclusive
+ * machine-wide (get_homing_is_active gate). */
+static int mchan_chan_idle(int ch)
+{
+    if (ch == 0)
+	return (emcmotStatus->depth == 0) && GET_MOTION_INPOS_FLAG();
+    return !tpIsMoving(&emcmotInternal->chan[ch].coord_tp)
+	&& tpQueueDepth(&emcmotInternal->chan[ch].coord_tp) == 0;
+}
+
+/* HOMING_INTERLOCK (user-approved d2): pin motion.mchan-homing-own-idle
+ * FALSE = 'all' (default, safe), TRUE = 'own' (re-home one head while
+ * the other cuts - shared zone guarded only by the operator/proximity
+ * display until MC31 zones exist). */
+static int mchan_homing_interlock_ok(int req_ch)
+{
+    if (*(emcmot_hal_data->mchan_homing_own_idle)) {
+	if (!mchan_chan_idle(req_ch)) {
+	    reportError(_("ch%d: cannot home - this channel is not idle"), req_ch);
+	    return 0;
+	}
+	return 1;
+    }
+    for (int c = 0; c < motion_num_channels; c++) {
+	if (!mchan_chan_idle(c)) {
+	    reportError(_("ch%d: cannot home - channel %d is not idle (HOMING_INTERLOCK=all)"),
+		req_ch, c);
+	    return 0;
+	}
+    }
+    return 1;
+}
+
+/* MCHAN: which channel owns the current homing session (sessions are
+ * exclusive). Channel-scoped sessions must NOT flip the GLOBAL mode on
+ * completion - that is channel 0's legacy behavior only. */
+int mchan_homing_session_ch = 0;
+
+static unsigned mchan_home_mask(int ch)
+{
+    unsigned m = 0;
+    for (int j = 0; j < ALL_JOINTS; j++) {
+	if (emcmotInternal->joint_owner[j] == ch) m |= 1u << j;
+    }
+    return m;
+}
+
 /* MCHAN MC3: jog a SECONDARY channel's owned joint with its own free
  * planner, independent of channel 0's machine mode (Fanuc 2-path
  * standard: jog one path while the other runs AUTO - D-MC3-4). The jog
@@ -824,22 +872,74 @@ void emcmotCommandHandler_locked(void *arg, long servo_period)
 		    mchan_active_channel);
 		(*mchan_echo_status) = EMCMOT_COMMAND_INVALID_COMMAND;
 		return;
-	    case EMCMOT_JOINT_UNHOME:
-		/* MC4 + D3: stock task UNHOMES on every state transition
-		 * (estop/machine-on, emcJointUnhome(-2)) - refusing would
-		 * break a stock secondary stack's power-up sequence. The
-		 * machine's homing state is channel 0's, so ack+ignore. */
-		rtapi_print_msg(RTAPI_MSG_DBG,
-		    "ch%d: JOINT_UNHOME acknowledged and ignored (homing state is channel 0's)",
-		    mchan_active_channel);
+	    case EMCMOT_JOINT_UNHOME: {
+		/* MC4/d1 + G28.3: REAL but CHANNEL-SCOPED unhome.
+		 * -1 = all of this channel's joints, -2 = its VOLATILE
+		 * joints (stock task sends -2 on state transitions - now
+		 * correctly scoped instead of ignored), >=0 = one owned
+		 * joint. set_unhomed() keeps its own moving/homing guards. */
+		int ujn = emcmotCommand->joint;
+		if (ujn >= 0) {
+		    if (emcmotInternal->joint_owner[ujn] != mchan_active_channel) {
+			reportError(_("ch%d: joint %d is not this channel's (unhome refused)"),
+			    mchan_active_channel, ujn);
+			(*mchan_echo_status) = EMCMOT_COMMAND_INVALID_PARAMS;
+			return;
+		    }
+		    set_unhomed(ujn, emcmotStatus->motion_state);
+		    return;
+		}
+		for (int j4 = 0; j4 < ALL_JOINTS; j4++) {
+		    if (emcmotInternal->joint_owner[j4] != mchan_active_channel)
+			continue;
+		    if (ujn == -1 || get_home_is_volatile(j4))
+			set_unhomed(j4, emcmotStatus->motion_state);
+		}
 		return;
-	    case EMCMOT_JOINT_HOME:
-		/* MC4: homing is machine-global; an operator-initiated home
-		 * from a secondary GUI must fail VISIBLY */
-		reportError(_("ch%d: homing is machine-global - home from channel 0"),
-		    mchan_active_channel);
-		(*mchan_echo_status) = EMCMOT_COMMAND_INVALID_COMMAND;
+	    }
+	    case EMCMOT_JOINT_HOME: {
+		/* MC4/d1: PER-CHANNEL homing - this channel's GUI homes
+		 * THIS channel's joints only (one global engine, scoped
+		 * by the permit mask; sessions exclusive machine-wide) */
+		emcmot_channel_t *c4 = &emcmotInternal->chan[mchan_active_channel];
+		int hjn = emcmotCommand->joint;
+		if (!GET_MOTION_ENABLE_FLAG()) {
+		    reportError(_("ch%d: can't home when machine is not enabled"), mchan_active_channel);
+		    (*mchan_echo_status) = EMCMOT_COMMAND_INVALID_COMMAND;
+		    return;
+		}
+		if (*(emcmot_hal_data->homing_inhibit)) {
+		    reportError(_("ch%d: homing denied by motion.homing-inhibit"), mchan_active_channel);
+		    (*mchan_echo_status) = EMCMOT_COMMAND_INVALID_COMMAND;
+		    return;
+		}
+		if (get_homing_is_active()) {
+		    reportError(_("ch%d: another homing session is running - homing sessions are exclusive"), mchan_active_channel);
+		    (*mchan_echo_status) = EMCMOT_COMMAND_INVALID_COMMAND;
+		    return;
+		}
+		if (c4->virt_state == EMCMOT_MOTION_COORD &&
+		    (tpQueueDepth(&c4->coord_tp) || tpIsMoving(&c4->coord_tp))) {
+		    reportError(_("ch%d: running - switch this channel to manual to home"), mchan_active_channel);
+		    (*mchan_echo_status) = EMCMOT_COMMAND_INVALID_COMMAND;
+		    return;
+		}
+		if (!mchan_homing_interlock_ok(mchan_active_channel)) {
+		    (*mchan_echo_status) = EMCMOT_COMMAND_INVALID_COMMAND;
+		    return;
+		}
+		if (hjn >= 0 &&
+		    emcmotInternal->joint_owner[hjn] != mchan_active_channel) {
+		    reportError(_("ch%d: joint %d is not this channel's (home refused)"),
+			mchan_active_channel, hjn);
+		    (*mchan_echo_status) = EMCMOT_COMMAND_INVALID_PARAMS;
+		    return;
+		}
+		set_home_permit_mask(mchan_home_mask(mchan_active_channel));
+		mchan_homing_session_ch = mchan_active_channel;
+		do_home_joint(hjn);
 		return;
+	    }
 	    case EMCMOT_SET_SWITCHKINS_TYPE:
 		/* MC29 day-1 rule: the kins flip affects every channel's
 		 * joints. Identity (G49, stateless - sent by every toolchange
@@ -2053,6 +2153,23 @@ void emcmotCommandHandler_locked(void *arg, long servo_period)
 		break;
 	    }
 
+	    /* MCHAN d1: channel 0's Home All is SYMMETRIC - it homes only
+	     * the joints channel 0 owns (= everything unclaimed). With one
+	     * channel that is ALL joints = legacy bit-identical (D7). */
+	    if (motion_num_channels > 1) {
+		if (joint_num >= 0 && emcmotInternal->joint_owner[joint_num] != 0) {
+		    reportError(_("joint %d belongs to channel %d - home it from that channel"),
+			joint_num, emcmotInternal->joint_owner[joint_num]);
+		    return;
+		}
+		if (!mchan_homing_interlock_ok(0)) {
+		    return;
+		}
+		set_home_permit_mask(mchan_home_mask(0));
+	    } else {
+		set_home_permit_mask(~0u);
+	    }
+	    mchan_homing_session_ch = 0;
 	    // Negative joint_num specifies homeall
 	    do_home_joint(joint_num);
 	    break;

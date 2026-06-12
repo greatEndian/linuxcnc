@@ -56,6 +56,10 @@ void do_home_joint(int jno);
 // per-joint controls
 void do_cancel_homing(int jno);
 void set_unhomed(int jno,motion_state_t motstate);
+/* MCHAN: scope the next homing session to these joints (bitmask;
+ * all-ones = legacy). See homing.c home_permit_mask. */
+void set_home_permit_mask(unsigned mask);
+int  get_home_is_volatile(int jno);
 
 //---------------------------------------------------------------------
 // QUERIES

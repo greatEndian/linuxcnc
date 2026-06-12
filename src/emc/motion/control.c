@@ -286,7 +286,14 @@ void emcmotController(void *arg, long period)
     }
     if (   (emcmotStatus->motion_state == EMCMOT_MOTION_FREE)
         && do_homing()) {
-        switch_to_teleop_mode();
+        /* MCHAN: only CHANNEL 0's homing session may flip the GLOBAL
+         * mode on completion (legacy behavior); a secondary channel's
+         * session finishing must leave the machine state alone (it
+         * polluted the global mode to TELEOP otherwise - found in the
+         * MC4 acceptance run) */
+        if (mchan_homing_session_ch == 0) {
+            switch_to_teleop_mode();
+        }
     }
 
     /* PLANNER_SWITCH_DEFER (reversible): apply a latched PLANNER_TYPE switch once the
@@ -1347,6 +1354,19 @@ static void mchan_pose_set_axis(EmcPose *p, int ax, double v)
  * interpolate. Loop body never runs at num_channels=1. */
 static void mchan_run_secondary(long period)
 {
+    /* MCHAN D-MC4: a SECONDARY channel's homing session must progress
+     * even when the GLOBAL state is not FREE (HOMING_INTERLOCK=own lets
+     * channel 0 keep running). The legacy do_homing() call only fires in
+     * the global FREE state; this one covers the rest. Called
+     * UNCONDITIONALLY (not gated on homing-active): a freshly requested
+     * sequence is not "active" until do_homing() runs it once -
+     * chicken-and-egg found in the MC4 acceptance. Idle cost is a switch
+     * on HOME_SEQUENCE_IDLE. The permit mask limits the engine to the
+     * session's joints; the owned joints' homing moves execute through
+     * this executor's FREE branch below. */
+    if (emcmotStatus->motion_state != EMCMOT_MOTION_FREE) {
+	do_homing();
+    }
     for (int ch = 1; ch < motion_num_channels; ch++) {
 	emcmot_channel_t *c = &emcmotInternal->chan[ch];
 	int ref_jn = -1;

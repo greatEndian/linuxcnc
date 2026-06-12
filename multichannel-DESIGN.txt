@@ -88,7 +88,18 @@ RT/motion core:
       channel while the other runs AUTO = proven live. Task layer
       additionally refuses mid-run mode switches (stock). Remaining
       MC3 scope: per-channel homing interplay = MC4, handwheels = MC7.
- MC4  homing module is global                      -> phase 1: home only when ALL idle
+ MC4  homing module is global -> PER-CHANNEL HOMING DONE 2026-06-12
+      (d1-d4 user-approved): ONE global engine scoped per session by a
+      permit mask (homemod joint_in_sequence filter); each channel's
+      Home All homes ITS OWN joints (symmetric incl ch0 = unclaimed);
+      UNHOME channel-scoped (-1/-2/joint, G28.3 backbone); sessions
+      exclusive; HOMING_INTERLOCK all|own = pin
+      motion.mchan-homing-own-idle (default all); own-idle PROVEN: ch1
+      homed while ch0's program ran. Channel sessions do NOT flip the
+      global teleop mode. POWER RULE documented: every channel's task
+      enforces the D5 estop floor -> release estop on ALL panels first.
+      MC4b (per-path G28-triggered referencing) = G28.2/GCODE_HOMING
+      interp bridge, next increment.
  MC5  estop vs abort semantics                     -> D5 (global floor + HAL policy)
  MC6  per-channel kins mapping                     -> INI joint map, identity subsets
  MC7  motion.* HAL pin collisions                  -> motion.N.* + ch0 legacy aliases
