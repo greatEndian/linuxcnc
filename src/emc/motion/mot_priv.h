@@ -278,6 +278,10 @@ extern void refresh_jog_limits(emcmot_joint_t *joint,int joint_num);
 extern void clearHomes(int joint_num);
 
 extern void emcmot_config_change(void);
+/* MCHAN: which channel's mailbox the command handler is currently
+ * serving (0 outside handler passes). reportError() routes channel-
+ * scoped messages to that channel's own error ring (MC30). */
+extern int mchan_active_channel;
 extern void reportError(const char *fmt, ...) __attribute__((format(printf,1,2))); /* Use the rtapi_print call */
 
 
