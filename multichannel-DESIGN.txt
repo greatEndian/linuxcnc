@@ -276,6 +276,12 @@ view shows the now, MC31 zones give the guarantee.
 
 FINALIZATION TASKS (do at project end, before publishing)
 ----------------------------------------------------------
+ F2. COMMISSIONING VERIFICATOR (user note 2026-06-12, explicitly deferred
+     to finalization): integrators need a guided tool to commission the
+     AXES and verify the GEOMETRICAL PREVIEW setup (ORIGIN/ORIENT truth
+     vs the real iron, per-channel envelope sanity, chuck/spindle axis
+     conventions). mchan-lint + mchan-preview check are the seeds; the
+     verificator wraps them into a commissioning procedure. NOT scheduled.
  F1. RENAMING (user request 2026-06-11): replace the vendor names in ALL
      project-owned text - this document, notes.txt, code comments, future
      docs - as follows:  "Fanuc" -> "Fanuq",  "Siemens" -> "Siemenz".
