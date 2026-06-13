@@ -1352,12 +1352,28 @@ static void mchan_run_secondary(long period)
 	    tpRunCycle(&c->coord_tp, period);
 	    continue;
 	}
+	/* MCHAN S1: while ANY owned joint is homing, this channel's joints
+	 * are driven by the homing FSM through free_tp - the stock homing
+	 * pattern - NOT the channel TP. A homing session requires the
+	 * channel idle (no program), so the channel TP is parked; yielding
+	 * the whole channel to the free/homing drive for the cycle is safe
+	 * and mirrors how channel 0 homes in FREE mode. Without it the COORD
+	 * cubic path below overwrote the multi-cycle index-homing move every
+	 * tick and the home-state aborted (16 -> 0) before index-enable ever
+	 * armed. Immediate homing (search=latch=0) hid the bug by completing
+	 * in a single tick. */
+	int mchan_homing_now = 0;
+	for (int ax = 0; ax < EMCMOT_MAX_AXIS; ax++) {
+	    int jn = c->axis_to_joint[ax];
+	    if (jn >= 0 && get_homing(jn)) { mchan_homing_now = 1; break; }
+	}
 	/* MC3 (D-MC3-5): the channel's OWN mode decides how its joints
 	 * are driven. FREE/TELEOP = per-joint jog planners (legacy free-
 	 * mode pattern, no cubic); COORD = the channel TP below. The
 	 * machine-disable case never reaches here (executor is enable-
 	 * gated; D5 floor holds the joints). */
-	if (c->virt_state == EMCMOT_MOTION_FREE ||
+	if (mchan_homing_now ||
+	    c->virt_state == EMCMOT_MOTION_FREE ||
 	    c->virt_state == EMCMOT_MOTION_TELEOP) {
 	    for (int ax = 0; ax < EMCMOT_MAX_AXIS; ax++) {
 		int jn = c->axis_to_joint[ax];
