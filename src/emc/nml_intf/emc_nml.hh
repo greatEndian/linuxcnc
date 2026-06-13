@@ -330,20 +330,29 @@ class EMC_JOINT_HALT:public EMC_JOINT_CMD_MSG {
 class EMC_JOINT_HOME:public EMC_JOINT_CMD_MSG {
   public:
     EMC_JOINT_HOME()
-      : EMC_JOINT_CMD_MSG(EMC_JOINT_HOME_TYPE, sizeof(EMC_JOINT_HOME))
+      : EMC_JOINT_CMD_MSG(EMC_JOINT_HOME_TYPE, sizeof(EMC_JOINT_HOME)),
+        axismask(0)
     {};
 
     // For internal NML/CMS use only.
     // Sub-class update() calls base-class update()
     // cppcheck-suppress duplInheritedMember
     void update(CMS * cms);
+
+    // MCHAN G28.2: channel-local axis-letter mask (bit per XYZABCUVW);
+    // 0 = all of the channel's joints. Motion maps letters -> joints.
+    int axismask;
 };
 
 class EMC_JOINT_UNHOME:public EMC_JOINT_CMD_MSG {
   public:
     EMC_JOINT_UNHOME()
-      : EMC_JOINT_CMD_MSG(EMC_JOINT_UNHOME_TYPE, sizeof(EMC_JOINT_UNHOME))
+      : EMC_JOINT_CMD_MSG(EMC_JOINT_UNHOME_TYPE, sizeof(EMC_JOINT_UNHOME)),
+        axismask(0)
     {};
+
+    // MCHAN G28.3: see EMC_JOINT_HOME::axismask
+    int axismask;
 
     // For internal NML/CMS use only.
     // Sub-class update() calls base-class update()

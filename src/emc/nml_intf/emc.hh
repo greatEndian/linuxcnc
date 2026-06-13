@@ -315,7 +315,9 @@ extern int emcJointSetMaxAcceleration(int joint, double acc);
 extern int emcJointInit(int joint);
 extern int emcJointHalt(int joint);
 extern int emcJointHome(int joint);
+extern int emcJointHomeMask(int joint, int axismask);   // MCHAN G28.2
 extern int emcJointUnhome(int joint);
+extern int emcJointUnhomeMask(int joint, int axismask); // MCHAN G28.3
 extern int emcJointActivate(int joint);
 extern int emcJointDeactivate(int joint);
 extern int emcJointOverrideLimits(int joint);

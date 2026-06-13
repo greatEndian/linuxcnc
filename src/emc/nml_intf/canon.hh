@@ -248,8 +248,8 @@ extern void SET_XY_ROTATION(double t);
  * MC4 machinery); UNHOME_AXES marks them unhomed (no motion). Both are
  * channel-scoped in motion (joint=-1 -> the issuing channel's permit
  * mask) and guarded there by the idle + HOMING_INTERLOCK checks. */
-extern void HOME_CYCLE(void);
-extern void UNHOME_AXES(void);
+extern void HOME_CYCLE(int axismask);
+extern void UNHOME_AXES(int axismask);
 
 /* Offset the origin to the point with absolute coordinates x, y, z,
 a, b, c, u, v, and w. Values of x, y, z, a, b, c, u, v, and w are real 

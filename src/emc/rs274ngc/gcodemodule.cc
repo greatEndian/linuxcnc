@@ -433,8 +433,8 @@ void SELECT_PLANE(CANON_PLANE pl) {
 }
 
 
-void HOME_CYCLE(void) {}
-void UNHOME_AXES(void) {}
+void HOME_CYCLE(int axismask) {}
+void UNHOME_AXES(int axismask) {}
 
 void SET_TRAVERSE_RATE(double rate) {
     maybe_new_line();   

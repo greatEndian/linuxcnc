@@ -578,6 +578,29 @@ static unsigned mchan_home_mask(int ch)
     return m;
 }
 
+/* MCHAN G28.2/G28.3 per-axis: turn a channel-local axis-letter mask
+ * (bit per XYZABCUVW) into a GLOBAL joint mask via the channel's
+ * axis_to_joint map. axismask==0 -> all of the channel's joints. */
+static unsigned mchan_axis_joint_mask(int ch, int axismask)
+{
+    if (axismask == 0) return mchan_home_mask(ch);
+    unsigned m = 0;
+    const emcmot_channel_t *c = &emcmotInternal->chan[ch];
+    for (int ax = 0; ax < EMCMOT_MAX_AXIS; ax++) {
+	if (!((axismask >> ax) & 1)) continue;
+	int jn = c->axis_to_joint[ax];
+	if (jn < 0 && ch == 0) {
+	    /* channel 0 uses the legacy identity path and never fills
+	     * axis_to_joint; for identity kins axis ax == joint ax,
+	     * gated by ch0 ownership. */
+	    if (ax < ALL_JOINTS && emcmotInternal->joint_owner[ax] == 0)
+		jn = ax;
+	}
+	if (jn >= 0) m |= 1u << jn;
+    }
+    return m;
+}
+
 /* MCHAN MC3: jog a SECONDARY channel's owned joint with its own free
  * planner, independent of channel 0's machine mode (Fanuc 2-path
  * standard: jog one path while the other runs AUTO - D-MC3-4). The jog
@@ -889,10 +912,14 @@ void emcmotCommandHandler_locked(void *arg, long servo_period)
 		    set_unhomed(ujn, emcmotStatus->motion_state);
 		    return;
 		}
+		unsigned umask = mchan_axis_joint_mask(mchan_active_channel,
+						       emcmotCommand->axismask);
 		for (int j4 = 0; j4 < ALL_JOINTS; j4++) {
 		    if (emcmotInternal->joint_owner[j4] != mchan_active_channel)
 			continue;
-		    if (ujn == -1 || get_home_is_volatile(j4))
+		    if (!((umask >> j4) & 1)) continue;
+		    if (ujn == -1 || emcmotCommand->axismask ||
+			get_home_is_volatile(j4))
 			set_unhomed(j4, emcmotStatus->motion_state);
 		}
 		return;
@@ -935,9 +962,19 @@ void emcmotCommandHandler_locked(void *arg, long servo_period)
 		    (*mchan_echo_status) = EMCMOT_COMMAND_INVALID_PARAMS;
 		    return;
 		}
-		set_home_permit_mask(mchan_home_mask(mchan_active_channel));
+		{
+		unsigned hm = mchan_axis_joint_mask(mchan_active_channel,
+						    emcmotCommand->axismask);
+		if (emcmotCommand->axismask && hm == 0) {
+		    reportError(_("ch%d: none of the requested axes map to this channel's joints (home refused)"),
+			mchan_active_channel);
+		    (*mchan_echo_status) = EMCMOT_COMMAND_INVALID_PARAMS;
+		    return;
+		}
+		set_home_permit_mask(hm);
 		mchan_homing_session_ch = mchan_active_channel;
-		do_home_joint(hjn);
+		do_home_joint(emcmotCommand->axismask ? -1 : hjn);
+		}
 		return;
 	    }
 	    case EMCMOT_SET_SWITCHKINS_TYPE:
@@ -2172,7 +2209,13 @@ void emcmotCommandHandler_locked(void *arg, long servo_period)
 		if (!mchan_homing_interlock_ok(0)) {
 		    return;
 		}
-		set_home_permit_mask(mchan_home_mask(0));
+		unsigned hm0 = mchan_axis_joint_mask(0, emcmotCommand->axismask);
+		if (emcmotCommand->axismask && hm0 == 0) {
+		    reportError(_("none of the requested axes map to channel 0's joints (home refused)"));
+		    return;
+		}
+		set_home_permit_mask(hm0);
+		if (emcmotCommand->axismask) joint_num = -1; /* mask selects */
 	    } else {
 		set_home_permit_mask(~0u);
 	    }
@@ -2202,9 +2245,12 @@ void emcmotCommandHandler_locked(void *arg, long servo_period)
                 if (joint_num >= 0) {
                     set_unhomed(joint_num, emcmotStatus->motion_state);
                 } else {
+                    unsigned umask0 = mchan_axis_joint_mask(0, emcmotCommand->axismask);
                     for (int j0 = 0; j0 < ALL_JOINTS; j0++) {
                         if (emcmotInternal->joint_owner[j0] != 0) continue;
-                        if (joint_num == -1 || get_home_is_volatile(j0))
+                        if (!((umask0 >> j0) & 1)) continue;
+                        if (joint_num == -1 || emcmotCommand->axismask ||
+                            get_home_is_volatile(j0))
                             set_unhomed(j0, emcmotStatus->motion_state);
                     }
                 }

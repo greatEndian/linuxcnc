@@ -106,7 +106,15 @@ RT/motion core:
       queued home hit default=ERROR). ch0 FREE-mode home gate relaxed to
       the channel-idle interlock when multichannel. BARE form (all
       channel joints); per-axis = stage 3. Tested MDI both channels.
-      Remaining: GCODE_HOMING=1 flagged-G28; per-axis; AUTO-mode (M-2).
+      PER-AXIS DONE 2026-06-13: G28.2 X / G28.3 X Z C home/unhome only
+      the named axes. Interp builds an axis-letter mask (G28.2/.3 added
+      to mode_zero_covets_axes); EMC_JOINT_HOME/UNHOME += axismask;
+      emcmot_command_t += axismask; motion maps letters->joints via
+      chan[].axis_to_joint (ch0 too: master INI gets [CHANNEL]MAP, sent
+      by the launcher - C->joint3 since C's canonical index != its joint)
+      and restricts the permit mask in ONE session; empty-mask guard
+      refuses (never falls through to all). Verified incl rotary C both
+      channels. Remaining: GCODE_HOMING=1 flagged-G28; AUTO-mode (M-2).
  MC5  estop vs abort semantics                     -> D5 (global floor + HAL policy)
  MC6  per-channel kins mapping                     -> INI joint map, identity subsets
  MC7  motion.* HAL pin collisions                  -> motion.N.* + ch0 legacy aliases

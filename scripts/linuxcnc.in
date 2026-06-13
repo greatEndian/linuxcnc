@@ -986,6 +986,19 @@ done
 # process per machine - each stack is defined entirely by its own INI.
 ################################################################################
 MCHAN_PIDS=""
+# MCHAN: send channel 0's OWN [CHANNEL]MAP (master INI), if present, so
+# motion has chan[0].axis_to_joint populated like the secondaries - this
+# makes per-axis G28.2/G28.3 work on channel 0 (its letter->joint order,
+# e.g. XYZC, is not the canonical axis index). Harmless if absent.
+if [ -n "$($INIVAR -ini "$INIFILE" -var MAP -sec CHANNEL 2> /dev/null)" ]; then
+    MCHMAP=$($INIVAR -ini "$INIFILE" -var CHMAP -sec MCHAN 2> /dev/null)
+    MCHMAP=${MCHMAP:-mchan-chmap}
+    if ! "$MCHMAP" "$INIFILE"; then
+        echo "MCHAN: channel 0 axis map rejected for $INIFILE"
+        Cleanup
+        exit 1
+    fi
+fi
 NUM=1
 CH_INI=$($INIVAR -tildeexpand -ini "$INIFILE" -var CHANNEL_INI -sec MCHAN -num $NUM 2> /dev/null)
 while [ -n "$CH_INI" ] ; do

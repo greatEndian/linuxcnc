@@ -114,10 +114,10 @@ void SET_XY_ROTATION(double t) {
 }
 
 
-void HOME_CYCLE(void) {
+void HOME_CYCLE(int axismask) {
     ECHO_WITH_ARGS("");
 }
-void UNHOME_AXES(void) {
+void UNHOME_AXES(int axismask) {
     ECHO_WITH_ARGS("");
 }
 

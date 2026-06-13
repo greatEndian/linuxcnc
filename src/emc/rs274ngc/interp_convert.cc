@@ -3155,16 +3155,24 @@ int Interp::convert_home_cycle(int move,
     /* axis words are the only legal words besides the G-code itself */
     /* (find_ends-style legality is enforced by the reader; here we only
      * gate the feature itself until the motion bridge lands) */
-    /* Stage 2: BARE form re-references / unhomes ALL of this channel's
-     * joints (joint=-1 in canon -> motion scopes to the channel). Per-
-     * axis selection (G28.2 X) is stage 3 (needs letter->joint from the
-     * channel map); for now axis words are rejected by the interp's
-     * standard "g code that uses them" check since G28.2/G28.3 are not
-     * registered as axis-using. */
+    /* axis-letter mask (bit per XYZABCUVW); 0 = all of this channel's
+     * joints (bare form). Motion maps letters -> joints via the
+     * channel's axis_to_joint and restricts the homing permit mask. */
+    int axismask = 0;
+    if (block->x_flag) axismask |= 1 << 0;
+    if (block->y_flag) axismask |= 1 << 1;
+    if (block->z_flag) axismask |= 1 << 2;
+    if (block->a_flag) axismask |= 1 << 3;
+    if (block->b_flag) axismask |= 1 << 4;
+    if (block->c_flag) axismask |= 1 << 5;
+    if (block->u_flag) axismask |= 1 << 6;
+    if (block->v_flag) axismask |= 1 << 7;
+    if (block->w_flag) axismask |= 1 << 8;
+
     if (move == G_28_2) {
-        HOME_CYCLE();    /* per-channel reference cycle (MC4 machinery) */
+        HOME_CYCLE(axismask);    /* per-channel reference cycle (MC4) */
     } else {
-        UNHOME_AXES();   /* per-channel unhome, no motion */
+        UNHOME_AXES(axismask);   /* per-channel unhome, no motion */
     }
     return INTERP_OK;
 }

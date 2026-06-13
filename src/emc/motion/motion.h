@@ -238,6 +238,10 @@ extern "C" {
 	double tolerance;	/* tolerance for path deviation in CONTINUOUS mode */
 	int joint;		/* which joint index to use for below */
 	int axis;		/* which axis index to use for below */
+	int axismask;		/* MCHAN G28.2/G28.3: channel-local axis-letter
+				   mask (bit per XYZABCUVW); 0 = all of the
+				   channel's joints. Motion maps via
+				   chan[].axis_to_joint. */
 	int spindle; 	/* which spindle to use */
 	double scale;		/* velocity scale or spindle_speed scale arg */
 	double offset;		/* input, output, or home offset arg */

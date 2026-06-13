@@ -485,17 +485,19 @@ void SET_XY_ROTATION(double t) {
  * enforced in motion; a G28.2 fired while the channel is running is
  * cleanly refused there. The message is appended in program order so it
  * executes after prior moves in this (MDI) block drain. */
-void HOME_CYCLE(void)
+void HOME_CYCLE(int axismask)
 {
     auto msg = std::make_unique<EMC_JOINT_HOME>();
-    msg->joint = -1;
+    msg->joint = -1;          // -1 = this channel; axismask narrows it
+    msg->axismask = axismask;
     interp_list.append(std::move(msg));
 }
 
-void UNHOME_AXES(void)
+void UNHOME_AXES(int axismask)
 {
     auto msg = std::make_unique<EMC_JOINT_UNHOME>();
     msg->joint = -1;
+    msg->axismask = axismask;
     interp_list.append(std::move(msg));
 }
 

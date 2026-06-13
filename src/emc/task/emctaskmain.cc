@@ -1681,12 +1681,12 @@ static int emcTaskIssueCommand(NMLmsg * cmd)
 
     case EMC_JOINT_HOME_TYPE:
 	home_msg = reinterpret_cast<EMC_JOINT_HOME *>(cmd);
-	retval = emcJointHome(home_msg->joint);
+	retval = emcJointHomeMask(home_msg->joint, home_msg->axismask); // MCHAN
 	break;
 
     case EMC_JOINT_UNHOME_TYPE:
 	unhome_msg = reinterpret_cast<EMC_JOINT_UNHOME *>(cmd);
-	retval = emcJointUnhome(unhome_msg->joint);
+	retval = emcJointUnhomeMask(unhome_msg->joint, unhome_msg->axismask); // MCHAN
 	break;
 
     case EMC_JOG_CONT_TYPE:

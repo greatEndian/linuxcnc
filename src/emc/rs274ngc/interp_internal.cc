@@ -174,6 +174,7 @@ int Interp::enhance_block(block_pointer block,   //!< pointer to a block to be c
   mode1 = block->g_modes[GM_MOTION];
   mode_zero_covets_axes =
     ((mode0 == G_10) || (mode0 == G_28) || (mode0 == G_30)
+     || (mode0 == G_28_2) || (mode0 == G_28_3)   // MCHAN per-axis homing
      || (mode0 == G_52) || (mode0 == G_92));
 
   if (mode1 != -1) {

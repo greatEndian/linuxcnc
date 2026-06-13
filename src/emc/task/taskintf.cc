@@ -795,17 +795,28 @@ int emcJointOverrideLimits(int joint)
 
 int emcJointHome(int joint)
 {
+    return emcJointHomeMask(joint, 0);
+}
+
+int emcJointHomeMask(int joint, int axismask)
+{
     if (joint < -1 || joint >= EMCMOT_MAX_JOINTS) {
 	return 0;
     }
 
     emcmotCommand.command = EMCMOT_JOINT_HOME;
     emcmotCommand.joint = joint;
+    emcmotCommand.axismask = axismask;   // MCHAN G28.2 per-axis
 
     return usrmotWriteEmcmotCommand(&emcmotCommand);
 }
 
 int emcJointUnhome(int joint)
+{
+	return emcJointUnhomeMask(joint, 0);
+}
+
+int emcJointUnhomeMask(int joint, int axismask)
 {
 	if (joint < -2 || joint >= EMCMOT_MAX_JOINTS) {
 		return 0;
@@ -813,6 +824,7 @@ int emcJointUnhome(int joint)
 
 	emcmotCommand.command = EMCMOT_JOINT_UNHOME;
 	emcmotCommand.joint = joint;
+	emcmotCommand.axismask = axismask;   // MCHAN G28.3 per-axis
 
 	return usrmotWriteEmcmotCommand(&emcmotCommand);
 }
