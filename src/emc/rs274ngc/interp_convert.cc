@@ -3155,14 +3155,18 @@ int Interp::convert_home_cycle(int move,
     /* axis words are the only legal words besides the G-code itself */
     /* (find_ends-style legality is enforced by the reader; here we only
      * gate the feature itself until the motion bridge lands) */
+    /* Stage 2: BARE form re-references / unhomes ALL of this channel's
+     * joints (joint=-1 in canon -> motion scopes to the channel). Per-
+     * axis selection (G28.2 X) is stage 3 (needs letter->joint from the
+     * channel map); for now axis words are rejected by the interp's
+     * standard "g code that uses them" check since G28.2/G28.3 are not
+     * registered as axis-using. */
     if (move == G_28_2) {
-        ERS("G28.2 (G-code homing cycle) parsed OK - motion bridge not yet wired "
-            "(MC4b stage 2); see CONFIG-REFERENCE.md");
+        HOME_CYCLE();    /* per-channel reference cycle (MC4 machinery) */
     } else {
-        ERS("G28.3 (G-code unhome) parsed OK - motion bridge not yet wired "
-            "(MC4b stage 2); see CONFIG-REFERENCE.md");
+        UNHOME_AXES();   /* per-channel unhome, no motion */
     }
-    return INTERP_OK; // not reached
+    return INTERP_OK;
 }
 
 int Interp::convert_home(int move,       //!< G-code, must be G_28 or G_30

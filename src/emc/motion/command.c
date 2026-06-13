@@ -2135,7 +2135,14 @@ void emcmotCommandHandler_locked(void *arg, long servo_period)
 	    rtapi_print_msg(RTAPI_MSG_DBG, "JOINT_HOME");
 	    rtapi_print_msg(RTAPI_MSG_DBG, " %d", joint_num);
 
-	    if (emcmotStatus->motion_state != EMCMOT_MOTION_FREE) {
+	    /* MCHAN: the legacy "must be in free mode" gate is a single-channel
+	     * safety. In the multichannel build, channel-scoped homing is
+	     * guarded by the idle + interlock checks below instead, so a
+	     * channel may be re-referenced (e.g. via G28.2 in MDI) without
+	     * the WHOLE machine being in free mode. Single channel = legacy
+	     * (D7). */
+	    if (motion_num_channels == 1 &&
+		emcmotStatus->motion_state != EMCMOT_MOTION_FREE) {
 		/* can't home unless in free mode */
 		reportError(_("must be in joint mode to home"));
 		return;

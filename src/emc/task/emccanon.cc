@@ -478,6 +478,27 @@ void SET_XY_ROTATION(double t) {
     canon.xy_rotation = t;
 }
 
+
+/* MCHAN G28.2 / G28.3: per-channel G-code homing. joint = -1 means
+ * "all" - motion scopes it to the issuing channel's joints via the MC4
+ * permit mask. Safety (channel idle, HOMING_INTERLOCK, ownership) is
+ * enforced in motion; a G28.2 fired while the channel is running is
+ * cleanly refused there. The message is appended in program order so it
+ * executes after prior moves in this (MDI) block drain. */
+void HOME_CYCLE(void)
+{
+    auto msg = std::make_unique<EMC_JOINT_HOME>();
+    msg->joint = -1;
+    interp_list.append(std::move(msg));
+}
+
+void UNHOME_AXES(void)
+{
+    auto msg = std::make_unique<EMC_JOINT_UNHOME>();
+    msg->joint = -1;
+    interp_list.append(std::move(msg));
+}
+
 void SET_G5X_OFFSET(int index,
                     double x, double y, double z,
                     double a, double b, double c,

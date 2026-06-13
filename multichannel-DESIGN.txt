@@ -98,8 +98,15 @@ RT/motion core:
       homed while ch0's program ran. Channel sessions do NOT flip the
       global teleop mode. POWER RULE documented: every channel's task
       enforces the D5 estop floor -> release estop on ALL panels first.
-      MC4b (per-path G28-triggered referencing) = G28.2/GCODE_HOMING
-      interp bridge, next increment.
+      MC4b STAGE 1+2 DONE 2026-06-13: G28.2 (forced reference cycle) /
+      G28.3 (unhome) parse + canon HOME_CYCLE/UNHOME_AXES ->
+      EMC_JOINT_HOME/UNHOME(-1) appended in program order -> motion
+      scopes to the issuing channel (MC4 permit mask). Added
+      EMC_JOINT_HOME/UNHOME to emcTaskCheckPreconditions (were missing ->
+      queued home hit default=ERROR). ch0 FREE-mode home gate relaxed to
+      the channel-idle interlock when multichannel. BARE form (all
+      channel joints); per-axis = stage 3. Tested MDI both channels.
+      Remaining: GCODE_HOMING=1 flagged-G28; per-axis; AUTO-mode (M-2).
  MC5  estop vs abort semantics                     -> D5 (global floor + HAL policy)
  MC6  per-channel kins mapping                     -> INI joint map, identity subsets
  MC7  motion.* HAL pin collisions                  -> motion.N.* + ch0 legacy aliases
