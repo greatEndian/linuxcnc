@@ -584,6 +584,8 @@ class GlCanonDraw:
     def init_glcanondraw(self,trajcoordinates="XYZABCUVW",kinsmodule="trivkins",msg=""):
         self.trajcoordinates = trajcoordinates.upper().replace(" ","")
         self.kinsmodule = kinsmodule
+        if not hasattr(self, "mchan_jmap"):
+            self.mchan_jmap = {}   # MCHAN: letter->global-joint (set by GUI)
         self.no_joint_display = self.stat.kinematics_type == linuxcnc.KINEMATICS_IDENTITY
         if (msg != ""):
             print("init_glcanondraw %s coords=%s kinsmodule=%s no_joint_display=%d"%(
@@ -1652,6 +1654,14 @@ class GlCanonDraw:
 
     def jnum_for_aletter(self,aletter,kinsmodule,trajcoordinates):
         aletter = aletter.upper()
+        # MCHAN: a secondary channel's GUI maps its letters to GLOBAL
+        # joints via [CHANNEL]MAP (injected as self.mchan_jmap), NOT via
+        # the kins coordinates string (which would give this channel the
+        # WRONG joints - e.g. ch1's X -> joint 0 instead of 4, so its
+        # home/limit icons tracked another channel's joints).
+        m = getattr(self, "mchan_jmap", None)
+        if m and aletter in m:
+            return m[aletter]
         if "trivkins" in kinsmodule:
             return trajcoordinates.index(aletter)
         else:
