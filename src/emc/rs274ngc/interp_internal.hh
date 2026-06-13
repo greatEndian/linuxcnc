@@ -852,6 +852,10 @@ struct setup
     // do not lowercase named params inside comments - for #<_hal[PinName]>
 #define FEATURE_NO_DOWNCASE_OWORD    0x00000010
 #define FEATURE_OWORD_WARNONLY       0x00000020
+    // [RS274NGC]GCODE_HOMING=1: plain G28 references unhomed worded joints
+    // (the drive/index homing cycle) before the natural return; already-
+    // homed joints behave as legacy G28. G28.2/G28.3 are flag-independent.
+#define FEATURE_GCODE_HOMING         0x00000040
 
     boost::python::object *pythis;  // boost::cref to 'this'
     const char *on_abort_command;

@@ -206,6 +206,16 @@ extern "C" {
        COMMAND STRUCTURE
 *********************************/
 
+/* Flag bits packed into emcmot_command_t.axismask (and EMC_JOINT_HOME's
+   axismask) above the 9 axis-letter bits. Encoded here instead of a new
+   struct field so the userspace<->RT command ABI stays unchanged (external
+   tools that embed emcmot_command_t do not need rebuilding).
+   EMCMOT_HOME_IF_UNHOMED: GCODE_HOMING plain G28 - home only the not-yet-
+   homed joints in the mask (all homed -> no-op). MUST match the value used
+   on the task/canon side (canon.hh EMC_HOME_AXISMASK_IF_UNHOMED). */
+#define EMCMOT_HOME_AXISMASK_FLAGS  0xFF000000
+#define EMCMOT_HOME_IF_UNHOMED      0x40000000
+
 /* This is the command structure.  There is one of these in shared
    memory, and all commands from higher level code come thru it.
 */
@@ -241,7 +251,9 @@ extern "C" {
 	int axismask;		/* MCHAN G28.2/G28.3: channel-local axis-letter
 				   mask (bit per XYZABCUVW); 0 = all of the
 				   channel's joints. Motion maps via
-				   chan[].axis_to_joint. */
+				   chan[].axis_to_joint. High bits (above the 9
+				   axis bits) are flags - see EMCMOT_HOME_* below;
+				   strip them before using as an axis mask. */
 	int spindle; 	/* which spindle to use */
 	double scale;		/* velocity scale or spindle_speed scale arg */
 	double offset;		/* input, output, or home offset arg */

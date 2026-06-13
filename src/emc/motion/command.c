@@ -601,6 +601,18 @@ static unsigned mchan_axis_joint_mask(int ch, int axismask)
     return m;
 }
 
+/* GCODE_HOMING (plain G28 with [RS274NGC]GCODE_HOMING=1): drop the joints
+ * that are already homed from a homing permit mask. A result of 0 means
+ * every requested joint is already homed - the caller skips the homing
+ * entirely (the queued G28 return move alone = pure legacy G28). */
+static unsigned mchan_unhomed_only(unsigned mask)
+{
+    for (int jn = 0; jn < ALL_JOINTS; jn++)
+	if (((mask >> jn) & 1) && get_homed(jn))
+	    mask &= ~(1u << jn);
+    return mask;
+}
+
 /* MCHAN MC3: jog a SECONDARY channel's owned joint with its own free
  * planner, independent of channel 0's machine mode (Fanuc 2-path
  * standard: jog one path while the other runs AUTO - D-MC3-4). The jog
@@ -930,6 +942,9 @@ void emcmotCommandHandler_locked(void *arg, long servo_period)
 		 * by the permit mask; sessions exclusive machine-wide) */
 		emcmot_channel_t *c4 = &emcmotInternal->chan[mchan_active_channel];
 		int hjn = emcmotCommand->joint;
+		/* GCODE_HOMING flag rides in the axismask high bits */
+		int if_unhomed = (emcmotCommand->axismask & EMCMOT_HOME_IF_UNHOMED) ? 1 : 0;
+		int axmask = emcmotCommand->axismask & ~EMCMOT_HOME_AXISMASK_FLAGS;
 		if (!GET_MOTION_ENABLE_FLAG()) {
 		    reportError(_("ch%d: can't home when machine is not enabled"), mchan_active_channel);
 		    (*mchan_echo_status) = EMCMOT_COMMAND_INVALID_COMMAND;
@@ -963,17 +978,23 @@ void emcmotCommandHandler_locked(void *arg, long servo_period)
 		    return;
 		}
 		{
-		unsigned hm = mchan_axis_joint_mask(mchan_active_channel,
-						    emcmotCommand->axismask);
-		if (emcmotCommand->axismask && hm == 0) {
+		unsigned hm = mchan_axis_joint_mask(mchan_active_channel, axmask);
+		if (axmask && hm == 0) {
 		    reportError(_("ch%d: none of the requested axes map to this channel's joints (home refused)"),
 			mchan_active_channel);
 		    (*mchan_echo_status) = EMCMOT_COMMAND_INVALID_PARAMS;
 		    return;
 		}
+		if (if_unhomed) {
+		    /* GCODE_HOMING plain G28: only reference the unhomed
+		     * joints; if all are homed this is a clean no-op (the
+		     * queued return move makes it a pure legacy G28). */
+		    hm = mchan_unhomed_only(hm);
+		    if (hm == 0) return;
+		}
 		set_home_permit_mask(hm);
 		mchan_homing_session_ch = mchan_active_channel;
-		do_home_joint(emcmotCommand->axismask ? -1 : hjn);
+		do_home_joint((axmask || if_unhomed) ? -1 : hjn);
 		}
 		return;
 	    }
@@ -2164,24 +2185,33 @@ void emcmotCommandHandler_locked(void *arg, long servo_period)
 	    SET_JOINT_ACTIVE_FLAG(joint, 0);
 	    break;
 
-	case EMCMOT_JOINT_HOME:
+	case EMCMOT_JOINT_HOME: {
 	    /* home the specified joint */
-	    /* need to be in free mode, enable on */
 	    /* this just sets the initial state, then the state machine in
 	       homing.c does the rest */
 	    rtapi_print_msg(RTAPI_MSG_DBG, "JOINT_HOME");
 	    rtapi_print_msg(RTAPI_MSG_DBG, " %d", joint_num);
+
+	    /* GCODE_HOMING flag rides in the axismask high bits (see motion.h) */
+	    int if_unhomed = (emcmotCommand->axismask & EMCMOT_HOME_IF_UNHOMED) ? 1 : 0;
+	    int axmask = emcmotCommand->axismask & ~EMCMOT_HOME_AXISMASK_FLAGS;
 
 	    /* MCHAN: the legacy "must be in free mode" gate is a single-channel
 	     * safety. In the multichannel build, channel-scoped homing is
 	     * guarded by the idle + interlock checks below instead, so a
 	     * channel may be re-referenced (e.g. via G28.2 in MDI) without
 	     * the WHOLE machine being in free mode. Single channel = legacy
-	     * (D7). */
+	     * (D7).
+	     * Normally single-channel homing requires free (joint) mode.
+	     * Allow it also when motion is otherwise IDLE (in position,
+	     * nothing queued) so a G-code-triggered home (G28.2, or plain
+	     * G28 under GCODE_HOMING) works from MDI / a program. Refusing
+	     * mid-motion still holds. (Multichannel uses the per-channel
+	     * idle + interlock checks instead.) */
 	    if (motion_num_channels == 1 &&
-		emcmotStatus->motion_state != EMCMOT_MOTION_FREE) {
-		/* can't home unless in free mode */
-		reportError(_("must be in joint mode to home"));
+		emcmotStatus->motion_state != EMCMOT_MOTION_FREE &&
+		!(GET_MOTION_INPOS_FLAG() && emcmotStatus->depth == 0)) {
+		reportError(_("must be in joint mode (or idle) to home"));
 		return;
 	    }
 	    if (*(emcmot_hal_data->homing_inhibit)) {
@@ -2209,20 +2239,36 @@ void emcmotCommandHandler_locked(void *arg, long servo_period)
 		if (!mchan_homing_interlock_ok(0)) {
 		    return;
 		}
-		unsigned hm0 = mchan_axis_joint_mask(0, emcmotCommand->axismask);
-		if (emcmotCommand->axismask && hm0 == 0) {
+		unsigned hm0 = mchan_axis_joint_mask(0, axmask);
+		if (axmask && hm0 == 0) {
 		    reportError(_("none of the requested axes map to channel 0's joints (home refused)"));
 		    return;
 		}
+		if (if_unhomed) {                      /* GCODE_HOMING plain G28 */
+		    hm0 = mchan_unhomed_only(hm0);
+		    if (hm0 == 0) break;               /* all homed: pure legacy G28 */
+		}
 		set_home_permit_mask(hm0);
-		if (emcmotCommand->axismask) joint_num = -1; /* mask selects */
+		if (axmask || if_unhomed)
+		    joint_num = -1; /* mask selects */
 	    } else {
-		set_home_permit_mask(~0u);
+		if (if_unhomed) {                      /* GCODE_HOMING plain G28 (1ch) */
+		    /* identity/trivkins: axis letter -> joint via the ch0
+		     * mask helper; bare (mask 0) = all owned joints. */
+		    unsigned hm1 = mchan_axis_joint_mask(0, axmask);
+		    hm1 = mchan_unhomed_only(hm1);
+		    if (hm1 == 0) break;               /* all homed: pure legacy G28 */
+		    set_home_permit_mask(hm1);
+		    joint_num = -1;                    /* mask selects */
+		} else {
+		    set_home_permit_mask(~0u);
+		}
 	    }
 	    mchan_homing_session_ch = 0;
 	    // Negative joint_num specifies homeall
 	    do_home_joint(joint_num);
 	    break;
+	    }
 
 	case EMCMOT_JOINT_UNHOME:
             /* unhome the specified joint, or all joints if -1, or volatile joints if -2 */

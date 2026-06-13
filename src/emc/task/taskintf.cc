@@ -806,7 +806,7 @@ int emcJointHomeMask(int joint, int axismask)
 
     emcmotCommand.command = EMCMOT_JOINT_HOME;
     emcmotCommand.joint = joint;
-    emcmotCommand.axismask = axismask;   // MCHAN G28.2 per-axis
+    emcmotCommand.axismask = axismask;   // MCHAN G28.2 per-axis (+ GCODE_HOMING flag bits)
 
     return usrmotWriteEmcmotCommand(&emcmotCommand);
 }

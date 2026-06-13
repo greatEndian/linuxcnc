@@ -1681,7 +1681,7 @@ static int emcTaskIssueCommand(NMLmsg * cmd)
 
     case EMC_JOINT_HOME_TYPE:
 	home_msg = reinterpret_cast<EMC_JOINT_HOME *>(cmd);
-	retval = emcJointHomeMask(home_msg->joint, home_msg->axismask); // MCHAN
+	retval = emcJointHomeMask(home_msg->joint, home_msg->axismask); // MCHAN (axismask high bits = GCODE_HOMING)
 	break;
 
     case EMC_JOINT_UNHOME_TYPE:

@@ -250,6 +250,14 @@ extern void SET_XY_ROTATION(double t);
  * mask) and guarded there by the idle + HOMING_INTERLOCK checks. */
 extern void HOME_CYCLE(int axismask);
 extern void UNHOME_AXES(int axismask);
+/* GCODE_HOMING (plain G28 with [RS274NGC]GCODE_HOMING=1): like HOME_CYCLE
+ * but motion homes only the joints that are not yet homed (already-homed
+ * joints are skipped, so a homed machine sees a pure legacy G28). The
+ * request is carried as a flag bit in the EMC_JOINT_HOME axismask (above
+ * the 9 axis bits) so no command-ABI field is added. MUST match
+ * EMCMOT_HOME_IF_UNHOMED in emc/motion/motion.h. */
+#define EMC_HOME_AXISMASK_IF_UNHOMED 0x40000000
+extern void HOME_CYCLE_IF_UNHOMED(int axismask);
 
 /* Offset the origin to the point with absolute coordinates x, y, z,
 a, b, c, u, v, and w. Values of x, y, z, a, b, c, u, v, and w are real 

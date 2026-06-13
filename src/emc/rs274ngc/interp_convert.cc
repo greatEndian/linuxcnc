@@ -3209,6 +3209,27 @@ int Interp::convert_home(int move,       //!< G-code, must be G_28 or G_30
   CHKS((settings->cutter_comp_side != CUTTER_COMP::OFF),
       NCE_CANNOT_USE_G28_OR_G30_WITH_CUTTER_RADIUS_COMP);
 
+  /* GCODE_HOMING ([RS274NGC]GCODE_HOMING=1): a plain G28 references any
+   * unhomed worded joints (the drive / index-enable homing cycle) BEFORE
+   * the waypoint + return moves below. Already-homed joints are skipped in
+   * motion, so a fully-homed machine sees a pure legacy G28. The homing is
+   * emitted first so it completes (motion stays busy, the next move waits)
+   * while the joint positions are still unknown. Flag-gated and G28-only;
+   * G30/G28.2/G28.3 are unchanged. */
+  if (FEATURE(GCODE_HOMING) && move == G_28) {
+      int home_mask = 0;
+      if (block->x_flag) home_mask |= 1 << 0;
+      if (block->y_flag) home_mask |= 1 << 1;
+      if (block->z_flag) home_mask |= 1 << 2;
+      if (block->a_flag) home_mask |= 1 << 3;
+      if (block->b_flag) home_mask |= 1 << 4;
+      if (block->c_flag) home_mask |= 1 << 5;
+      if (block->u_flag) home_mask |= 1 << 6;
+      if (block->v_flag) home_mask |= 1 << 7;
+      if (block->w_flag) home_mask |= 1 << 8;
+      HOME_CYCLE_IF_UNHOMED(home_mask);  /* 0 = all of the channel's joints */
+  }
+
   // waypoint is in currently active coordinate system
 
   // move indexers first, one at a time

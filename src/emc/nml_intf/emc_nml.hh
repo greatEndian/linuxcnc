@@ -341,6 +341,8 @@ class EMC_JOINT_HOME:public EMC_JOINT_CMD_MSG {
 
     // MCHAN G28.2: channel-local axis-letter mask (bit per XYZABCUVW);
     // 0 = all of the channel's joints. Motion maps letters -> joints.
+    // High bits carry flags (GCODE_HOMING; see canon.hh
+    // EMC_HOME_AXISMASK_IF_UNHOMED) so no new field is needed.
     int axismask;
 };
 

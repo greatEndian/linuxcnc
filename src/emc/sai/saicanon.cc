@@ -120,6 +120,9 @@ void HOME_CYCLE(int axismask) {
 void UNHOME_AXES(int axismask) {
     ECHO_WITH_ARGS("");
 }
+void HOME_CYCLE_IF_UNHOMED(int axismask) {
+    ECHO_WITH_ARGS("");
+}
 
 void SET_G5X_OFFSET(int index,
                     double x, double y, double z,

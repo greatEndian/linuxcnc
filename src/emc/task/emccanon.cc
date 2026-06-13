@@ -501,6 +501,20 @@ void UNHOME_AXES(int axismask)
     interp_list.append(std::move(msg));
 }
 
+/* GCODE_HOMING G28: home only the not-yet-homed joints among those the
+ * axismask selects (0 = all of the channel's joints). Same machinery as
+ * HOME_CYCLE; the if_unhomed flag tells motion to drop already-homed
+ * joints from the permit mask (empty -> no-op, the queued G28 return
+ * move alone = pure legacy G28). */
+void HOME_CYCLE_IF_UNHOMED(int axismask)
+{
+    auto msg = std::make_unique<EMC_JOINT_HOME>();
+    msg->joint = -1;
+    /* flag bit above the 9 axis bits - motion homes only unhomed joints */
+    msg->axismask = axismask | EMC_HOME_AXISMASK_IF_UNHOMED;
+    interp_list.append(std::move(msg));
+}
+
 void SET_G5X_OFFSET(int index,
                     double x, double y, double z,
                     double a, double b, double c,

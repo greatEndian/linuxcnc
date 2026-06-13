@@ -1739,7 +1739,7 @@ void EMC_TRAJ_STAT::update(CMS * cms)
 void EMC_JOINT_HOME::update(CMS * cms)
 {
     EMC_JOINT_CMD_MSG::update(cms);
-    cms->update(axismask);   // MCHAN G28.2 per-axis
+    cms->update(axismask);   // MCHAN G28.2 per-axis (+ GCODE_HOMING flag bits)
 }
 
 // cppcheck-suppress duplInheritedMember
