@@ -2095,6 +2095,31 @@ void emcmotCommandHandler_locked(void *arg, long servo_period)
             rtapi_print_msg(RTAPI_MSG_DBG, "JOINT_UNHOME");
             rtapi_print_msg(RTAPI_MSG_DBG, " %d", joint_num);
 
+            /* MCHAN: channel 0's unhome must touch ONLY channel 0's joints
+             * (joint_num<0 = all/volatile of THIS channel) and, like
+             * homing, use the channel-idle gate instead of requiring the
+             * whole machine in free mode - else G28.3 from MDI is blocked
+             * and menu-unhome wipes other channels (both user-found).
+             * Single channel = legacy (D7). */
+            if (motion_num_channels > 1) {
+                if (joint_num >= 0 &&
+                    emcmotInternal->joint_owner[joint_num] != 0) {
+                    reportError(_("joint %d belongs to channel %d - unhome it from that channel"),
+                        joint_num, emcmotInternal->joint_owner[joint_num]);
+                    return;
+                }
+                if (joint_num >= 0) {
+                    set_unhomed(joint_num, emcmotStatus->motion_state);
+                } else {
+                    for (int j0 = 0; j0 < ALL_JOINTS; j0++) {
+                        if (emcmotInternal->joint_owner[j0] != 0) continue;
+                        if (joint_num == -1 || get_home_is_volatile(j0))
+                            set_unhomed(j0, emcmotStatus->motion_state);
+                    }
+                }
+                break;
+            }
+
             if (   (emcmotStatus->motion_state != EMCMOT_MOTION_FREE)
                 && (emcmotStatus->motion_state != EMCMOT_MOTION_DISABLED)) {
                 reportError(_("must be in joint mode or disabled to unhome"));
