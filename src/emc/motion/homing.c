@@ -598,7 +598,15 @@ static void base_write_homing_out_pins(int njoints)
 
 static void base_do_home_joint(int jno) {
     if (jno == -1) {
-        H[0].homed = 0; // ensure at least one unhomed
+        // ensure at least one unhomed so do_home_all() has work to do.
+        // MCHAN: unhome the first joint IN THE PERMIT MASK, not always
+        // joint 0 - else a secondary channel's home-all corrupts channel
+        // 0's joint 0 (user-found cross-channel home bug).
+        int j0 = 0;
+        for (int j = 0; j < all_joints; j++) {
+            if ((home_permit_mask >> j) & 1) { j0 = j; break; }
+        }
+        H[j0].homed = 0;
         do_home_all();
     } else {
         do_home_one_joint(jno); // apply rules if home_sequence negative
