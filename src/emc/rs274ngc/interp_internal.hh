@@ -221,6 +221,8 @@ enum GCodes
     G_21 = 210,
     G_28 = 280,
     G_28_1 = 281,
+    G_28_2 = 282,   /* MCHAN: forced reference (homing) cycle */
+    G_28_3 = 283,   /* MCHAN: unhome (no motion) */
     G_30 = 300,
     G_30_1 = 301,
     G_33 = 330,

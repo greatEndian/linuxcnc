@@ -3130,6 +3130,41 @@ Called by: convert_modal_0.
 
 */
 
+/****************************************************************************/
+
+/*! convert_home_cycle   (MCHAN, stage 1: G-code surface)
+
+Handles G28.2 (forced reference / homing cycle) and G28.3 (unhome, no
+motion). These trigger the per-channel HOMING machinery (drive-internal
+homing via the index-enable handshake, MC4). Axis words select which of
+THIS channel's axes are cycled/unhomed; bare = all of the channel's axes.
+
+Stage 1 establishes the parser surface + legality. The motion bridge
+(canon -> NML -> task -> emcmot per-channel homing) is the next stage;
+the AUTO-vs-FREE mode semantics (homing needs free mode; a program runs
+in auto) are being settled before wiring. Until then this reports a
+clear staged message - exactly how G43.5 vector mode shipped its stage 1.
+
+*/
+int Interp::convert_home_cycle(int move,
+                               block_pointer block,
+                               setup_pointer settings)
+{
+    CHKS((settings->cutter_comp_side != CUTTER_COMP::OFF),
+         "Cannot do a homing cycle (G28.2/G28.3) with cutter radius compensation on");
+    /* axis words are the only legal words besides the G-code itself */
+    /* (find_ends-style legality is enforced by the reader; here we only
+     * gate the feature itself until the motion bridge lands) */
+    if (move == G_28_2) {
+        ERS("G28.2 (G-code homing cycle) parsed OK - motion bridge not yet wired "
+            "(MC4b stage 2); see CONFIG-REFERENCE.md");
+    } else {
+        ERS("G28.3 (G-code unhome) parsed OK - motion bridge not yet wired "
+            "(MC4b stage 2); see CONFIG-REFERENCE.md");
+    }
+    return INTERP_OK; // not reached
+}
+
 int Interp::convert_home(int move,       //!< G-code, must be G_28 or G_30
                         block_pointer block,    //!< pointer to a block of RS274 instructions
                         setup_pointer settings) //!< pointer to machine settings
@@ -4309,6 +4344,8 @@ int Interp::convert_modal_0(int code,    						//!< G-code, must be from group 0
     CHP(convert_home(code, block, settings));
   } else if ((code == G_28_1) || (code == G_30_1)) {
     CHP(convert_savehome(code, block, settings));
+  } else if ((code == G_28_2) || (code == G_28_3)) {
+    CHP(convert_home_cycle(code, block, settings));   // MCHAN reference/unhome
   } else if ((code == G_52) || (code == G_92)) {
     CHP(convert_axis_offsets(code, block, settings));
   } else if ((code == G_5_3)||(code == G_6_3)) { // jjf
