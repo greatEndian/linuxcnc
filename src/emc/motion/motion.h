@@ -134,6 +134,8 @@ extern "C" {
 	EMCMOT_SET_SWITCHKINS_TYPE,	/* G43_4_RTCP: command a switchkins kinematics type (0=default,1,2) */
 	EMCMOT_SET_CHANNEL_AXIS_MAP,	/* MCHAN: map this channel's axis (.axis) to a global joint (.joint; -1 unmaps) */
 	EMCMOT_SET_CHANNEL_SPINDLE,	/* MCHAN MC26b: claim spindle (.spindle) for this channel (ownership) */
+	EMCMOT_WAIT_RENDEZVOUS,		/* MCHAN MC10/Phase4: this channel arrives at waiting-M (.waitm_num/.waitm_mask) */
+	EMCMOT_CANCEL_RENDEZVOUS,	/* MCHAN MC10/Phase4: clear this channel's pending waiting-M (abort/reset) */
 	EMCMOT_SET_TERM_COND,	/* set termination condition (stop, blend) */
 	EMCMOT_SET_NUM_JOINTS,	/* set the number of joints */
 	EMCMOT_SET_NUM_SPINDLES, /* set the number of spindles */
@@ -256,6 +258,9 @@ extern "C" {
 				   axis bits) are flags - see EMCMOT_HOME_* below;
 				   strip them before using as an axis mask. */
 	int spindle; 	/* which spindle to use */
+	int waitm_num;		/* MCHAN MC10/Phase4: waiting-M number (200-229) */
+	int waitm_mask;		/* MCHAN MC10/Phase4: participant channel bitmask
+				   (0 = all configured channels = no P-word) */
 	double scale;		/* velocity scale or spindle_speed scale arg */
 	double offset;		/* input, output, or home offset arg */
 	double home;		/* joint home position */
@@ -612,6 +617,12 @@ Suggestion: Split this in to an Error and a Status flag register..
 		/* the above set is the enables in effect for new moves */
 	/* the rest are updated every cycle */
 	double net_feed_scale;	/* net scale factor for all motion */
+	/* MCHAN MC10 (Phase 4): channel-scoped waiting-M status (ch0 set in
+	 * control.c; ch>0 overlaid by mchan_update_status). Lets each channel's
+	 * task/GUI see its own rendezvous state. */
+	int waitm_num;		/* M-number this channel is waiting at, -1 = none */
+	int waitm_released;	/* 1 = rendezvous matched, cleared to continue */
+	int waitm_blockers;	/* mask of channels still not arrived */
 	unsigned char enables_queued;	/* flags for FS, SS, etc */
 		/* the above set is the enables in effect for the
 		   currently executing move */
@@ -811,6 +822,20 @@ typedef struct emcmot_channel_t {
      * status view reflects it (execution remains coord-only by design).
      * Zero-init = EMCMOT_MOTION_DISABLED, matching legacy startup. */
     motion_state_t virt_state;
+    /* MCHAN MC10 (Phase 4): waiting-M (M200-M229) rendezvous state. waitm_num
+     * = the M-number this channel is parked at (-1 = not waiting); waitm_mask
+     * = participant channel bitmask (0 = all configured channels = no P-word);
+     * waitm_released = 1 when the rendezvous matched (cleared to continue);
+     * waitm_t0 = arrival time (deadlock timeout); waitm_reported = the
+     * error+hold message was emitted once; waitm_blockers = mask of channels
+     * still not arrived (for the GUI/observability message). Cleared on
+     * release, program-end, abort, estop and reset. */
+    int    waitm_num;
+    int    waitm_mask;
+    int    waitm_released;
+    int    waitm_reported;
+    int    waitm_blockers;
+    double waitm_t0;
 } emcmot_channel_t;
 
 typedef struct emcmot_internal_t {

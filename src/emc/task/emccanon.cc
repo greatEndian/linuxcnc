@@ -515,6 +515,17 @@ void HOME_CYCLE_IF_UNHOMED(int axismask)
     interp_list.append(std::move(msg));
 }
 
+/* MCHAN MC10/Phase4: waiting-M rendezvous. Queued in program order (it is a
+ * queue-buster, so prior moves drain before it executes); task records the
+ * arrival in motion and blocks until the rendezvous releases this channel. */
+void WAIT_RENDEZVOUS(int waitm_num, int waitm_mask)
+{
+    auto msg = std::make_unique<EMC_TRAJ_WAIT_RENDEZVOUS>();
+    msg->waitm_num = waitm_num;
+    msg->waitm_mask = waitm_mask;
+    interp_list.append(std::move(msg));
+}
+
 void SET_G5X_OFFSET(int index,
                     double x, double y, double z,
                     double a, double b, double c,

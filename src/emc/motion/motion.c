@@ -649,13 +649,22 @@ static int init_hal_io(void)
 	CALL_CHECK(hal_pin_s32_newf(HAL_IN, &(emcmot_hal_data->mchan[n].feed_group), mot_comp_id, "motion.%d.feed-group", n));
 	CALL_CHECK(hal_pin_bit_newf(HAL_OUT, &(emcmot_hal_data->mchan[n].is_moving), mot_comp_id, "motion.%d.is-moving", n));
 	CALL_CHECK(hal_pin_float_newf(HAL_OUT, &(emcmot_hal_data->mchan[n].current_vel), mot_comp_id, "motion.%d.current-vel", n));
+	CALL_CHECK(hal_pin_bit_newf(HAL_OUT, &(emcmot_hal_data->mchan[n].waitm_waiting), mot_comp_id, "motion.%d.waitm-waiting", n));
+	CALL_CHECK(hal_pin_s32_newf(HAL_OUT, &(emcmot_hal_data->mchan[n].waitm_number), mot_comp_id, "motion.%d.waitm-number", n));
+	CALL_CHECK(hal_pin_s32_newf(HAL_OUT, &(emcmot_hal_data->mchan[n].waitm_blockers), mot_comp_id, "motion.%d.waitm-blockers", n));
 	*(emcmot_hal_data->mchan[n].feed_hold) = 0;
 	*(emcmot_hal_data->mchan[n].feed_override) = 1.0;
 	*(emcmot_hal_data->mchan[n].feed_override_enable) = 0;
 	*(emcmot_hal_data->mchan[n].feed_group) = -1;	/* MC32: independent by default */
 	*(emcmot_hal_data->mchan[n].is_moving) = 0;
 	*(emcmot_hal_data->mchan[n].current_vel) = 0.0;
+	*(emcmot_hal_data->mchan[n].waitm_waiting) = 0;
+	*(emcmot_hal_data->mchan[n].waitm_number) = -1;
+	*(emcmot_hal_data->mchan[n].waitm_blockers) = 0;
     }
+    /* MCHAN MC10/Phase4: global waiting-M deadlock timeout pin (default 30 s) */
+    CALL_CHECK(hal_pin_float_newf(HAL_IN, &(emcmot_hal_data->waitm_timeout), mot_comp_id, "motion.waitm-timeout"));
+    *(emcmot_hal_data->waitm_timeout) = 30.0;
 
     // export timing related HAL pins so they can be scoped
     CALL_CHECK(hal_pin_float_newf(HAL_OUT, &(emcmot_hal_data->tooloffset_x), mot_comp_id, "motion.tooloffset.x"));
@@ -956,6 +965,13 @@ static int init_comm_buffers(void)
 	 * = legacy machine-off startup; the channel's stack sets its mode) */
 	memset(&emcmotStruct->mchan_status[ch], 0, sizeof(emcmotStruct->mchan_status[ch]));
 	emcmotInternal->chan[ch].virt_state = EMCMOT_MOTION_DISABLED;
+	/* MC10/Phase4: not waiting at any rendezvous */
+	emcmotInternal->chan[ch].waitm_num = -1;
+	emcmotInternal->chan[ch].waitm_mask = 0;
+	emcmotInternal->chan[ch].waitm_released = 0;
+	emcmotInternal->chan[ch].waitm_reported = 0;
+	emcmotInternal->chan[ch].waitm_blockers = 0;
+	emcmotInternal->chan[ch].waitm_t0 = 0;
     }
     /* MC6/D6: channel 0 owns every joint by default (= legacy behavior) */
     for (int jn = 0; jn < EMCMOT_MAX_JOINTS; jn++) {

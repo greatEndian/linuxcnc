@@ -335,6 +335,9 @@ int emcFormat(NMLTYPE type, void *buffer, CMS * cms)
         ((EMC_TRAJ_SET_SPINDLESYNC *) buffer)->update(cms);
         break;
 	break;
+    case EMC_TRAJ_WAIT_RENDEZVOUS_TYPE:
+        ((EMC_TRAJ_WAIT_RENDEZVOUS *) buffer)->update(cms);
+        break;
     case EMC_TRAJ_SET_VELOCITY_TYPE:
 	((EMC_TRAJ_SET_VELOCITY *) buffer)->update(cms);
 	break;
@@ -546,6 +549,8 @@ const char *emc_symbol_lookup(uint32_t type)
 	return "EMC_TRAJ_SET_TERM_COND";
     case EMC_TRAJ_SET_SPINDLESYNC_TYPE:
 	return "EMC_TRAJ_SET_SPINDLESYNC";
+    case EMC_TRAJ_WAIT_RENDEZVOUS_TYPE:
+	return "EMC_TRAJ_WAIT_RENDEZVOUS";
     case EMC_TRAJ_SET_VELOCITY_TYPE:
 	return "EMC_TRAJ_SET_VELOCITY";
     case EMC_TRAJ_STAT_TYPE:
@@ -1116,6 +1121,15 @@ void EMC_TRAJ_SET_SPINDLESYNC::update(CMS * cms)
     EMC_TRAJ_CMD_MSG::update(cms);
     cms->update(feed_per_revolution);
     cms->update(velocity_mode);
+}
+
+// MCHAN MC10/Phase4
+// cppcheck-suppress duplInheritedMember
+void EMC_TRAJ_WAIT_RENDEZVOUS::update(CMS * cms)
+{
+    EMC_TRAJ_CMD_MSG::update(cms);
+    cms->update(waitm_num);
+    cms->update(waitm_mask);
 }
 
 /*
@@ -1728,6 +1742,9 @@ void EMC_TRAJ_STAT::update(CMS * cms)
     cms->update(feed_override_enabled);
     cms->update(adaptive_feed_enabled);
     cms->update(feed_hold_enabled);
+    cms->update(waitm_num);		// MCHAN MC10/Phase4
+    cms->update(waitm_released);
+    cms->update(waitm_blockers);
 }
 
 /*

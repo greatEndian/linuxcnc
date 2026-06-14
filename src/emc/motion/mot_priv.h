@@ -217,7 +217,18 @@ typedef struct {
 					      from the group authority (lowest member). */
 	hal_bit_t   *is_moving;            /* OUT: this channel is commanding motion */
 	hal_float_t *current_vel;          /* OUT: this channel's velocity (machine units/s) */
+	/* MCHAN MC10/Phase4 waiting-M observability (read by mchan-waitm.sh /
+	 * pyvcp / tests without the GUI) */
+	hal_bit_t   *waitm_waiting;        /* OUT: parked at a waiting-M rendezvous */
+	hal_s32_t   *waitm_number;         /* OUT: the M-number waited at (-1 = none) */
+	hal_s32_t   *waitm_blockers;       /* OUT: bitmask of channels not yet arrived */
     } mchan[EMCMOT_MAX_CHANNELS];
+
+    /* MCHAN MC10/Phase4: waiting-M deadlock timeout (s); a parked channel
+     * whose partners never arrive emits a one-shot error after this and HOLDS
+     * (error+hold policy). 0 = wait forever. Set from [MCHAN]WAITM_TIMEOUT in
+     * HAL (setp motion.waitm-timeout). */
+    hal_float_t *waitm_timeout;
 
     spindle_hal_t spindle[EMCMOT_MAX_SPINDLES];     /*spindle data */
     joint_hal_t joint[EMCMOT_MAX_JOINTS];	/* data for each joint */
