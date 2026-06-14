@@ -543,6 +543,12 @@ static void process_inputs(void)
 		    scale *= ov;
 		}
 	    }
+	    /* MCHAN MC31 I3: protective stop - a keep-out-zone co-occupant
+	     * (handover permit off) holds at zero feed until it clears or is
+	     * permitted (flag set by mchan_run_interference last cycle). */
+	    if ( emcmotInternal->chan[mchan_ch].interfere_stop ) {
+		scale = 0;
+	    }
 	    /* save the resulting combined scale factor for this channel */
 	    ctp->net_feed_scale = scale;
 	}
@@ -1518,9 +1524,31 @@ static void mchan_run_interference(void)
     }
 
     int active = (count >= 2);
+    int allow = *(emcmot_hal_data->interfere_allow) ? 1 : 0;
+    static int reported = 0;	/* one-shot error latch (rising edge of a stop) */
     *(emcmot_hal_data->interfere_active) = active;
-    for (ch = 0; ch < motion_num_channels; ch++)
-	*(emcmot_hal_data->mchan[ch].interfere_hold) = (active && inzone[ch]) ? 1 : 0;
+    for (ch = 0; ch < motion_num_channels; ch++) {
+	int hold = (active && inzone[ch]) ? 1 : 0;
+	*(emcmot_hal_data->mchan[ch].interfere_hold) = hold;
+	/* I3: protective stop unless the handover permit is on. The feed-scale
+	 * loop (process_inputs) forces this channel's net feed to 0 next cycle.
+	 * Both co-occupants stop short of contact (zone carries decel margin);
+	 * the operator jogs one out / or the handover permit is asserted. */
+	emcmotInternal->chan[ch].interfere_stop = (hold && !allow) ? 1 : 0;
+    }
+    if (active && !allow) {
+	if (!reported) {
+	    /* name the first two co-occupants */
+	    int a = -1, b = -1;
+	    for (ch = 0; ch < motion_num_channels; ch++)
+		if (inzone[ch]) { if (a < 0) a = ch; else if (b < 0) { b = ch; break; } }
+	    reportError(_("interference: ch%d and ch%d both in keep-out zone - protective stop (jog one clear, or assert motion.interfere-allow for a sanctioned handover)"),
+		a, b);
+	    reported = 1;
+	}
+    } else {
+	reported = 0;	/* re-arm the one-shot once clear / permitted */
+    }
 }
 
 static void mchan_run_secondary(long period)
