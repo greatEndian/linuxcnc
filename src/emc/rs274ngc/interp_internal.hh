@@ -761,6 +761,14 @@ struct setup
   int sequence_number;          // sequence number of line last read
   int num_spindles;				// number of spindles available
   int active_spindle;			// the spindle currently used for CSS, FPR etc.
+  // MCHAN MC26: the spindle a bare M3/M4/M5/S/G96 (no $ word) targets, from
+  // [CHANNEL]SPINDLE. On a multi-spindle lathe each channel sets its own so
+  // a program written for "the spindle" drives this channel's spindle (ch0
+  // = main spindle 0, ch1 = subspindle 1). default_spindle_set tracks whether
+  // it was configured: when set, a bare M5 stops ONLY this spindle instead of
+  // the stock "stop all spindles" (which would stop another channel's).
+  int default_spindle;			// default 0 = stock single-spindle behaviour
+  bool default_spindle_set;
   double speed[EMCMOT_MAX_SPINDLES];// array of spindle speeds
   SPINDLE_MODE spindle_mode[EMCMOT_MAX_SPINDLES];// SPINDLE_MODE::CONSTANT_RPM or SPINDLE_MODE::CONSTANT_SURFACE
   CANON_SPEED_FEED_MODE speed_feed_mode;        // independent or synched
