@@ -134,6 +134,8 @@ extern "C" {
 	EMCMOT_SET_CHANNEL_SPINDLE,	/* MCHAN MC26b: claim spindle (.spindle) for this channel (ownership) */
 	EMCMOT_WAIT_RENDEZVOUS,		/* MCHAN MC10/Phase4: this channel arrives at waiting-M (.waitm_num/.waitm_mask) */
 	EMCMOT_CANCEL_RENDEZVOUS,	/* MCHAN MC10/Phase4: clear this channel's pending waiting-M (abort/reset) */
+	EMCMOT_SET_CHANNEL_FRAME,	/* MCHAN MC31: this channel's world ORIGIN+ORIENT (.frame_origin/.frame_orient) */
+	EMCMOT_SET_INTERFERE_ZONE,	/* MCHAN MC31: world keep-out zone (.zone[6]) */
 	EMCMOT_SET_TERM_COND,	/* set termination condition (stop, blend) */
 	EMCMOT_SET_NUM_JOINTS,	/* set the number of joints */
 	EMCMOT_SET_NUM_SPINDLES, /* set the number of spindles */
@@ -241,6 +243,9 @@ extern "C" {
 	int waitm_num;		/* MCHAN MC10/Phase4: waiting-M number (200-229) */
 	int waitm_mask;		/* MCHAN MC10/Phase4: participant channel bitmask
 				   (0 = all configured channels = no P-word) */
+	double frame_origin[3];	/* MCHAN MC31: world ORIGIN x,y,z (SET_CHANNEL_FRAME) */
+	double frame_orient[3];	/* MCHAN MC31: world ORIENT rx,ry,rz deg (SET_CHANNEL_FRAME) */
+	double zone[6];		/* MCHAN MC31: world keep-out box (SET_INTERFERE_ZONE) */
 	double scale;		/* velocity scale or spindle_speed scale arg */
 	double offset;		/* input, output, or home offset arg */
 	double home;		/* joint home position */
@@ -815,6 +820,14 @@ typedef struct emcmot_channel_t {
     int    waitm_reported;
     int    waitm_blockers;
     double waitm_t0;
+    /* MCHAN MC31: this channel's WORLD frame (from [CHANNEL]ORIGIN/ORIENT,
+     * same values the preview uses). The controlled point is transformed to
+     * world as Pworld = origin + rot * Pcarte, so the interference guard and
+     * the picture agree. rot is precomputed (Rz*Ry*Rx) from the orient degs.
+     * frame_set=0 (identity at origin) until the channel's chmap sends it. */
+    double origin[3];
+    double rot[3][3];
+    int    frame_set;
 } emcmot_channel_t;
 
 typedef struct emcmot_internal_t {
@@ -844,6 +857,12 @@ typedef struct emcmot_internal_t {
      * only command spindles it owns, so one head's M3/M5 cannot touch
      * another head's spindle. num_channels=1 -> all owned by ch0 = stock. */
     int spindle_owner[EMCMOT_MAX_SPINDLES];
+    /* MCHAN MC31: keep-out / interference zone in WORLD coords
+     * {xmin,xmax,ymin,ymax,zmin,zmax}. When two+ channels' controlled points
+     * are simultaneously inside it, the guard protective-stops them. One zone
+     * in v1 (the handover band); zone_set=0 = no guard = stock. */
+    double interfere_zone[6];
+    int    interfere_zone_set;
     int idForStep;      /* status id while stepping */
     } emcmot_internal_t;
 
