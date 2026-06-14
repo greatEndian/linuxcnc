@@ -690,6 +690,7 @@ static int init_hal_io(void)
 	CALL_CHECK(hal_pin_bit_newf(HAL_OUT, &(emcmot_hal_data->mchan[n].waitm_waiting), mot_comp_id, "motion.%d.waitm-waiting", n));
 	CALL_CHECK(hal_pin_s32_newf(HAL_OUT, &(emcmot_hal_data->mchan[n].waitm_number), mot_comp_id, "motion.%d.waitm-number", n));
 	CALL_CHECK(hal_pin_s32_newf(HAL_OUT, &(emcmot_hal_data->mchan[n].waitm_blockers), mot_comp_id, "motion.%d.waitm-blockers", n));
+	CALL_CHECK(hal_pin_bit_newf(HAL_OUT, &(emcmot_hal_data->mchan[n].interfere_hold), mot_comp_id, "motion.%d.interfere-hold", n));
 	*(emcmot_hal_data->mchan[n].feed_hold) = 0;
 	*(emcmot_hal_data->mchan[n].feed_override) = 1.0;
 	*(emcmot_hal_data->mchan[n].feed_override_enable) = 0;
@@ -699,10 +700,14 @@ static int init_hal_io(void)
 	*(emcmot_hal_data->mchan[n].waitm_waiting) = 0;
 	*(emcmot_hal_data->mchan[n].waitm_number) = -1;
 	*(emcmot_hal_data->mchan[n].waitm_blockers) = 0;
+	*(emcmot_hal_data->mchan[n].interfere_hold) = 0;
     }
     /* MCHAN MC10/Phase4: global waiting-M deadlock timeout pin (default 30 s) */
     CALL_CHECK(hal_pin_float_newf(HAL_IN, &(emcmot_hal_data->waitm_timeout), mot_comp_id, "motion.waitm-timeout"));
     *(emcmot_hal_data->waitm_timeout) = 30.0;
+    /* MCHAN MC31: interference active (two+ channels co-occupying the zone) */
+    CALL_CHECK(hal_pin_bit_newf(HAL_OUT, &(emcmot_hal_data->interfere_active), mot_comp_id, "motion.interfere-active"));
+    *(emcmot_hal_data->interfere_active) = 0;
 
     // export timing related HAL pins so they can be scoped
     CALL_CHECK(hal_pin_float_newf(HAL_OUT, &(emcmot_hal_data->tooloffset_x), mot_comp_id, "motion.tooloffset.x"));

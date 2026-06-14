@@ -166,6 +166,11 @@ static void get_pos_cmds(long period);
  * applies the error+hold deadlock timeout. */
 static void mchan_run_rendezvous(void);
 
+/* MCHAN MC31: interference guard - each servo cycle, transform each channel's
+ * controlled point to world coords and detect co-occupancy of the keep-out
+ * zone. I2 = detection + observability pins (warn-only). */
+static void mchan_run_interference(void);
+
 /* 'compute_screw_comp()' is responsible for calculating backlash and
    lead screw error compensation.  (Leadscrew error compensation is
    a more sophisticated version that includes backlash comp.)  It uses
@@ -292,6 +297,7 @@ void emcmotController(void *arg, long period)
 
     get_pos_cmds(period);
     mchan_run_rendezvous();	/* MCHAN MC10/Phase4: waiting-M match/release/timeout */
+    mchan_run_interference();	/* MCHAN MC31: interference zone co-occupancy detect */
     compute_screw_comp();
     *(emcmot_hal_data->eoffset_active) = axis_plan_external_offsets(servo_period, GET_MOTION_ENABLE_FLAG(), get_allhomed());
     output_to_hal();
@@ -1473,6 +1479,48 @@ static void mchan_run_rendezvous(void)
 	    emcmotStatus->waitm_blockers = c->waitm_blockers;
 	}
     }
+}
+
+/* MCHAN MC31 (I2): interference detection. Each servo cycle, transform every
+ * channel's controlled point (its coord-TP cartesian) into the shared WORLD
+ * frame (origin + rot*carte, frame from [CHANNEL]ORIGIN/ORIENT) and test it
+ * against the declared keep-out zone. If two or more channels are inside the
+ * zone at once, raise motion.interfere-active and flag each co-occupant on
+ * motion.N.interfere-hold. I2 is WARN-ONLY (no motion change); I3 will turn
+ * the flag into a protective feed-hold. No-op (all pins low) unless a zone is
+ * configured and >=2 channels exist (D7). */
+static void mchan_run_interference(void)
+{
+    int ch;
+    int inzone[EMCMOT_MAX_CHANNELS];
+    int count = 0;
+
+    if (!emcmotInternal->interfere_zone_set || motion_num_channels < 2) {
+	*(emcmot_hal_data->interfere_active) = 0;
+	for (ch = 0; ch < motion_num_channels; ch++)
+	    *(emcmot_hal_data->mchan[ch].interfere_hold) = 0;
+	return;
+    }
+
+    const double *z = emcmotInternal->interfere_zone;	/* xmin xmax ymin ymax zmin zmax */
+    for (ch = 0; ch < motion_num_channels; ch++) {
+	emcmot_channel_t *c = &emcmotInternal->chan[ch];
+	EmcPose p;
+	tpGetPos(&c->coord_tp, &p);			/* this channel's controlled point */
+	double lx = p.tran.x, ly = p.tran.y, lz = p.tran.z;
+	double wx = c->origin[0] + c->rot[0][0]*lx + c->rot[0][1]*ly + c->rot[0][2]*lz;
+	double wy = c->origin[1] + c->rot[1][0]*lx + c->rot[1][1]*ly + c->rot[1][2]*lz;
+	double wz = c->origin[2] + c->rot[2][0]*lx + c->rot[2][1]*ly + c->rot[2][2]*lz;
+	inzone[ch] = (wx >= z[0] && wx <= z[1] &&
+		      wy >= z[2] && wy <= z[3] &&
+		      wz >= z[4] && wz <= z[5]) ? 1 : 0;
+	if (inzone[ch]) count++;
+    }
+
+    int active = (count >= 2);
+    *(emcmot_hal_data->interfere_active) = active;
+    for (ch = 0; ch < motion_num_channels; ch++)
+	*(emcmot_hal_data->mchan[ch].interfere_hold) = (active && inzone[ch]) ? 1 : 0;
 }
 
 static void mchan_run_secondary(long period)

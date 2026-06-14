@@ -221,6 +221,8 @@ typedef struct {
 	hal_bit_t   *waitm_waiting;        /* OUT: parked at a waiting-M rendezvous */
 	hal_s32_t   *waitm_number;         /* OUT: the M-number waited at (-1 = none) */
 	hal_s32_t   *waitm_blockers;       /* OUT: bitmask of channels not yet arrived */
+	/* MCHAN MC31 interference observability */
+	hal_bit_t   *interfere_hold;       /* OUT: this channel is co-occupying the keep-out zone */
     } mchan[EMCMOT_MAX_CHANNELS];
 
     /* MCHAN MC10/Phase4: waiting-M deadlock timeout (s); a parked channel
@@ -228,6 +230,11 @@ typedef struct {
      * (error+hold policy). 0 = wait forever. Set from [MCHAN]WAITM_TIMEOUT in
      * HAL (setp motion.waitm-timeout). */
     hal_float_t *waitm_timeout;
+
+    /* MCHAN MC31: TRUE when two or more channels are simultaneously inside the
+     * interference keep-out zone. (Warn-only in I2; drives the protective stop
+     * in I3.) Integrator can wire it to a beacon / extra interlock. */
+    hal_bit_t   *interfere_active;
 
     spindle_hal_t spindle[EMCMOT_MAX_SPINDLES];     /*spindle data */
     joint_hal_t joint[EMCMOT_MAX_JOINTS];	/* data for each joint */
