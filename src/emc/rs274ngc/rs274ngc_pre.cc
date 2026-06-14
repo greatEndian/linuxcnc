@@ -891,6 +891,21 @@ int Interp::init()
           _setup.random_toolchanger = inifile.findBoolV("RANDOM_TOOLCHANGER", "EMCIO", false);
           _setup.num_spindles = inifile.findIntV("SPINDLES", "TRAJ", 1);
 
+          // MCHAN MC26: per-channel default spindle ([CHANNEL]SPINDLE). A bare
+          // M3/M4/M5/S/G96 then targets this channel's spindle instead of the
+          // hard-wired spindle 0 (and a bare M5 stops only it, not all). Absent
+          // = spindle 0 = stock single-spindle behaviour.
+          if (auto ds = inifile.findInt("SPINDLE", "CHANNEL")) {
+              if (*ds >= 0 && *ds < _setup.num_spindles) {
+                  _setup.default_spindle = *ds;
+                  _setup.default_spindle_set = true;
+                  _setup.active_spindle = *ds;
+              } else {
+                  fprintf(stderr, "rs274ngc: [CHANNEL]SPINDLE=%d out of range "
+                          "(0..%d) - using spindle 0\n", *ds, _setup.num_spindles - 1);
+              }
+          }
+
           _setup.tolerance_default = inifile.findRealV("G64_DEFAULT_TOLERANCE", "RS274NGC", 0.0);
           _setup.naivecam_tolerance_default = inifile.findRealV("G64_DEFAULT_NAIVETOLERANCE", "RS274NGC", 0.0);
 
