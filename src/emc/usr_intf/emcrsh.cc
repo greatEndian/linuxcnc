@@ -396,6 +396,8 @@ static int initSocket()
 			xperror("listen()");
 			return -1;
 		}
+		set_nonblock(sockfd);	/* match the IPv6 path: the poll loop
+					   expects a non-blocking listen socket */
 		return sockfd;
 	}
 	if (sockfd < 0) {
