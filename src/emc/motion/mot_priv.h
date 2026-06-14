@@ -236,6 +236,11 @@ typedef struct {
      * interference keep-out zone. (Warn-only in I2; drives the protective stop
      * in I3.) Integrator can wire it to a beacon / extra interlock. */
     hal_bit_t   *interfere_active;
+    /* MCHAN MC31 I3: handover permit. While TRUE, co-occupancy is ALLOWED (no
+     * protective stop) - the program/integrator asserts it ONLY around a
+     * sanctioned waiting-M part transfer where both heads must meet by design.
+     * Default FALSE = guard always enforces. interfere-active still reports. */
+    hal_bit_t   *interfere_allow;
 
     spindle_hal_t spindle[EMCMOT_MAX_SPINDLES];     /*spindle data */
     joint_hal_t joint[EMCMOT_MAX_JOINTS];	/* data for each joint */

@@ -849,6 +849,10 @@ typedef struct emcmot_channel_t {
     double origin[3];
     double rot[3][3];
     int    frame_set;
+    /* MC31 I3: set when this channel is a keep-out co-occupant AND the handover
+     * permit is off -> the feed-scale loop forces this channel's net feed to 0
+     * (protective hold). Cleared when it leaves the zone or permit goes on. */
+    int    interfere_stop;
 } emcmot_channel_t;
 
 typedef struct emcmot_internal_t {
