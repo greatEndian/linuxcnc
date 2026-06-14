@@ -1907,6 +1907,39 @@ void emcmotCommandHandler_locked(void *arg, long servo_period)
 		break;
 	}
 
+	case EMCMOT_SET_CHANNEL_FRAME: {
+		/* MCHAN MC31: this channel's world ORIGIN+ORIENT (from
+		 * [CHANNEL]ORIGIN/ORIENT via chmap). Precompute the rotation
+		 * Rz*Ry*Rx (same convention as the preview) so the per-cycle
+		 * guard just does origin + rot*carte. */
+		emcmot_channel_t *fc = &emcmotInternal->chan[mchan_active_channel];
+		double rx = emcmotCommand->frame_orient[0] * (M_PI / 180.0);
+		double ry = emcmotCommand->frame_orient[1] * (M_PI / 180.0);
+		double rz = emcmotCommand->frame_orient[2] * (M_PI / 180.0);
+		double cx = cos(rx), sx = sin(rx), cy = cos(ry), sy = sin(ry), cz = cos(rz), sz = sin(rz);
+		fc->origin[0] = emcmotCommand->frame_origin[0];
+		fc->origin[1] = emcmotCommand->frame_origin[1];
+		fc->origin[2] = emcmotCommand->frame_origin[2];
+		fc->rot[0][0] = cz*cy; fc->rot[0][1] = cz*sy*sx - sz*cx; fc->rot[0][2] = cz*sy*cx + sz*sx;
+		fc->rot[1][0] = sz*cy; fc->rot[1][1] = sz*sy*sx + cz*cx; fc->rot[1][2] = sz*sy*cx - cz*sx;
+		fc->rot[2][0] = -sy;   fc->rot[2][1] = cy*sx;            fc->rot[2][2] = cy*cx;
+		fc->frame_set = 1;
+		rtapi_print_msg(RTAPI_MSG_DBG, "SET_CHANNEL_FRAME ch=%d O=(%.1f,%.1f,%.1f)",
+			mchan_active_channel, fc->origin[0], fc->origin[1], fc->origin[2]);
+		break;
+	}
+	case EMCMOT_SET_INTERFERE_ZONE:
+		/* MCHAN MC31: world keep-out box {xmin,xmax,ymin,ymax,zmin,zmax}
+		 * (from [MCHAN]INTERFERE_ZONE, sent by the master chmap). */
+		for (int z = 0; z < 6; z++)
+			emcmotInternal->interfere_zone[z] = emcmotCommand->zone[z];
+		emcmotInternal->interfere_zone_set = 1;
+		rtapi_print_msg(RTAPI_MSG_DBG, "SET_INTERFERE_ZONE x[%.0f,%.0f] y[%.0f,%.0f] z[%.0f,%.0f]",
+			emcmotInternal->interfere_zone[0], emcmotInternal->interfere_zone[1],
+			emcmotInternal->interfere_zone[2], emcmotInternal->interfere_zone[3],
+			emcmotInternal->interfere_zone[4], emcmotInternal->interfere_zone[5]);
+		break;
+
 	case EMCMOT_SET_SCURVE_PEAK_SCALE:
 		/* S-curve rest-to-rest peak velocity scale: 0.5 = faithful (original
 		 * behaviour), 1.0 = physically-correct (full jerk-feasible cornering).
