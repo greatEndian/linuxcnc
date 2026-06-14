@@ -680,6 +680,22 @@ static int init_hal_io(void)
     CALL_CHECK(hal_pin_s32_newf(HAL_OUT, &(emcmot_hal_data->tp_time_last), mot_comp_id, "motion.tp-time-last"));
     CALL_CHECK(hal_pin_s32_newf(HAL_OUT, &(emcmot_hal_data->tp_time_max), mot_comp_id, "motion.tp-time-max"));
 
+    /* MCHAN (MC5): per-channel run-control pins, motion.N.* (one set per
+     * configured channel). At num_channels=1 only motion.0.* appear and
+     * default to no-op = stock behavior (D7). */
+    for (n = 0; n < motion_num_channels; n++) {
+	CALL_CHECK(hal_pin_bit_newf(HAL_IN, &(emcmot_hal_data->mchan[n].feed_hold), mot_comp_id, "motion.%d.feed-hold", n));
+	CALL_CHECK(hal_pin_float_newf(HAL_IN, &(emcmot_hal_data->mchan[n].feed_override), mot_comp_id, "motion.%d.feed-override", n));
+	CALL_CHECK(hal_pin_bit_newf(HAL_IN, &(emcmot_hal_data->mchan[n].feed_override_enable), mot_comp_id, "motion.%d.feed-override-enable", n));
+	CALL_CHECK(hal_pin_bit_newf(HAL_OUT, &(emcmot_hal_data->mchan[n].is_moving), mot_comp_id, "motion.%d.is-moving", n));
+	CALL_CHECK(hal_pin_float_newf(HAL_OUT, &(emcmot_hal_data->mchan[n].current_vel), mot_comp_id, "motion.%d.current-vel", n));
+	*(emcmot_hal_data->mchan[n].feed_hold) = 0;
+	*(emcmot_hal_data->mchan[n].feed_override) = 1.0;
+	*(emcmot_hal_data->mchan[n].feed_override_enable) = 0;
+	*(emcmot_hal_data->mchan[n].is_moving) = 0;
+	*(emcmot_hal_data->mchan[n].current_vel) = 0.0;
+    }
+
     // export timing related HAL pins so they can be scoped
     CALL_CHECK(hal_pin_float_newf(HAL_OUT, &(emcmot_hal_data->tooloffset_x), mot_comp_id, "motion.tooloffset.x"));
     CALL_CHECK(hal_pin_float_newf(HAL_OUT, &(emcmot_hal_data->tooloffset_y), mot_comp_id, "motion.tooloffset.y"));
