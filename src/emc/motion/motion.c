@@ -687,11 +687,13 @@ static int init_hal_io(void)
 	CALL_CHECK(hal_pin_bit_newf(HAL_IN, &(emcmot_hal_data->mchan[n].feed_hold), mot_comp_id, "motion.%d.feed-hold", n));
 	CALL_CHECK(hal_pin_float_newf(HAL_IN, &(emcmot_hal_data->mchan[n].feed_override), mot_comp_id, "motion.%d.feed-override", n));
 	CALL_CHECK(hal_pin_bit_newf(HAL_IN, &(emcmot_hal_data->mchan[n].feed_override_enable), mot_comp_id, "motion.%d.feed-override-enable", n));
+	CALL_CHECK(hal_pin_s32_newf(HAL_IN, &(emcmot_hal_data->mchan[n].feed_group), mot_comp_id, "motion.%d.feed-group", n));
 	CALL_CHECK(hal_pin_bit_newf(HAL_OUT, &(emcmot_hal_data->mchan[n].is_moving), mot_comp_id, "motion.%d.is-moving", n));
 	CALL_CHECK(hal_pin_float_newf(HAL_OUT, &(emcmot_hal_data->mchan[n].current_vel), mot_comp_id, "motion.%d.current-vel", n));
 	*(emcmot_hal_data->mchan[n].feed_hold) = 0;
 	*(emcmot_hal_data->mchan[n].feed_override) = 1.0;
 	*(emcmot_hal_data->mchan[n].feed_override_enable) = 0;
+	*(emcmot_hal_data->mchan[n].feed_group) = -1;	/* MC32: independent by default */
 	*(emcmot_hal_data->mchan[n].is_moving) = 0;
 	*(emcmot_hal_data->mchan[n].current_vel) = 0.0;
     }
