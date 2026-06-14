@@ -288,7 +288,7 @@ int Interp::execute_block(block_pointer block,   //!< pointer to a block of RS27
                 status = convert_speed(block->dollar_number, block, settings);
             }
         } else {
-            status = convert_speed(0, block, settings);
+            status = convert_speed(settings->default_spindle, block, settings); // MCHAN MC26
         }
     CHP(status);
     }

@@ -4107,9 +4107,9 @@ int Interp::convert_m(block_pointer block,       //!< pointer to a block of RS27
             enqueue_START_SPINDLE_CLOCKWISE(block->dollar_number);
             settings->spindle_turning[(int)block->dollar_number] = CANON_CLOCKWISE;
         }
-     } else { // the default spindle
-        enqueue_START_SPINDLE_CLOCKWISE(0);
-        settings->spindle_turning[0] = CANON_CLOCKWISE;
+     } else { // the default spindle (MCHAN MC26: this channel's spindle)
+        enqueue_START_SPINDLE_CLOCKWISE(settings->default_spindle);
+        settings->spindle_turning[settings->default_spindle] = CANON_CLOCKWISE;
      }
  } else if ((block->m_modes[7] == 4) && ONCE_M(7)) {
      if (block->dollar_flag){
@@ -4124,9 +4124,9 @@ int Interp::convert_m(block_pointer block,       //!< pointer to a block of RS27
             enqueue_START_SPINDLE_COUNTERCLOCKWISE(block->dollar_number);
             settings->spindle_turning[(int)block->dollar_number] = CANON_COUNTERCLOCKWISE;
         }
-     } else { // default spindle
-         enqueue_START_SPINDLE_COUNTERCLOCKWISE(0);
-         settings->spindle_turning[0] = CANON_COUNTERCLOCKWISE;
+     } else { // default spindle (MCHAN MC26: this channel's spindle)
+         enqueue_START_SPINDLE_COUNTERCLOCKWISE(settings->default_spindle);
+         settings->spindle_turning[settings->default_spindle] = CANON_COUNTERCLOCKWISE;
      }
  } else if ((block->m_modes[7] == 5) && ONCE_M(7)){
     if (block->dollar_flag){
@@ -4141,7 +4141,12 @@ int Interp::convert_m(block_pointer block,       //!< pointer to a block of RS27
             settings->spindle_turning[block->dollar_number] = CANON_STOPPED;
             enqueue_STOP_SPINDLE_TURNING(block->dollar_number);
         }
-    } else { // the default spindle
+    } else if (settings->default_spindle_set) {
+      // MCHAN MC26: a channel with its own default spindle stops ONLY that
+      // one - a bare M5 must not stop another channel's spindle.
+      settings->spindle_turning[settings->default_spindle] = CANON_STOPPED;
+      enqueue_STOP_SPINDLE_TURNING(settings->default_spindle);
+    } else { // stock: bare M5 stops all spindles
       for (int i = 0; i < settings->num_spindles; i++){
         settings->spindle_turning[i] = CANON_STOPPED;
         enqueue_STOP_SPINDLE_TURNING(i);
@@ -4155,12 +4160,12 @@ int Interp::convert_m(block_pointer block,       //!< pointer to a block of RS27
              (_("Spindle ($) number out of range in M19 Command")));
       }
       if (block->r_flag || block->p_flag)
-      enqueue_ORIENT_SPINDLE(block->dollar_flag ? block->dollar_number : 0,
+      enqueue_ORIENT_SPINDLE(block->dollar_flag ? block->dollar_number : settings->default_spindle,
                              block->r_flag ? (block->r_number + settings->orient_offset) : settings->orient_offset,
                              block->p_flag ? block->p_number : 0);
       if (block->q_flag) {
 	  CHKS((block->q_number <= 0.0),(_("Q word with M19 requires a value > 0")));
-	  enqueue_WAIT_ORIENT_SPINDLE_COMPLETE(block->dollar_flag ? block->dollar_number : 0,
+	  enqueue_WAIT_ORIENT_SPINDLE_COMPLETE(block->dollar_flag ? block->dollar_number : settings->default_spindle,
 			  	  	  	  	  	  	  	   block->q_number);
       }
   } else if ((block->m_modes[7] == 70) || (block->m_modes[7] == 73)) {

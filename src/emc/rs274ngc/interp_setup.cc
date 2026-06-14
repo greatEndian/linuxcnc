@@ -130,6 +130,8 @@ setup::setup() :
     sequence_number(0),
     num_spindles(0),
     active_spindle(0),
+    default_spindle(0),			// MCHAN MC26
+    default_spindle_set(false),		// MCHAN MC26
     speed {0.0},
     spindle_mode{SPINDLE_MODE::CONSTANT_RPM},
     speed_feed_mode{CANON_INDEPENDENT},
