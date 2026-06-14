@@ -1878,6 +1878,35 @@ void emcmotCommandHandler_locked(void *arg, long servo_period)
 		}
 		break;
 
+	case EMCMOT_WAIT_RENDEZVOUS: {
+		/* MCHAN MC10/Phase4: this channel has reached a waiting-M
+		 * (M200-M229) and its queue has drained (the M-code is a
+		 * queue-buster, so task only sends this once the channel is
+		 * in-position). Record arrival; the rendezvous engine in
+		 * control.c matches participants and releases all in one cycle. */
+		emcmot_channel_t *wc = &emcmotInternal->chan[mchan_active_channel];
+		wc->waitm_num = emcmotCommand->waitm_num;
+		wc->waitm_mask = emcmotCommand->waitm_mask;	/* 0 = all configured */
+		wc->waitm_released = 0;
+		wc->waitm_reported = 0;
+		wc->waitm_blockers = 0;
+		wc->waitm_t0 = 0.0;				/* elapsed-wait accumulator */
+		rtapi_print_msg(RTAPI_MSG_DBG, "WAIT_RENDEZVOUS ch=%d M%d mask=0x%x",
+			mchan_active_channel, wc->waitm_num, wc->waitm_mask);
+		break;
+	}
+	case EMCMOT_CANCEL_RENDEZVOUS: {
+		/* MCHAN MC10/Phase4: clear this channel's pending waiting-M
+		 * (task sends this on abort/reset so a partner doesn't phantom-
+		 * match a stale arrival). */
+		emcmot_channel_t *wc = &emcmotInternal->chan[mchan_active_channel];
+		wc->waitm_num = -1;
+		wc->waitm_released = 0;
+		wc->waitm_reported = 0;
+		wc->waitm_blockers = 0;
+		break;
+	}
+
 	case EMCMOT_SET_SCURVE_PEAK_SCALE:
 		/* S-curve rest-to-rest peak velocity scale: 0.5 = faithful (original
 		 * behaviour), 1.0 = physically-correct (full jerk-feasible cornering).

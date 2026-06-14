@@ -3754,6 +3754,7 @@ int Interp::restore_from_tag(StateTag const &tag)
     // clear queue buster sflags, otherwise the command won't be
     // executed - Tormach *dpr 8/17/15
     _setup.input_flag = false;
+    _setup.waitm_flag = false;   // MCHAN MC10/Phase4
     _setup.toolchange_flag = false;
     _setup.probe_flag = false;
 
@@ -3854,6 +3855,20 @@ int Interp::convert_m(block_pointer block,       //!< pointer to a block of RS27
      M66 waits for an input
      M67 reads a digital input
      M68 reads an analog input*/
+
+  /* MCHAN MC10/Phase4: waiting-M rendezvous (M200-M229). A queue-buster:
+   * prior moves drain, this channel parks, and it continues only when all
+   * participants (P-word channel bitmask, or all configured channels if no
+   * P) have also arrived at the same M-number. */
+  if (block->waitm_flag) {
+      CHKS((settings->cutter_comp_side != CUTTER_COMP::OFF),
+           (_("Cannot use a waiting-M (M200-M229) with cutter radius compensation on")));
+      int mask = block->p_flag ? round_to_int(block->p_number) : 0;
+      CHKS((mask < 0), (_("Negative P-word (channel mask) with waiting-M")));
+      write_canon_state_tag(block, settings);
+      WAIT_RENDEZVOUS(block->waitm_number, mask);
+      settings->waitm_flag = true;   /* queue-buster: see interp_execute.cc */
+  }
 
   if (is_user_defined_m_code(block, settings, 5) &&
       STEP_REMAPPED_IN_BLOCK(block, STEP_M_5) &&

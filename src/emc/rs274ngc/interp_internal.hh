@@ -458,6 +458,11 @@ struct block_struct
   int m_count{};
   int m_modes[11]{};
   int user_m{};
+  // MCHAN MC10/Phase4: waiting-M (M200-M229). Handled outside the ems[]/
+  // modal-group machinery (which only spans M0-M199) - read_m sets the flag
+  // and number directly; convert_m emits the rendezvous queue-buster.
+  bool waitm_flag{};
+  int  waitm_number{};
   int dollar_number{};
   int g_modes[GM_MAX_MODAL_GROUPS]{};
 
@@ -747,6 +752,7 @@ struct setup
   CANON_PLANE plane;            // active plane, XY-, YZ-, or XZ-plane
   bool probe_flag;            // flag indicating probing done
   bool input_flag;            // flag indicating waiting for input done
+  bool waitm_flag;            // MCHAN MC10/Phase4: waiting-M queue-buster this block
   bool toolchange_flag;       // flag indicating we just had a tool change
   int input_index;		// channel queried
   bool input_digital;		// input queried was digital (false=analog)
