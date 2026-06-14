@@ -200,6 +200,21 @@ typedef struct {
     hal_float_t *tooloffset_v;
     hal_float_t *tooloffset_w;
 
+    /* MCHAN MC5: per-channel run-control pins, exported as motion.N.* (one
+     * set per configured channel). The global motion.feed-hold / .feed-
+     * inhibit pins remain the all-channel D5 floor; these are channel-
+     * scoped operator controls (a hardware feed-hold button / feed-override
+     * pot per head). feed_override multiplies the channel's GUI/NML feed
+     * scale and only applies when feed_override_enable is TRUE, so an
+     * unwired channel is exactly stock (D7). */
+    struct {
+	hal_bit_t   *feed_hold;            /* IN : TRUE = hold this channel (scale->0) */
+	hal_float_t *feed_override;        /* IN : per-channel feed override factor */
+	hal_bit_t   *feed_override_enable; /* IN : TRUE = apply feed_override pin */
+	hal_bit_t   *is_moving;            /* OUT: this channel is commanding motion */
+	hal_float_t *current_vel;          /* OUT: this channel's velocity (machine units/s) */
+    } mchan[EMCMOT_MAX_CHANNELS];
+
     spindle_hal_t spindle[EMCMOT_MAX_SPINDLES];     /*spindle data */
     joint_hal_t joint[EMCMOT_MAX_JOINTS];	/* data for each joint */
     extrajoint_hal_t ejoint[EMCMOT_MAX_EXTRAJOINTS]; /* data for each extrajoint */

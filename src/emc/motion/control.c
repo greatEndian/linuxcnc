@@ -499,10 +499,26 @@ static void process_inputs(void)
 		if ( *emcmot_hal_data->feed_hold ) {
 		    scale = 0;
 		}
+		/* MCHAN MC5: per-channel feed-hold (motion.N.feed-hold) - a
+		 * hardware feed-hold button for THIS head only; maskable like
+		 * the global one so it will not break a tap/thread. */
+		if ( *emcmot_hal_data->mchan[mchan_ch].feed_hold ) {
+		    scale = 0;
+		}
 	    }
 	    /*non maskable (except during spinndle synch move) feed hold inhibit pin */
 	    if ( ch_enables & *emcmot_hal_data->feed_inhibit ) {
 		scale = 0;
+	    }
+	    /* MCHAN MC5: per-channel feed override (motion.N.feed-override), an
+	     * operator pot for THIS head. Applied only when its enable pin is
+	     * set (unwired channel = stock); multiplies on top of the GUI/NML
+	     * feed scale; clamped to [DISPLAY]MAX_FEED_OVERRIDE. */
+	    if ( *emcmot_hal_data->mchan[mchan_ch].feed_override_enable ) {
+		double ov = *emcmot_hal_data->mchan[mchan_ch].feed_override;
+		if ( ov < 0.0 ) ov = 0.0;
+		if ( ov > emcmotConfig->maxFeedScale ) ov = emcmotConfig->maxFeedScale;
+		scale *= ov;
 	    }
 	    /* save the resulting combined scale factor for this channel */
 	    ctp->net_feed_scale = scale;
@@ -2391,6 +2407,26 @@ static void output_to_hal(void)
         else
             emcmotStatus->current_vel = (*emcmot_hal_data->current_vel) = 0.0;
         *(emcmot_hal_data->requested_vel) = 0.0;
+    }
+
+    /* MCHAN MC5: per-channel motion outputs (motion.N.is-moving / .current-vel).
+     * is-moving = the channel's coord TP is running OR any joint it owns is
+     * running a free/jog/homing move (so ch0 jogs/teleop count too).
+     * current-vel = the channel coord TP velocity (0 during pure jog). */
+    {
+	int ch, j;
+	for (ch = 0; ch < motion_num_channels; ch++) {
+	    TP_STRUCT *ctp = &emcmotInternal->chan[ch].coord_tp;
+	    int mv = tpIsMoving(ctp);
+	    if (!mv) {
+		for (j = 0; j < ALL_JOINTS; j++) {
+		    if (emcmotInternal->joint_owner[j] == ch
+			&& joints[j].free_tp.active) { mv = 1; break; }
+		}
+	    }
+	    *(emcmot_hal_data->mchan[ch].is_moving) = mv;
+	    *(emcmot_hal_data->mchan[ch].current_vel) = ctp->current_vel;
+	}
     }
 
     /* These params can be used to examine any internal variable. */
