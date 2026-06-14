@@ -1001,6 +1001,11 @@ static int init_comm_buffers(void)
     for (int jn = 0; jn < EMCMOT_MAX_JOINTS; jn++) {
 	emcmotInternal->joint_owner[jn] = 0;
     }
+    /* MC26b: channel 0 owns every spindle by default; secondaries claim
+     * theirs via EMCMOT_SET_CHANNEL_SPINDLE (from [CHANNEL]SPINDLE) */
+    for (int sp = 0; sp < EMCMOT_MAX_SPINDLES; sp++) {
+	emcmotInternal->spindle_owner[sp] = 0;
+    }
 
     /* init more stuff */
     emcmotInternal->head = 0;

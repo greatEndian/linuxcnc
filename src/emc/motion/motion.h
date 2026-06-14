@@ -131,6 +131,7 @@ extern "C" {
 	EMCMOT_SET_JERK,	/* set the max jerk for moves (tooltip) */
 	EMCMOT_SET_PLANNER_TYPE,	/* set planner type (0=trapezoidal, 1=S-curve) */
 	EMCMOT_SET_CHANNEL_AXIS_MAP,	/* MCHAN: map this channel's axis (.axis) to a global joint (.joint; -1 unmaps) */
+	EMCMOT_SET_CHANNEL_SPINDLE,	/* MCHAN MC26b: claim spindle (.spindle) for this channel (ownership) */
 	EMCMOT_SET_TERM_COND,	/* set termination condition (stop, blend) */
 	EMCMOT_SET_NUM_JOINTS,	/* set the number of joints */
 	EMCMOT_SET_NUM_SPINDLES, /* set the number of spindles */
@@ -812,6 +813,12 @@ typedef struct emcmot_internal_t {
      * owned by another secondary channel is rejected. Runtime-dynamic by
      * design (axis exchange lands in phase 5). */
     int joint_owner[EMCMOT_MAX_JOINTS];
+    /* MCHAN (MC26b): which channel owns each spindle. Default 0 (channel 0
+     * owns every spindle = legacy). A secondary channel claims a spindle via
+     * EMCMOT_SET_CHANNEL_SPINDLE (from its [CHANNEL]SPINDLE); a channel may
+     * only command spindles it owns, so one head's M3/M5 cannot touch
+     * another head's spindle. num_channels=1 -> all owned by ch0 = stock. */
+    int spindle_owner[EMCMOT_MAX_SPINDLES];
     int idForStep;      /* status id while stepping */
     } emcmot_internal_t;
 
