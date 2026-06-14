@@ -711,6 +711,9 @@ static int init_hal_io(void)
     /* MCHAN MC31: interference active (two+ channels co-occupying the zone) */
     CALL_CHECK(hal_pin_bit_newf(HAL_OUT, &(emcmot_hal_data->interfere_active), mot_comp_id, "motion.interfere-active"));
     *(emcmot_hal_data->interfere_active) = 0;
+    /* MCHAN MC31 I3: handover permit (TRUE = allow co-occupancy, no stop) */
+    CALL_CHECK(hal_pin_bit_newf(HAL_IN, &(emcmot_hal_data->interfere_allow), mot_comp_id, "motion.interfere-allow"));
+    *(emcmot_hal_data->interfere_allow) = 0;
 
     // export timing related HAL pins so they can be scoped
     CALL_CHECK(hal_pin_float_newf(HAL_OUT, &(emcmot_hal_data->tooloffset_x), mot_comp_id, "motion.tooloffset.x"));
@@ -1026,6 +1029,7 @@ static int init_comm_buffers(void)
 	    for (int b = 0; b < 3; b++)
 		emcmotInternal->chan[ch].rot[a][b] = (a == b) ? 1.0 : 0.0;
 	emcmotInternal->chan[ch].frame_set = 0;
+	emcmotInternal->chan[ch].interfere_stop = 0;
     }
     /* MC31: no interference zone until the master chmap sends one */
     emcmotInternal->interfere_zone_set = 0;
