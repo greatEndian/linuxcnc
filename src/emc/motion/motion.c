@@ -972,7 +972,17 @@ static int init_comm_buffers(void)
 	emcmotInternal->chan[ch].waitm_reported = 0;
 	emcmotInternal->chan[ch].waitm_blockers = 0;
 	emcmotInternal->chan[ch].waitm_t0 = 0;
+	/* MC31: identity world frame at origin until the channel's chmap sends it */
+	emcmotInternal->chan[ch].origin[0] = 0;
+	emcmotInternal->chan[ch].origin[1] = 0;
+	emcmotInternal->chan[ch].origin[2] = 0;
+	for (int a = 0; a < 3; a++)
+	    for (int b = 0; b < 3; b++)
+		emcmotInternal->chan[ch].rot[a][b] = (a == b) ? 1.0 : 0.0;
+	emcmotInternal->chan[ch].frame_set = 0;
     }
+    /* MC31: no interference zone until the master chmap sends one */
+    emcmotInternal->interfere_zone_set = 0;
     /* MC6/D6: channel 0 owns every joint by default (= legacy behavior) */
     for (int jn = 0; jn < EMCMOT_MAX_JOINTS; jn++) {
 	emcmotInternal->joint_owner[jn] = 0;
