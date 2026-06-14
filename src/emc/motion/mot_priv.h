@@ -211,6 +211,10 @@ typedef struct {
 	hal_bit_t   *feed_hold;            /* IN : TRUE = hold this channel (scale->0) */
 	hal_float_t *feed_override;        /* IN : per-channel feed override factor */
 	hal_bit_t   *feed_override_enable; /* IN : TRUE = apply feed_override pin */
+	hal_s32_t   *feed_group;           /* IN : MC32 sync group id; <0 = independent.
+					      Channels sharing an id couple: feed-hold
+					      OR'd across the group, feed override taken
+					      from the group authority (lowest member). */
 	hal_bit_t   *is_moving;            /* OUT: this channel is commanding motion */
 	hal_float_t *current_vel;          /* OUT: this channel's velocity (machine units/s) */
     } mchan[EMCMOT_MAX_CHANNELS];

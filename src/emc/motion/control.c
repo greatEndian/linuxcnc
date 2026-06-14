@@ -398,6 +398,38 @@ static void handle_kinematicsSwitch(void) {
     tpSetPos(&emcmotInternal->chan[0].coord_tp, &emcmotStatus->carte_pos_cmd);
 } //handle_kinematicsSwitch()
 
+/* MCHAN MC32: resolve a channel's EFFECTIVE per-channel feed controls,
+ * honouring sync groups (motion.N.feed-group >= 0 couples channels):
+ *   - feed-hold is OR'd across the group (any member holds -> the whole
+ *     group holds: a stop on one synchronized head stops the set)
+ *   - the feed override is taken from the group AUTHORITY = the lowest-
+ *     numbered member (Fanuc exclusive-authority: one knob governs the
+ *     group; members' own override pins are ignored while grouped).
+ * Ungrouped (feed-group < 0) = pure MC5 per-channel behaviour.
+ * Note: this couples OVERRIDE and HOLD, not the toolpaths themselves
+ * (program synchronisation is the waiting-M / phase-4 work). */
+static void mchan_feed_controls(int ch, int *hold, int *ov_enable, double *ov)
+{
+    emcmot_hal_data_t *h = emcmot_hal_data;
+    int g = *h->mchan[ch].feed_group;
+    *hold = *h->mchan[ch].feed_hold ? 1 : 0;
+    if (g < 0) {
+	*ov_enable = *h->mchan[ch].feed_override_enable ? 1 : 0;
+	*ov = *h->mchan[ch].feed_override;
+	return;
+    }
+    int auth = ch, m;
+    for (m = 0; m < motion_num_channels; m++) {
+	if (m == ch) continue;
+	if (*h->mchan[m].feed_group == g) {
+	    if (*h->mchan[m].feed_hold) *hold = 1;
+	    if (m < auth) auth = m;
+	}
+    }
+    *ov_enable = *h->mchan[auth].feed_override_enable ? 1 : 0;
+    *ov = *h->mchan[auth].feed_override;
+}
+
 static void process_inputs(void)
 {
     int joint_num, spindle_num;
@@ -494,31 +526,39 @@ static void process_inputs(void)
 		//Otherwise, if direction and sign match, we're ok
 		scale *= adaptive_feed_out;
 	    }
-	    if ( ch_enables & FH_ENABLED ) {
-		/* read feed hold HAL pin (global pin = all channels, D5) */
-		if ( *emcmot_hal_data->feed_hold ) {
+	    /* MCHAN MC5/MC32: this channel's effective per-channel feed-hold +
+	     * override, resolved through any sync group it belongs to. */
+	    {
+		int mc_hold, mc_oven; double mc_ov;
+		mchan_feed_controls(mchan_ch, &mc_hold, &mc_oven, &mc_ov);
+		if ( ch_enables & FH_ENABLED ) {
+		    /* feed hold HAL pin (global pin = all channels, D5) */
+		    if ( *emcmot_hal_data->feed_hold ) {
+			scale = 0;
+		    }
+		    /* MCHAN MC5: per-channel feed-hold (motion.N.feed-hold) - a
+		     * hardware feed-hold button for THIS head only (MC32: OR'd
+		     * across its sync group); maskable like the global one so
+		     * it will not break a tap/thread. */
+		    if ( mc_hold ) {
+			scale = 0;
+		    }
+		}
+		/*non maskable (except during spinndle synch move) feed hold inhibit pin */
+		if ( ch_enables & *emcmot_hal_data->feed_inhibit ) {
 		    scale = 0;
 		}
-		/* MCHAN MC5: per-channel feed-hold (motion.N.feed-hold) - a
-		 * hardware feed-hold button for THIS head only; maskable like
-		 * the global one so it will not break a tap/thread. */
-		if ( *emcmot_hal_data->mchan[mchan_ch].feed_hold ) {
-		    scale = 0;
+		/* MCHAN MC5: per-channel feed override (motion.N.feed-override),
+		 * an operator pot for THIS head (MC32: from the group authority
+		 * when grouped). Applied only when enabled (unwired = stock);
+		 * multiplies on top of the GUI/NML feed scale; clamped to
+		 * [DISPLAY]MAX_FEED_OVERRIDE. */
+		if ( mc_oven ) {
+		    double ov = mc_ov;
+		    if ( ov < 0.0 ) ov = 0.0;
+		    if ( ov > emcmotConfig->maxFeedScale ) ov = emcmotConfig->maxFeedScale;
+		    scale *= ov;
 		}
-	    }
-	    /*non maskable (except during spinndle synch move) feed hold inhibit pin */
-	    if ( ch_enables & *emcmot_hal_data->feed_inhibit ) {
-		scale = 0;
-	    }
-	    /* MCHAN MC5: per-channel feed override (motion.N.feed-override), an
-	     * operator pot for THIS head. Applied only when its enable pin is
-	     * set (unwired channel = stock); multiplies on top of the GUI/NML
-	     * feed scale; clamped to [DISPLAY]MAX_FEED_OVERRIDE. */
-	    if ( *emcmot_hal_data->mchan[mchan_ch].feed_override_enable ) {
-		double ov = *emcmot_hal_data->mchan[mchan_ch].feed_override;
-		if ( ov < 0.0 ) ov = 0.0;
-		if ( ov > emcmotConfig->maxFeedScale ) ov = emcmotConfig->maxFeedScale;
-		scale *= ov;
 	    }
 	    /* save the resulting combined scale factor for this channel */
 	    ctp->net_feed_scale = scale;
