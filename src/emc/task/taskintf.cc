@@ -1613,6 +1613,25 @@ int emcTrajRigidTap(const EmcPose& pos, double vel, double ini_maxvel, double ac
     return usrmotWriteEmcmotCommand(&emcmotCommand);
 }
 
+// MCHAN MC10/Phase4: this channel reached a waiting-M (M200-M229); record
+// arrival in motion. The motion-side rendezvous engine matches participants
+// and releases all together; task then polls traj.waitm_released.
+int emcWaitRendezvous(int waitm_num, int waitm_mask)
+{
+    emcmotCommand.command = EMCMOT_WAIT_RENDEZVOUS;
+    emcmotCommand.waitm_num = waitm_num;
+    emcmotCommand.waitm_mask = waitm_mask;
+    return usrmotWriteEmcmotCommand(&emcmotCommand);
+}
+
+// MCHAN MC10/Phase4: clear this channel's pending waiting-M (after release,
+// or on abort/reset) so a stale arrival can't phantom-match a partner.
+int emcCancelRendezvous(void)
+{
+    emcmotCommand.command = EMCMOT_CANCEL_RENDEZVOUS;
+    return usrmotWriteEmcmotCommand(&emcmotCommand);
+}
+
 
 static int last_id = 0;
 static int last_id_printed = 0;
@@ -1663,6 +1682,9 @@ int emcTrajUpdate(EMC_TRAJ_STAT * stat)
     stat->distance_to_go = emcmotStatus.distance_to_go;
     stat->dtg = emcmotStatus.dtg;
     stat->current_vel = emcmotStatus.current_vel;
+    stat->waitm_num = emcmotStatus.waitm_num;		// MCHAN MC10/Phase4
+    stat->waitm_released = emcmotStatus.waitm_released;
+    stat->waitm_blockers = emcmotStatus.waitm_blockers;
     if (EMC_DEBUG_MOTION_TIME & emc_debug) {
 	if (stat->id != last_id) {
 	    if (last_id != last_id_printed) {

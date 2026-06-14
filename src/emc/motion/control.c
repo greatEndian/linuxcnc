@@ -161,6 +161,11 @@ static void handle_jjogwheels(void);
 */
 static void get_pos_cmds(long period);
 
+/* MCHAN MC10/Phase4: waiting-M (M200-M229) rendezvous engine, run once per
+ * servo cycle - matches arrived channels, releases them together, and
+ * applies the error+hold deadlock timeout. */
+static void mchan_run_rendezvous(void);
+
 /* 'compute_screw_comp()' is responsible for calculating backlash and
    lead screw error compensation.  (Leadscrew error compensation is
    a more sophisticated version that includes backlash comp.)  It uses
@@ -286,6 +291,7 @@ void emcmotController(void *arg, long period)
     }
 
     get_pos_cmds(period);
+    mchan_run_rendezvous();	/* MCHAN MC10/Phase4: waiting-M match/release/timeout */
     compute_screw_comp();
     *(emcmot_hal_data->eoffset_active) = axis_plan_external_offsets(servo_period, GET_MOTION_ENABLE_FLAG(), get_allhomed());
     output_to_hal();
@@ -1379,6 +1385,96 @@ static void mchan_pose_set_axis(EmcPose *p, int ax, double v)
  * mapped joints just keeps its planner clock ticking. Mirrors the channel-0
  * COORD pattern: fill the cubic interpolators from the TP as needed, then
  * interpolate. Loop body never runs at num_channels=1. */
+/* MCHAN MC10/Phase4: waiting-M (M200-M229) rendezvous engine.
+ *
+ * Each channel that reaches a waiting-M parks (queue drained by the queue-
+ * buster) and motion records its arrival (chan[].waitm_num). This runs every
+ * servo cycle: for each waiting channel it computes its participant set (the
+ * P-word mask, or all configured channels if none), and when EVERY
+ * participant is simultaneously arrived at the SAME number with a consistent
+ * mask it releases them all in the SAME cycle (waitm_released=1). A partner
+ * arrived at a DIFFERENT number/mask is a Fanuc-160 mismatch -> error+hold.
+ * A partner that never arrives within motion.waitm-timeout -> a ONE-SHOT
+ * "chN waiting for chM @M2xx" error, then HOLD (stay armed so a late partner
+ * still releases - the error+hold policy). estop/disable clears everything.
+ * Channel-scoped status + HAL observability pins are published at the end.
+ * No-op cost at 1 channel / when nobody is waiting (a few comparisons). */
+static void mchan_run_rendezvous(void)
+{
+    int ch, m;
+    double tmo = *(emcmot_hal_data->waitm_timeout);
+    int all_mask = (1 << motion_num_channels) - 1;
+
+    if (!GET_MOTION_ENABLE_FLAG()) {
+	/* estop / machine off: drop every pending rendezvous so a stale
+	 * arrival can't phantom-match when the machine comes back. */
+	for (ch = 0; ch < motion_num_channels; ch++) {
+	    emcmot_channel_t *c = &emcmotInternal->chan[ch];
+	    c->waitm_num = -1; c->waitm_released = 0;
+	    c->waitm_reported = 0; c->waitm_blockers = 0;
+	}
+    } else {
+	for (ch = 0; ch < motion_num_channels; ch++) {
+	    emcmot_channel_t *c = &emcmotInternal->chan[ch];
+	    if (c->waitm_num < 0 || c->waitm_released) continue;	/* not waiting */
+	    int mask = c->waitm_mask ? c->waitm_mask : all_mask;
+	    int all_arrived = 1, blockers = 0, mismatch = 0, mm_ch = -1;
+	    for (m = 0; m < motion_num_channels; m++) {
+		if (m == ch || !((mask >> m) & 1)) continue;
+		emcmot_channel_t *o = &emcmotInternal->chan[m];
+		int omask = o->waitm_mask ? o->waitm_mask : all_mask;
+		if (o->waitm_num < 0 || o->waitm_released) {
+		    all_arrived = 0; blockers |= (1 << m);	/* not (yet) here */
+		} else if (o->waitm_num != c->waitm_num || omask != mask) {
+		    mismatch = 1; mm_ch = m;			/* Fanuc-160 */
+		}
+	    }
+	    c->waitm_blockers = blockers;
+	    if (mismatch) {
+		if (!c->waitm_reported) {
+		    mchan_active_channel = ch;
+		    reportError(_("ch%d: mismatch waiting-M @M%d (ch%d at a different M-number/mask) - holding"),
+			ch, c->waitm_num, mm_ch);
+		    mchan_active_channel = 0;
+		    c->waitm_reported = 1;
+		}
+		continue;					/* error + hold */
+	    }
+	    if (all_arrived) {
+		for (m = 0; m < motion_num_channels; m++)
+		    if ((mask >> m) & 1)
+			emcmotInternal->chan[m].waitm_released = 1;	/* same cycle */
+		continue;
+	    }
+	    c->waitm_t0 += servo_period;			/* elapsed wait (s) */
+	    if (tmo > 0.0 && c->waitm_t0 > tmo && !c->waitm_reported) {
+		int b = -1;
+		for (m = 0; m < motion_num_channels; m++)
+		    if ((blockers >> m) & 1) { b = m; break; }
+		mchan_active_channel = ch;
+		reportError(_("ch%d: waiting for ch%d @M%d (timeout %.0fs) - holding"),
+		    ch, b, c->waitm_num, tmo);
+		mchan_active_channel = 0;
+		c->waitm_reported = 1;	/* one-shot; STAY armed (late partner still releases) */
+	    }
+	}
+    }
+
+    /* publish channel-scoped status + HAL observability */
+    for (ch = 0; ch < motion_num_channels; ch++) {
+	emcmot_channel_t *c = &emcmotInternal->chan[ch];
+	int waiting = (c->waitm_num >= 0 && !c->waitm_released);
+	*(emcmot_hal_data->mchan[ch].waitm_waiting)  = waiting;
+	*(emcmot_hal_data->mchan[ch].waitm_number)   = waiting ? c->waitm_num : -1;
+	*(emcmot_hal_data->mchan[ch].waitm_blockers) = c->waitm_blockers;
+	if (ch == 0) {
+	    emcmotStatus->waitm_num      = c->waitm_num;
+	    emcmotStatus->waitm_released = c->waitm_released;
+	    emcmotStatus->waitm_blockers = c->waitm_blockers;
+	}
+    }
+}
+
 static void mchan_run_secondary(long period)
 {
     /* MCHAN D-MC4: a SECONDARY channel's homing session must progress
@@ -1503,6 +1599,12 @@ static void mchan_update_status(void)
 	st.commandEcho = mb->commandEcho;
 	st.commandNumEcho = mb->commandNumEcho;
 	st.commandStatus = mb->commandStatus;
+
+	/* MC10/Phase4: this channel's waiting-M view (so its task/GUI sees
+	 * its OWN rendezvous state, not channel 0's) */
+	st.waitm_num      = c->waitm_num;
+	st.waitm_released = c->waitm_released;
+	st.waitm_blockers = c->waitm_blockers;
 
 	/* channel-scoped traj state from the channel's TP (MC19/21/22/28) */
 	st.feed_scale = tp->feed_scale;

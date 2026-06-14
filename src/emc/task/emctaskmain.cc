@@ -423,6 +423,7 @@ static EMC_TASK_PLAN_SET_BLOCK_DELETE *bd_msg;
 static EMC_AUX_INPUT_WAIT *emcAuxInputWaitMsg;
 static int emcAuxInputWaitType = 0;
 static int emcAuxInputWaitIndex = -1;
+static int taskWaitmActive = 0;	/* MCHAN MC10/Phase4: blocked at a waiting-M */
 
 // commands we compose here
 static EMC_TASK_PLAN_RUN taskPlanRunCmd;	// 16-Aug-1999 FMP
@@ -826,6 +827,7 @@ static int emcTaskPlan(void)
 	    case EMC_TRAJ_CLEAR_PROBE_TRIPPED_FLAG_TYPE:
 	    case EMC_TRAJ_PROBE_TYPE:
 	    case EMC_AUX_INPUT_WAIT_TYPE:
+	    case EMC_TRAJ_WAIT_RENDEZVOUS_TYPE:
 	    case EMC_MOTION_SET_DOUT_TYPE:
 	    case EMC_MOTION_ADAPTIVE_TYPE:
 	    case EMC_MOTION_SET_AOUT_TYPE:
@@ -953,6 +955,7 @@ static int emcTaskPlan(void)
 	    case EMC_TRAJ_CLEAR_PROBE_TRIPPED_FLAG_TYPE:
 	    case EMC_TRAJ_PROBE_TYPE:
 	    case EMC_AUX_INPUT_WAIT_TYPE:
+	    case EMC_TRAJ_WAIT_RENDEZVOUS_TYPE:
 	    case EMC_MOTION_SET_DOUT_TYPE:
 	    case EMC_MOTION_SET_AOUT_TYPE:
 	    case EMC_MOTION_ADAPTIVE_TYPE:
@@ -1076,6 +1079,7 @@ static int emcTaskPlan(void)
 		case EMC_TRAJ_CLEAR_PROBE_TRIPPED_FLAG_TYPE:
 		case EMC_TRAJ_PROBE_TYPE:
 		case EMC_AUX_INPUT_WAIT_TYPE:
+		case EMC_TRAJ_WAIT_RENDEZVOUS_TYPE:
 		case EMC_TRAJ_RIGID_TAP_TYPE:
 		case EMC_SET_DEBUG_TYPE:
 		    retval = emcTaskIssueCommand(emcCommand);
@@ -1171,6 +1175,7 @@ static int emcTaskPlan(void)
 		case EMC_TRAJ_CLEAR_PROBE_TRIPPED_FLAG_TYPE:
 		case EMC_TRAJ_PROBE_TYPE:
 		case EMC_AUX_INPUT_WAIT_TYPE:
+		case EMC_TRAJ_WAIT_RENDEZVOUS_TYPE:
 		case EMC_TRAJ_RIGID_TAP_TYPE:
 		case EMC_SET_DEBUG_TYPE:
                 case EMC_COOLANT_MIST_ON_TYPE:
@@ -1252,6 +1257,7 @@ static int emcTaskPlan(void)
 		case EMC_TRAJ_CLEAR_PROBE_TRIPPED_FLAG_TYPE:
 		case EMC_TRAJ_PROBE_TYPE:
 		case EMC_AUX_INPUT_WAIT_TYPE:
+		case EMC_TRAJ_WAIT_RENDEZVOUS_TYPE:
 		case EMC_TRAJ_RIGID_TAP_TYPE:
 		case EMC_SET_DEBUG_TYPE:
 		    retval = emcTaskIssueCommand(emcCommand);
@@ -1324,6 +1330,7 @@ static int emcTaskPlan(void)
 		case EMC_TRAJ_CLEAR_PROBE_TRIPPED_FLAG_TYPE:
 		case EMC_TRAJ_PROBE_TYPE:
 		case EMC_AUX_INPUT_WAIT_TYPE:
+		case EMC_TRAJ_WAIT_RENDEZVOUS_TYPE:
 	        case EMC_TRAJ_RIGID_TAP_TYPE:
 		case EMC_SET_DEBUG_TYPE:
                 case EMC_COOLANT_MIST_ON_TYPE:
@@ -1414,6 +1421,7 @@ static int emcTaskPlan(void)
 	    case EMC_TRAJ_CLEAR_PROBE_TRIPPED_FLAG_TYPE:
 	    case EMC_TRAJ_PROBE_TYPE:
 	    case EMC_AUX_INPUT_WAIT_TYPE:
+	    case EMC_TRAJ_WAIT_RENDEZVOUS_TYPE:
 	    case EMC_MOTION_SET_DOUT_TYPE:
 	    case EMC_MOTION_SET_AOUT_TYPE:
 	    case EMC_MOTION_ADAPTIVE_TYPE:
@@ -1520,6 +1528,7 @@ static EMC_TASK_EXEC emcTaskCheckPreconditions(NMLmsg * cmd)
     case EMC_TRAJ_RIGID_TAP_TYPE: //and this
     case EMC_TRAJ_CLEAR_PROBE_TRIPPED_FLAG_TYPE:	// and this
     case EMC_AUX_INPUT_WAIT_TYPE:
+    case EMC_TRAJ_WAIT_RENDEZVOUS_TYPE:
     case EMC_SPINDLE_WAIT_ORIENT_COMPLETE_TYPE:
 	return EMC_TASK_EXEC::WAITING_FOR_MOTION_AND_IO;
 	break;
@@ -1927,6 +1936,21 @@ static int emcTaskIssueCommand(NMLmsg * cmd)
 	}
 	break;
 
+    case EMC_TRAJ_WAIT_RENDEZVOUS_TYPE: {
+	// MCHAN MC10/Phase4: register this channel's arrival at a waiting-M.
+	// Prior motion has drained (queue-buster + WAITING_FOR_MOTION
+	// precondition), so the channel is in-position. The motion-side engine
+	// matches participants and releases; we poll traj.waitm_released in the
+	// WAITING_FOR_DELAY exec state. The deadlock timeout (error+hold) is
+	// motion-side, so there is no task-side timeout here.
+	EMC_TRAJ_WAIT_RENDEZVOUS *wm = reinterpret_cast<EMC_TRAJ_WAIT_RENDEZVOUS *>(cmd);
+	retval = emcWaitRendezvous(wm->waitm_num, wm->waitm_mask);
+	taskWaitmActive = 1;
+	emcAuxInputWaitIndex = -1;
+	taskExecDelayTimeout = 0.0;
+	break;
+    }
+
     case EMC_SPINDLE_WAIT_ORIENT_COMPLETE_TYPE:
 	wait_spindle_orient_complete_msg = reinterpret_cast<EMC_SPINDLE_WAIT_ORIENT_COMPLETE *>(cmd);
 	taskExecDelayTimeout = etime() + wait_spindle_orient_complete_msg->timeout;
@@ -2084,6 +2108,10 @@ static int emcTaskIssueCommand(NMLmsg * cmd)
     case EMC_TASK_ABORT_TYPE:
 	// abort everything
 	emcTaskAbort();
+	// MCHAN MC10/Phase4: drop any pending waiting-M so a partner does not
+	// phantom-match this channel's stale arrival (motion also clears on
+	// estop; this covers operator/program abort without estop).
+	if (taskWaitmActive) { taskWaitmActive = 0; emcCancelRendezvous(); }
 	// KLUDGE call motion abort before state restore to make absolutely sure no
 	// stray restore commands make it down to motion
 	emcMotionAbort();
@@ -2514,6 +2542,7 @@ static EMC_TASK_EXEC emcTaskCheckPostconditions(NMLmsg * cmd)
 
     case EMC_TRAJ_DELAY_TYPE:
     case EMC_AUX_INPUT_WAIT_TYPE:
+    case EMC_TRAJ_WAIT_RENDEZVOUS_TYPE:	// MCHAN MC10/Phase4
 	return EMC_TASK_EXEC::WAITING_FOR_DELAY;
 	break;
 
@@ -2745,6 +2774,18 @@ static int emcTaskExecute(void)
 
     case EMC_TASK_EXEC::WAITING_FOR_DELAY:
 	STEPPING_CHECK();
+	// MCHAN MC10/Phase4: waiting-M rendezvous - block until motion releases
+	// this channel. The deadlock timeout (error+hold) is motion-side, so we
+	// just wait; an operator abort clears taskWaitmActive (see abort path).
+	if (taskWaitmActive) {
+	    if (emcStatus->motion.traj.waitm_released) {
+		taskWaitmActive = 0;
+		emcCancelRendezvous();   // clear our arrival -> clean re-arm
+		emcStatus->task.execState = EMC_TASK_EXEC::DONE;
+		emcTaskEager = 1;
+	    }
+	    break;
+	}
 	// check if delay has passed
 	emcStatus->task.delayLeft = taskExecDelayTimeout - etime();
 	if (etime() >= taskExecDelayTimeout) {

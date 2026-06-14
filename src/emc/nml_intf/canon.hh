@@ -243,6 +243,11 @@ extern void SET_G92_OFFSET(double x, double y, double z,
 
 extern void SET_XY_ROTATION(double t);
 
+/* MCHAN MC10/Phase4: waiting-M (M200-M229) rendezvous. This channel parks
+ * at the M-number and continues only when all participants (waitm_mask, or
+ * all configured channels if 0) have also arrived. Queue-buster. */
+extern void WAIT_RENDEZVOUS(int waitm_num, int waitm_mask);
+
 /* Offset the origin to the point with absolute coordinates x, y, z,
 a, b, c, u, v, and w. Values of x, y, z, a, b, c, u, v, and w are real 
 numbers. The units are whatever length units are being used at the time 

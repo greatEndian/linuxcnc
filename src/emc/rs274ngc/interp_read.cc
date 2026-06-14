@@ -1132,6 +1132,17 @@ int Interp::read_m(char *line,   //!< string: line of RS274 code being processed
       return INTERP_OK;
   }
 
+  /* MCHAN MC10/Phase4: waiting-M rendezvous M200-M229. Handled outside the
+   * ems[]/modal-group table (which only spans M0-M199); stored directly on
+   * the block and emitted as a queue-buster by convert_m. */
+  if (value >= 200 && value <= 229) {
+      CHKS((block->waitm_flag), _("Two waiting-M codes (M200-M229) used in one block"));
+      block->waitm_flag = true;
+      block->waitm_number = value;
+      block->m_count++;
+      return INTERP_OK;
+  }
+
   CHKS((value > 199), NCE_M_CODE_GREATER_THAN_199,value);
   mode = ems[value];
   CHKS((mode == -1), NCE_UNKNOWN_M_CODE_USED,value);

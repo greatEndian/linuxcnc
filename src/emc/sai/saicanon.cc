@@ -113,6 +113,11 @@ void SET_XY_ROTATION(double t) {
   ECHO_WITH_ARGS("%.4f", t);
 }
 
+
+void WAIT_RENDEZVOUS(int waitm_num, int waitm_mask) {
+    ECHO_WITH_ARGS("");
+}
+
 void SET_G5X_OFFSET(int index,
                     double x, double y, double z,
                     double a, double b, double c,
