@@ -908,6 +908,32 @@ void emcmotCommandHandler_locked(void *arg, long servo_period)
 	}
 	/* ===== END MCHAN MC28 =============================================== */
 
+	/* MCHAN MC26b: spindle ownership - a channel may only START / move /
+	 * sync a spindle it owns, so one head cannot spin up or speed-change
+	 * another head's spindle (the routing half is the interp's per-channel
+	 * default spindle, MC26). Stops/brakes/overrides are deliberately NOT
+	 * gated: estop aborts every spindle from every channel, and stopping a
+	 * spindle is not the hazard - gating them would spam on estop. With one
+	 * channel ch0 owns all spindles, so nothing is ever refused (D7). */
+	switch (emcmotCommand->command) {
+	case EMCMOT_SPINDLE_ON:
+	case EMCMOT_SPINDLE_ORIENT:
+	case EMCMOT_SPINDLE_INCREASE:
+	case EMCMOT_SPINDLE_DECREASE:
+	case EMCMOT_SET_SPINDLESYNC: {
+	    int sp = emcmotCommand->spindle;
+	    if (sp >= 0 && sp < emcmotConfig->numSpindles
+		&& emcmotInternal->spindle_owner[sp] != mchan_active_channel) {
+		reportError(_("ch%d: spindle %d belongs to channel %d - command refused"),
+		    mchan_active_channel, sp, emcmotInternal->spindle_owner[sp]);
+		(*mchan_echo_status) = EMCMOT_COMMAND_INVALID_PARAMS;
+		return;
+	    }
+	    break;
+	}
+	default: break;
+	}
+
 	/* ...and process command */
 
         joint = 0;
@@ -1821,6 +1847,34 @@ void emcmotCommandHandler_locked(void *arg, long servo_period)
 				cubicDrain(&(joints[map_jn].cubic));
 			}
 			emcmotInternal->chan[mchan_active_channel].axis_to_joint[map_ax] = map_jn;
+		}
+		break;
+
+	case EMCMOT_SET_CHANNEL_SPINDLE:
+		/* MCHAN (MC26b): claim a spindle for this channel. Sent by
+		 * mchan-chmap from [CHANNEL]SPINDLE at config time. Ownership
+		 * conflict (another secondary already owns it) is rejected;
+		 * channel 0 owns every spindle it is not given away (default). */
+		rtapi_print_msg(RTAPI_MSG_DBG, "SET_CHANNEL_SPINDLE ch=%d spindle=%d",
+			mchan_active_channel, emcmotCommand->spindle);
+		{
+			int sp = emcmotCommand->spindle;
+			if (sp < 0 || sp >= emcmotConfig->numSpindles) {
+				reportError(_("channel %d: spindle %d out of range (machine has %d)"),
+					mchan_active_channel, sp, emcmotConfig->numSpindles);
+				(*mchan_echo_status) = EMCMOT_COMMAND_INVALID_PARAMS;
+				break;
+			}
+			if (mchan_active_channel != 0) {
+				int owner = emcmotInternal->spindle_owner[sp];
+				if (owner != 0 && owner != mchan_active_channel) {
+					reportError(_("channel %d: spindle %d is already owned by channel %d"),
+						mchan_active_channel, sp, owner);
+					(*mchan_echo_status) = EMCMOT_COMMAND_INVALID_PARAMS;
+					break;
+				}
+				emcmotInternal->spindle_owner[sp] = mchan_active_channel;
+			}
 		}
 		break;
 
