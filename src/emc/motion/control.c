@@ -2619,6 +2619,14 @@ static void output_to_hal(void)
 	    }
 	    *(emcmot_hal_data->mchan[ch].is_moving) = mv;
 	    *(emcmot_hal_data->mchan[ch].current_vel) = ctp->current_vel;
+	    /* MC7: per-channel run-status feedback (mirrors the global motion.*
+	     * pins but for THIS channel's coord_tp). in-position = at rest with
+	     * nothing queued. At num_channels=1, motion.0.* matches the legacy
+	     * machine view (D7). */
+	    *(emcmot_hal_data->mchan[ch].in_position) =
+		(!mv && tpQueueDepth(ctp) == 0) ? 1 : 0;
+	    *(emcmot_hal_data->mchan[ch].program_line) = tpGetExecId(ctp);
+	    *(emcmot_hal_data->mchan[ch].distance_to_go) = ctp->distance_to_go;
 	}
     }
 
