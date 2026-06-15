@@ -39,6 +39,7 @@ pin out bit   locked      "True when engaged and |error| <= *lock-tolerance*";
 
 param rw float gain = 200.0          "Proportional gain, output units per revolution of error (keep gain*servo-period < 2 for stability)";
 param rw float lock_tolerance = 0.01 "Phase-lock tolerance, revolutions";
+param rw float max_vel = 0.0         "Clamp on |out| in output units (0 = no clamp). Set to the slave spindle's max speed so a large phase error cannot command a runaway speed (real spindles, and encoder-based sims, cannot follow an unbounded command).";
 
 function _;
 license "GPL";
@@ -52,7 +53,14 @@ FUNCTION(_) {
         error  = e;
         /* feed-forward keeps speed matched; the P term closes the phase loop
          * (error decays ~ exp(-gain*t), so phase locks rather than drifts) */
-        out    = ratio * master_vel + gain * e;
+        double v = ratio * master_vel + gain * e;
+        /* clamp so a large phase error cannot demand a runaway speed the slave
+         * cannot physically follow (which would only grow the error) */
+        if (max_vel > 0.0) {
+            if (v >  max_vel) v =  max_vel;
+            if (v < -max_vel) v = -max_vel;
+        }
+        out    = v;
         locked = (fabs(e) <= lock_tolerance);
     } else {
         error  = 0.0;
