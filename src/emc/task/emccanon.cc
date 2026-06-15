@@ -1164,7 +1164,16 @@ static void flush_segments(void) {
 
     linearMoveMsg->type = EMC_MOTION_TYPE_FEED;
     linearMoveMsg->indexer_jnum = -1;
-    if ((vel && acc) || canon.spindle[canon.spindle_num].synched) {
+    /* MCHAN MC8/OP9: a feed-synchronized move (G33/G76) must be sent even with
+     * vel==0 (a pure G33 has no F-word). The synced spindle is NOT necessarily
+     * canon.spindle_num (that tracks the speed spindle, still 0 on a secondary
+     * channel) - it is whichever spindle START_SPEED_FEED_SYNCH flagged. Check
+     * ANY spindle synched so a secondary channel's thread on its own spindle is
+     * not dropped. Single channel: only spindle 0 exists -> identical (D7). */
+    bool move_synched = false;
+    for (int s = 0; s < emcStatus->motion.traj.spindles; s++)
+        if (canon.spindle[s].synched) { move_synched = true; break; }
+    if ((vel && acc) || move_synched) {
         interp_list.set_line_number(line_no);
         tag_and_send(std::move(linearMoveMsg), pos.tag);
     }
@@ -1566,7 +1575,11 @@ void START_SPEED_FEED_SYNCH(int spindle, double feed_per_revolution, bool veloci
 void STOP_SPEED_FEED_SYNCH()
 {
     START_SPEED_FEED_SYNCH(0, 0, false);
-    canon.spindle[canon.spindle_num].synched = 0;
+    /* MCHAN MC8/OP9: clear the synched flag on ALL spindles - the synced
+     * spindle is not necessarily canon.spindle_num (a secondary channel threads
+     * on its own non-0 spindle). Single channel: only spindle 0 = identical. */
+    for (int s = 0; s < emcStatus->motion.traj.spindles; s++)
+        canon.spindle[s].synched = 0;
 }
 
 /* Machining Functions */
