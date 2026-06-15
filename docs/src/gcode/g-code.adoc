@@ -83,6 +83,8 @@ as the 'L number', and so on for any other letter.
 |<<gcode:g43,G43>>                 |Use Tool Length Offset from Tool Table
 |<<gcode:g43.1,G43.1>>             |Dynamic Tool Length Offset
 |<<gcode:g43.2,G43.2>>             |Apply additional Tool Length Offset
+|<<gcode:g43.4,G43.4>>             |Tool Center Point Control (RTCP)
+|<<gcode:g43.5,G43.5>>             |Tool Center Point Control with Tool Vector
 |<<gcode:g49,G49>>                 |Cancel Tool Length Offset
 |<<gcode:g52,G52>>                 |Local Coordinate System Offset
 |<<gcode:g53,G53>>                 |Move in Machine Coordinates
@@ -1537,6 +1539,103 @@ It is an error if:
 * 'H' is specified and axes are also specified.
 
 NOTE: G43.2 does not write to the tool table.
+
+[[gcode:g43.4]]
+== G43.4 Tool Center Point Control (RTCP)(((G43.4 Tool Center Point Control)))
+
+[source,ngc]
+----
+G43.4 H-
+----
+
+* 'H' - tool number (optional; the currently loaded tool is used if omitted).
+
+G43.4 turns on Tool Center Point Control (RTCP / TCP) for a 5-axis machine
+(Fanuc Type 1). While it is active the programmed coordinates are the tool TIP in
+the part frame, and the control automatically moves the linear axes to keep the
+tip on the programmed path as the rotary (orientation) axes move. The rotary
+positions are commanded with the usual rotary words (A/B/C).
+
+G43.4 requires a switchable kinematics module (loaded with switchkins support)
+and a measured tool length.
+
+.G43.4 Example
+[source,ngc]
+----
+G90
+T1 M6 G43.4 (load tool 1 with measured length, TCP on)
+G0 X0 Y0 Z10 A0
+G1 F500 A30 (tilt to A30: the tip stays at X0 Y0 Z10 while the linear axes compensate)
+G49 (TCP off)
+M2
+----
+
+* See <<gcode:g49,G49>> (cancel), <<gcode:g43.5,G43.5>> (vector mode) and the
+  <<sub:ini:sec:rs274ngc,[RS274NGC]>> section.
+
+It is an error if:
+
+* the loaded kinematics module is not switchable;
+* the tool length offset is zero (no measured tool loaded);
+* cutter radius compensation is active.
+
+NOTE: a G43.4 switch requested while the machine is moving is deferred until
+motion is idle (it never aborts a move); a notice is shown while it is pending.
+
+[[gcode:g43.5]]
+== G43.5 Tool Center Point Control with Tool Vector(((G43.5 Tool Center Point Control with Tool Vector)))
+
+[source,ngc]
+----
+G43.5 H-
+----
+
+* 'H' - tool number (optional).
+
+G43.5 turns on Tool Center Point Control in VECTOR mode (Fanuc Type 2). While
+G43.5 is active the I, J and K words on a G0/G1 line are the desired tool-axis
+DIRECTION VECTOR (in the part frame) instead of arc/spindle parameters; the
+control solves the rotary-axis positions that orient the tool along that vector
+and moves the linear axes to keep the tip on the programmed point.
+
+The machine's rotary topology is selected with the
+<<sub:ini:sec:rs274ngc,`[RS274NGC]TCP_ORIENT_AXES`>> INI setting:
+
+[width="70%",cols="1,4"]
+|====
+|`AB`     |tool dual-rotary table (e.g. xyzab_tdr_kins): A about X, B about Y
+|`AC`     |tilting-rotary table (xyzac-trt-kins): A tilt, C rotary
+|`BC`     |tilting-rotary table (xyzbc-trt-kins): B tilt, C rotary
+|`BCHEAD` |swivel head (5axiskins): B and C in the spindle head
+|====
+
+.G43.5 Example
+[source,ngc]
+----
+G90
+T1 M6 G43.5 (TCP vector mode, measured tool)
+G0 X0 Y0 Z10 I0 J0 K1 (tool axis straight up)
+G1 F500 X0 Y0 Z10 I0.5 J0 K0.866025 (tilt the tool 30 deg toward +X; the tip is held)
+G49 (TCP off)
+M2
+----
+
+A `G53` on the line treats the vector in the machine frame as a one-shot. In
+G91 (incremental) the solved orientation is written as a delta, so the same
+absolute orientation results in either distance mode.
+
+* See <<gcode:g43.4,G43.4>>, <<gcode:g49,G49>> and
+  <<sub:ini:sec:rs274ngc,`[RS274NGC]TCP_ORIENT_AXES`>>.
+
+It is an error if:
+
+* `[RS274NGC]TCP_ORIENT_AXES` is unset or is not a supported topology;
+* rotary words (A/B/C) are mixed with a tool vector (I/J/K) on one line;
+* the tool vector I/J/K is zero length;
+* a rotary tool offset or G10 R (XY coordinate rotation) is active with a vector.
+
+NOTE: at the orientation singularity (tool parallel to the spindle Z axis) the
+rotary "spin" axis is undefined and is left unchanged.
 
 [[gcode:g49]]
 == G49 Cancel Tool Length Compensation(((G49 Cancel Tool Length Offset)))
