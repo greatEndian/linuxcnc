@@ -836,6 +836,10 @@ static void process_probe_inputs(void)
     /* read probe input */
     emcmotStatus->probeVal = !!*(emcmot_hal_data->probe_input);
     if (emcmotStatus->probing) {
+        /* MCHAN MC25: stop/measure the channel that actually issued the probe
+         * (mutual exclusion guarantees exactly one). num_channels==1 ->
+         * probe_owner==0 = the legacy chan[0] path. */
+        TP_STRUCT *probe_tp = &emcmotInternal->chan[emcmotInternal->probe_owner].coord_tp;
         /* check if the probe has been tripped */
         if (emcmotStatus->probeVal ^ probe_whenclears) {
             /* remember the current position */
@@ -843,9 +847,9 @@ static void process_probe_inputs(void)
             /* stop! */
             emcmotStatus->probing = 0;
             emcmotStatus->probeTripped = 1;
-            tpAbort(&emcmotInternal->chan[0].coord_tp);
+            tpAbort(probe_tp);
         /* check if the probe hasn't tripped, but the move finished */
-        } else if (GET_MOTION_INPOS_FLAG() && tpQueueDepth(&emcmotInternal->chan[0].coord_tp) == 0) {
+        } else if (GET_MOTION_INPOS_FLAG() && tpQueueDepth(probe_tp) == 0) {
             /* we are already stopped, but we need to remember the current
                position here, because it will still be queried */
             emcmotStatus->probedPos = emcmotStatus->carte_pos_fb;
