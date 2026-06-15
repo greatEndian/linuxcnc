@@ -1075,6 +1075,8 @@ static int init_comm_buffers(void)
     emcmotConfig->numSpindles = num_spindles;
     emcmotConfig->numDIO = num_dio;
     emcmotConfig->numAIO = num_aio;
+    tpSetNumChannels(motion_num_channels);	/* MC8: tell tpmod the channel count
+						   (no emcmotStruct layout change) */
     emcmotConfig->numMiscError = num_misc_error;
 
     ZERO_EMC_POSE(emcmotStatus->carte_pos_cmd);

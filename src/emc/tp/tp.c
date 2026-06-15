@@ -62,6 +62,11 @@ emcmot_config_t *emcmotConfig;
 emcmot_command_t *emcmotCommand;
 emcmot_hal_data_t *emcmot_hal_data;
 
+/* MCHAN MC8: motmod tells tpmod the channel count at init (via tpSetNumChannels,
+ * below) so the spindle at-speed wait can be per-channel in multichannel
+ * without growing emcmotStruct. Defaults to 1 = stock all-spindles wait (D7). */
+static int tp_num_channels = 1;
+
 /* MCHAN MC21: planner type is PER TP (tp->planner_type), not global, so one
  * channel's G64 R cannot flip another channel's planner. Helpers deep in the
  * call tree (e.g. tcUpdateDistFromAccel) have no tp pointer, so the public
@@ -3517,10 +3522,20 @@ STATIC tp_err_t tpCheckAtSpeed(TP_STRUCT * const tp, TC_STRUCT * const tc)
     }
 
     if (MOTION_ID_VALID(tp->spindle.waiting_for_atspeed)) {
-        for (s = 0; s < emcmotConfig->numSpindles; s++){
-            if(!emcmotStatus->spindle_status[s].at_speed) {
-                // spindle is still not at the right speed, so wait another cycle
+        /* MCHAN MC8: in multichannel, wait only for the spindle THIS
+         * channel's move uses (tp->spindle.spindle_num) - otherwise one
+         * channel's threading/at-speed move blocks on another channel's
+         * independent spindle that is not at speed. Single channel keeps the
+         * stock all-spindles wait (D7). */
+        if (tp_num_channels > 1) {
+            if (!emcmotStatus->spindle_status[tp->spindle.spindle_num].at_speed)
                 return TP_ERR_WAITING;
+        } else {
+            for (s = 0; s < emcmotConfig->numSpindles; s++){
+                if(!emcmotStatus->spindle_status[s].at_speed) {
+                    // spindle is still not at the right speed, so wait another cycle
+                    return TP_ERR_WAITING;
+                }
             }
         }
         // not waiting any more
@@ -3593,11 +3608,19 @@ STATIC tp_err_t tpActivateSegment(TP_STRUCT * const tp, TC_STRUCT * const tc) {
         (tc->synchronized == TC_SYNC_POSITION && !(tp->spindleSync));    /* MC19 */
 
     if (needs_atspeed){
-        int s;
-        for (s = 0; s < emcmotConfig->numSpindles; s++){
-            if (!emcmotStatus->spindle_status[s].at_speed) {
+        /* MCHAN MC8: see above - per-channel spindle wait in multichannel. */
+        if (tp_num_channels > 1) {
+            if (!emcmotStatus->spindle_status[tp->spindle.spindle_num].at_speed) {
                 tp->spindle.waiting_for_atspeed = tc->id;
                 return TP_ERR_WAITING;
+            }
+        } else {
+            int s;
+            for (s = 0; s < emcmotConfig->numSpindles; s++){
+                if (!emcmotStatus->spindle_status[s].at_speed) {
+                    tp->spindle.waiting_for_atspeed = tc->id;
+                    return TP_ERR_WAITING;
+                }
             }
         }
     }
@@ -4312,6 +4335,15 @@ int tpSetSpindleSync(TP_STRUCT * const tp, int spindle, double sync, int mode) {
     return TP_ERR_OK;
 }
 
+/* MCHAN MC8: motmod calls this once at init so tpmod knows the channel count.
+ * In multichannel (>1) a synced/at-speed move waits only for the spindle it
+ * uses (tp->spindle.spindle_num), not every spindle - otherwise one channel's
+ * threading blocks on another channel's independent spindle. Single channel
+ * keeps the stock all-spindles wait (D7). Avoids growing emcmotStruct. */
+void tpSetNumChannels(int n) {
+    tp_num_channels = (n > 0) ? n : 1;
+}
+
 int tpPause(TP_STRUCT * const tp)
 {
     if (0 == tp) {
@@ -4476,6 +4508,7 @@ EXPORT_SYMBOL(tpSetId);
 EXPORT_SYMBOL(tpSetPos);
 EXPORT_SYMBOL(tpSetRunDir);
 EXPORT_SYMBOL(tpSetSpindleSync);
+EXPORT_SYMBOL(tpSetNumChannels);
 EXPORT_SYMBOL(tpSetTermCond);
 EXPORT_SYMBOL(tpSetVlimit);
 EXPORT_SYMBOL(tpSetVmax);

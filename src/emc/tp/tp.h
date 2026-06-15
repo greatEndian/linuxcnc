@@ -68,6 +68,7 @@ int tpQueueDepth(TP_STRUCT * const tp);
 int tpActiveDepth(TP_STRUCT * const tp);
 int tpGetMotionType(TP_STRUCT * const tp);
 int tpSetSpindleSync(TP_STRUCT * const tp, int spindle, double sync, int wait);
+void tpSetNumChannels(int n);	/* MCHAN MC8: channel count for per-channel spindle at-speed wait */
 
 int tpSetAout(TP_STRUCT * const tp, unsigned char index, double start, double end);
 int tpSetDout(TP_STRUCT * const tp, int index, unsigned char start, unsigned char end); //gets called to place DIO toggles on the TC queue
