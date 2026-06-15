@@ -694,6 +694,10 @@ static int init_hal_io(void)
 	CALL_CHECK(hal_pin_s32_newf(HAL_OUT, &(emcmot_hal_data->mchan[n].waitm_number), mot_comp_id, "motion.%d.waitm-number", n));
 	CALL_CHECK(hal_pin_s32_newf(HAL_OUT, &(emcmot_hal_data->mchan[n].waitm_blockers), mot_comp_id, "motion.%d.waitm-blockers", n));
 	CALL_CHECK(hal_pin_bit_newf(HAL_OUT, &(emcmot_hal_data->mchan[n].interfere_hold), mot_comp_id, "motion.%d.interfere-hold", n));
+	/* MC7: per-channel run-status feedback (motion.N.* complete for HMI) */
+	CALL_CHECK(hal_pin_bit_newf(HAL_OUT, &(emcmot_hal_data->mchan[n].in_position), mot_comp_id, "motion.%d.in-position", n));
+	CALL_CHECK(hal_pin_s32_newf(HAL_OUT, &(emcmot_hal_data->mchan[n].program_line), mot_comp_id, "motion.%d.program-line", n));
+	CALL_CHECK(hal_pin_float_newf(HAL_OUT, &(emcmot_hal_data->mchan[n].distance_to_go), mot_comp_id, "motion.%d.distance-to-go", n));
 	*(emcmot_hal_data->mchan[n].feed_hold) = 0;
 	*(emcmot_hal_data->mchan[n].feed_override) = 1.0;
 	*(emcmot_hal_data->mchan[n].feed_override_enable) = 0;
@@ -704,6 +708,9 @@ static int init_hal_io(void)
 	*(emcmot_hal_data->mchan[n].waitm_number) = -1;
 	*(emcmot_hal_data->mchan[n].waitm_blockers) = 0;
 	*(emcmot_hal_data->mchan[n].interfere_hold) = 0;
+	*(emcmot_hal_data->mchan[n].in_position) = 1;	/* MC7: at rest at startup */
+	*(emcmot_hal_data->mchan[n].program_line) = 0;
+	*(emcmot_hal_data->mchan[n].distance_to_go) = 0.0;
     }
     /* MCHAN MC10/Phase4: global waiting-M deadlock timeout pin (default 30 s) */
     CALL_CHECK(hal_pin_float_newf(HAL_IN, &(emcmot_hal_data->waitm_timeout), mot_comp_id, "motion.waitm-timeout"));
