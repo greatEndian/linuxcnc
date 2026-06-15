@@ -1030,6 +1030,11 @@ static int init_comm_buffers(void)
 		emcmotInternal->chan[ch].rot[a][b] = (a == b) ? 1.0 : 0.0;
 	emcmotInternal->chan[ch].frame_set = 0;
 	emcmotInternal->chan[ch].interfere_stop = 0;
+	/* MC27: I/O index window unrestricted until chmap sends one */
+	emcmotInternal->chan[ch].dio_base = 0;
+	emcmotInternal->chan[ch].dio_count = 0;
+	emcmotInternal->chan[ch].aio_base = 0;
+	emcmotInternal->chan[ch].aio_count = 0;
     }
     /* MC31: no interference zone until the master chmap sends one */
     emcmotInternal->interfere_zone_set = 0;

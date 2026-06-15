@@ -1937,6 +1937,20 @@ void emcmotCommandHandler_locked(void *arg, long servo_period)
 			emcmotInternal->interfere_zone[4], emcmotInternal->interfere_zone[5]);
 		break;
 
+	case EMCMOT_SET_CHANNEL_IO_RANGE: {
+		/* MCHAN MC27: this channel's digital/analog I/O index window
+		 * (from [CHANNEL]DIO_RANGE/AIO_RANGE via chmap). count==0 leaves
+		 * the channel unrestricted (legacy). */
+		emcmot_channel_t *ioc = &emcmotInternal->chan[mchan_active_channel];
+		ioc->dio_base  = emcmotCommand->io_dio_base;
+		ioc->dio_count = emcmotCommand->io_dio_count;
+		ioc->aio_base  = emcmotCommand->io_aio_base;
+		ioc->aio_count = emcmotCommand->io_aio_count;
+		rtapi_print_msg(RTAPI_MSG_DBG, "SET_CHANNEL_IO_RANGE ch=%d dio[%d,+%d) aio[%d,+%d)",
+			mchan_active_channel, ioc->dio_base, ioc->dio_count, ioc->aio_base, ioc->aio_count);
+		break;
+	}
+
 	case EMCMOT_SET_SCURVE_PEAK_SCALE:
 		/* S-curve rest-to-rest peak velocity scale: 0.5 = faithful (original
 		 * behaviour), 1.0 = physically-correct (full jerk-feasible cornering).
@@ -2400,6 +2414,20 @@ void emcmotCommandHandler_locked(void *arg, long servo_period)
 	/* needed for synchronous I/O */
 	case EMCMOT_SET_AOUT:
 	    rtapi_print_msg(RTAPI_MSG_DBG, "SET_AOUT");
+	    /* MCHAN MC27: refuse an analog-out index outside this channel's
+	     * window (count==0 = unrestricted = legacy/D7). */
+	    {
+		emcmot_channel_t *ioc = &emcmotInternal->chan[mchan_active_channel];
+		if (ioc->aio_count > 0 &&
+		    (emcmotCommand->out < ioc->aio_base ||
+		     emcmotCommand->out >= ioc->aio_base + ioc->aio_count)) {
+		    reportError(_("ch%d: analog I/O index %d outside this channel's range [%d..%d] (M67/M68 refused)"),
+			mchan_active_channel, emcmotCommand->out,
+			ioc->aio_base, ioc->aio_base + ioc->aio_count - 1);
+		    (*mchan_echo_status) = EMCMOT_COMMAND_INVALID_PARAMS;
+		    break;
+		}
+	    }
 	    if (emcmotCommand->now) { //we set it right away
 		emcmotAioWrite(emcmotCommand->out, emcmotCommand->minLimit);
 	    } else { // we put it on the TP queue, warning: only room for one in there, any new ones will overwrite
@@ -2410,6 +2438,20 @@ void emcmotCommandHandler_locked(void *arg, long servo_period)
 
 	case EMCMOT_SET_DOUT:
 	    rtapi_print_msg(RTAPI_MSG_DBG, "SET_DOUT");
+	    /* MCHAN MC27: refuse a digital-out index outside this channel's
+	     * window (count==0 = unrestricted = legacy/D7). */
+	    {
+		emcmot_channel_t *ioc = &emcmotInternal->chan[mchan_active_channel];
+		if (ioc->dio_count > 0 &&
+		    (emcmotCommand->out < ioc->dio_base ||
+		     emcmotCommand->out >= ioc->dio_base + ioc->dio_count)) {
+		    reportError(_("ch%d: digital I/O index %d outside this channel's range [%d..%d] (M62-M65 refused)"),
+			mchan_active_channel, emcmotCommand->out,
+			ioc->dio_base, ioc->dio_base + ioc->dio_count - 1);
+		    (*mchan_echo_status) = EMCMOT_COMMAND_INVALID_PARAMS;
+		    break;
+		}
+	    }
 	    if (emcmotCommand->now) { //we set it right away
 		emcmotDioWrite(emcmotCommand->out, emcmotCommand->start);
 	    } else { // we put it on the TP queue, warning: only room for one in there, any new ones will overwrite
