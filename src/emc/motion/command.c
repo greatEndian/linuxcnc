@@ -1914,9 +1914,31 @@ void emcmotCommandHandler_locked(void *arg, long servo_period)
 		}
 		{
 			int req = emcmotCommand->switchkins_type;
-			/* MCHAN MC29: kinematics is machine-global - require EVERY
-			 * channel idle, not just the requester (single-channel builds:
-			 * identical to the old check). Full ownership guard = phase 3. */
+			/* MCHAN MC29: a kinematics flip is machine-global by nature -
+			 * one kins module per machine, so engaging a non-identity
+			 * kinematics (G43.4/G43.5 TCP, req>=1) silently re-maps EVERY
+			 * channel's Cartesian->joint relation. Day-1 rule: refuse unless
+			 * the requesting channel owns ALL joints (in practice a single
+			 * active channel). Identity (req==0, G49) is the neutral default
+			 * every program emits - always allowed. num_channels==1: the
+			 * requester owns all joints, so this never fires (D7). */
+			if (req >= 1 && motion_num_channels > 1) {
+				int foreign = -1;
+				for (int j = 0; j < ALL_JOINTS; j++) {
+					if (emcmotInternal->joint_owner[j] != mchan_active_channel) {
+						foreign = j;
+						break;
+					}
+				}
+				if (foreign >= 0) {
+					reportError(_("ch%d: G43.4/G43.5 refused - kinematics is machine-global and joint %d is owned by channel %d (TCP needs sole joint ownership)"),
+						mchan_active_channel, foreign, emcmotInternal->joint_owner[foreign]);
+					(*mchan_echo_status) = EMCMOT_COMMAND_INVALID_PARAMS;
+					break;
+				}
+			}
+			/* kinematics is machine-global - require EVERY channel idle,
+			 * not just the requester (single-channel: identical old check). */
 			if (planner_switch_all_idle()) {
 				emcmotRequestSwitchkinsType(req);
 				switchkins_switch_pending = 0;

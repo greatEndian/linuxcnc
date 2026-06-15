@@ -1,0 +1,1630 @@
+component sercos "sercos Drive interface layer";
+//
+//    Author (C) 2025 endian <endian@post.cz>
+//
+//    This program is free software; you can redistribute it and/or modify
+//    it under the terms of the GNU General Public License as published by
+//    the Free Software Foundation; either version 2 of the License, or
+//    (at your option) any later version.
+//
+//    This program is distributed in the hope that it will be useful,
+//    but WITHOUT ANY WARRANTY; without even the implied warranty of
+//    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+//    GNU General Public License for more details.
+//
+//    You should have received a copy of the GNU General Public License
+//    along with this program; if not, write to the Free Software
+//    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301 USA
+//
+author "endian";
+license "GPL";
+
+description """
+HAL Interface for sercos Devices,
+
+this component acts as a glue layer between hardware to Hal modules like Ethercat, CAN-Bus or others.\n
+It translates raw IO Data from the PDOs to the common linuxcnc Hal pin structure and has build in logic\n
+ 
+for the sercos State Control, feedback handling, external homing and build in scaling functions.\n
+
+It delivers two functions: read_all and write_all.\n
+The concept of integration in the correspondending task should be as following: \n
+
+
+
+###################      ###########       #########     ############      #####################\n
+#HARDWARE INPUT   #      #  sercos  #       #Motion #     #   sercos  #      #  Hardware Output  #\n
+#  like           #-->>--#read_all #-->>>--#Pids   #-->--#write_all #-->>--#        like       #\n
+#Ethercat read_all#      #  etc.   #       #       #     #          #      # Ethercat write_all#\n
+###################      ###########       #########     ############      #####################\n
+\n
+Hal Example:\n
+
+#########\n
+# Setup\n
+#########\n
+
+
+loadrt [KINS]KINEMATICS\n
+loadrt [EMCMOT]EMCMOT servo_period_nsec=[EMCMOT]SERVO_PERIOD num_joints=[KINS]JOINTS\n
+(loadusr -W lcec_conf ethercat-conf.xml)\n
+loadrt lcec\n
+loadrt sercos count=3\n
+loadrt pid names=x-pid,y-pid,z-pid\n
+
+##########################\n
+# Functions servo-thread\n
+##########################\n
+addf lcec.read-all servo-thread\n
+addf sercos.0.read-all servo-thread\n
+addf sercos.1.read-all servo-thread\n
+addf sercos.2.read-all servo-thread\n
+
+addf motion/ PIDs / PCL / etc .\n
+
+addf sercos.0.write-all servo-thread\n
+addf sercos.1.write-all servo-thread\n
+addf sercos.2.write-all servo-thread\n
+addf lcec.write-all servo-thread\n
+#########################################\n
+
+HOME_SEARCH_VEL = 0.0\n
+HOME_LATCH_VEL = 0.2  (Any value but zero, the homing speed is predetermined by the drives configured speed)\n
+HOME_USE_INDEX = TRUE\n
+
+If you are using PIDs, don't forget to connect the PIDs index-enable pin.\n
+
+Even though this component exports many pins, you can choose which functions you want to use:\n
+
+If you would like to use the DS State Machine, connect Statusword and Controlword.\n
+For single use of the scaling function connect only the fb and cmd pins from position or velocity.\n
+If no Drives homing is needed, let the Pins unconnected.""";
+
+//DS IOs
+// user data configuration
+	pin in bit homeSwitch								"";
+	param rw bit homeSwitchNoConfig						"";
+	param rw signed prBase								"incremental resolition per one turn... servo as 2^prBase == 1turn(in counts), for example prbase=16 then 1rev of servo will be 2^16 counts = pitch of screw ";
+	param rw  float screw_pitch 							"value of screw pitch / how far machine move in one servo revolution in cnc machine units (metric/inches)";
+	pin in bit fault_reset 								"true, sends fault reset command to the Drive";
+	pin in bit estop									"";
+	pin in bit drive_enable 							"enable driver digital outputs control";
+	param rw float following_error						"value which should be implemented for internal homing subroutine done joint.0.f-error-lim";
+	param rw float periodTime								"";
+	param rw float homingSpeed							"";
+	param rw float homingAccel							"";
+	param rw float hommingDeccel							"";
+	param rw float homingSpeedLatch						"";
+	param rw float homingAccelLatch						"";
+	param rw float hommingDeccelLatch						"";
+	param rw signed homingMethod							"";
+	param rw float reverseDistance						"";
+	param rw float homeFinalOffset							"";
+
+//inputs from drive
+	pin in unsigned status_register						"Manufacturer Status Register";
+	pin in unsigned statusword							"Drives sercos Statusword, ";
+	pin in signed opmode_display						"Drives Modes of Operation feedback register, normally - "; 
+	pin in signed drv_actual_position 					"Drives actual Position, ";
+	pin in signed drv_actual_position_incremental 		"Drives actual Position, "; 
+	pin in signed drv_actual_position_incremental_dro 	"Drives actual position from local linear scale readout, ";
+	pin in signed drv_actual_velocity_incremental 		"Drives actual Velocity, ";
+	pin in signed drv_actual_digital_inputs				"";
+	pin in signed drv_probe_edge						"";
+	pin in signed drv_probe_edgeNeg						"";
+
+//outputs to drive
+	pin out unsigned controlword						"Drives sercos Controlword, index 0x6040";
+	//pin out signed opmode								"Drives Modes of Operation Input, normally - index 0x6060 but for S3xx it is 0x2352"; 
+	pin out signed drv_target_position_incremental		"Position command to the drive, index 0x60C1";
+	pin out signed drv_target_velocity_incremental		"Velocity command to the drive, index 0x60FF - (1 RPM = 2^32/(128*4000*60) = 139,81 counts ";
+	pin out signed probe_on								"";
+
+//Control IOsc for position planner
+	pin in bit enable									"true enables the Drive";
+	pin in float pos_cmd								"target Position, from Motion or PID";
+	pin in float vel_cmd								"target Velocity, from Motion or PID";
+	pin in float acc_cmd								"";
+	pin out float probedEdge							"";
+	pin out float probedEdgeFromSwitch					"";
+	pin out float probedEdgeOld							"";
+	pin out float probedEdgeNeg							"";
+	pin out float probedEdgeNegOld						"";
+	pin out float homeProbedOffset						"";
+	pin out signed hommingError							"diagnostic status of homing procedure";
+	pin out float posCompensation						"";
+	pin io float fTopError								"";
+	pin out float homeFailedOffsett						"";
+
+	pin out float pos_fb								"Position feedback SI feedback, scaled";
+	pin out float pos_fb_from_incremental 				"Position feedback from incremental feedback, scaled";
+	pin out float pos_fb_from_incremental_dro 			"Position feedback from incremental feedback secondary position feedback , scaled";
+	pin out float velocity_fb_from_incremental			"Velocity feedback scaled";
+	pin out bit drv_fault								"true indicates an Drive Error";
+
+//Homing IOs
+	pin io bit home										"true starts the Drives internal home procedure, connect this to joint.x.index-enable pin";
+	pin out bit stat_homed								"true indicates that the Drive is internaly homed";
+	pin out bit stat_homing 							"true indicates that the Drives homing procedure is running";
+
+//Auxilary IOs
+	pin in bit	drv_cntrl_rt_bit_1						"control word bit 6";
+	pin in bit	drv_cntrl_rt_bit_2						"control word bit 7";
+	pin out bit stat_fault								"Drive hast the fault bit set";
+	pin out bit stat_cold_restart_error 				"Actual servo amplifier error Fxx can only be cleared by a hardware reset";
+	
+	pin out bit stat_drive_processing_cmds				"status word bit 3";
+	pin out bit stat_rt_bit_1							"status word bit 6";
+	pin out bit stat_rt_bit_2							"status word bit 7";
+	pin out bit stat_info								"status word bit 11";
+	pin out bit stat_warning							"status word bit 12";
+	pin out bit stat_error								"status word bit 13";
+	pin out bit stat_mode_0								"";
+	pin out bit stat_mode_1								"";
+	pin out bit stat_mode_2								"";
+	pin out bit stat_mode_3								"";
+	pin out bit stat_not_ready							"";
+	pin out bit stat_ready_main_power_on				"";
+	pin out bit stat_ready_free_to_rotate				"";
+	pin out bit stat_drive_enabled						"";
+	pin out bit stat_di_1								"Status of user defineted input 1";
+	pin out bit stat_di_2								"Status of user defineted input 2";
+	pin out bit stat_di_3								"Status of user defineted input 3";
+	pin out bit stat_di_4								"Status of user defineted input 4";
+	pin out bit stat_di_5								"Status of user defineted input 5";
+	pin out bit stat_di_6								"Status of user defineted input 6";
+	pin out bit stat_di_7								"Status of user defineted input 7";
+
+//homming stuff
+	pin out signed homingStatus 		"";
+	pin out signed phase				"";
+	pin out signed home_state				"";
+	pin io bit stepper					"";
+
+//parameters
+	param rw float pos_scale		"increments per machine unit";
+	param rw float velo_scale		"velocity in machine units per 1 Motor revolution";
+	param rw bit auto_fault_reset	"true resets an actual Drive Fault automatically at the next enable Signal";
+	param rw float lead_cycles		"How many cycles ahead to predict (>=1)";
+	param rw float kff				"Feed-forward gain for the predictive lead term (0..1+), default 1.0";
+	param rw float k_err			"Small corrective gain from following error (pos_cmd - pos_fb). Keep small (e.g., 0..0.2)";
+	param rw float tau				"Optional first-order output filter time constant [s]. 0 disables filtering";
+
+//internals
+	variable bool		homeSwitchOld;
+	variable float		pos_scale_old;
+	variable float		velo_scale_old;
+	variable double		pos_scale_rcpt;
+	variable double		velo_scale_rcpt;
+	variable long		auto_fault_reset_delay;
+	variable unsigned	resolution;
+	variable float		incremental_pos_scale;
+	variable double		incremental_pos_scale_rcpt;
+	variable float		incremental_velo_scale;
+	variable double		incremental_velo_scale_rcpt;
+	variable unsigned	resolution_old;
+	variable double 	screw_pitch_old;
+	variable double		screw_pitch_rcpt;
+	variable bool		scan = false;
+	variable bool		latching = false;
+	variable unsigned	ui_delay = 0;
+	variable unsigned	ui_delayFinal = 0;
+	variable double		positionMemory;
+	variable double		homingSpeedLocal;
+	variable double		probeEdgeOld = 0;
+	variable double		probeEdgeNegOld = 0;
+	variable signed		drv_probe_edgeOld = 0;
+	variable signed		drv_probe_edgeNegOld = 0;
+	variable double		homingSpeedSI = 0;
+	variable double		homingSpeedLocalOld = 0;
+	variable double		hommingAccelSI = 0;
+	variable double		hommingAccelTemp = 0;
+	variable double		pos_eps = 1e-9;
+	variable double		dir = 1.0;
+	variable double		reverseDistanceLocal = 0;
+	variable double		x0=0;
+	variable double		xf=0;
+	variable double		vlim=0;
+	variable double		alim=0;
+	variable double		v=0;
+	variable double		a=0;
+	variable double		x=0;
+	variable double		Ta=0;
+	variable double		Tc=0;
+	variable double		Td=0;
+	variable double		positionOutputCompensated;
+	variable float		prev_pos_cmd = 0.0;
+	variable float		prev_vel_hat = 0.0;
+	variable float		comp_prev = 0.0;
+	variable float		fErrorOld;
+	variable double 	vlim_abs = 0;
+	variable double 	alim_abs = 0;
+	variable double		t_acc_elapsed = 0;
+	variable double		t_cruise_elapsed = 0;
+	variable double 	t_dec_elapsed =0;
+	variable double		homeProbedOffsetOld = 0.0;
+	//variable double		homeFailedOffsett = 0.0;
+
+//declare functions
+function read_all;
+function write_all;
+option extra_setup yes;
+;;
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <math.h>
+
+//constants
+	#define FAULT_AUTORESET_DELAY_NS				100000000LL
+	//#define OPMODE_NONE							0
+	#define one_velo_increments						17895.697
+	#define p_mode_code								8
+	#define v_mode_code 							9
+	#define mm_to_meter								1000
+	#define minute_to_second						60
+	#define waitingDelay							5
+	#define minimalHomeSwitchPresentDelay			250
+	#define nearZero								0.00001
+	#define zeroPosition							0.0
+
+// homing constants
+	#define		homing_initHomingSwitch									0
+	#define		homing_accellOutFromHomingSwitch						10
+	#define		homing_cruiseMovingFromHomingSwitch						20
+	#define		homing_deccellAfterMovingFromHomingSwitch				30
+
+	#define		homing_searching_ForProbeWithAccell						100
+	#define		homing_searching_ForProbeConstSpeed						110
+	#define		homing_searching_deccellerationAfterProbeHit			120
+	#define		homing_searching_zeroPointPtpMovementCalculusEdgeFind	130
+	#define		homing_searching_zeroPointPtpMovementEdgeFind			140
+	#define		homing_searching_zeroPointPtpMovementCalculus			150
+	#define		homing_searching_zeroPointPtpMovement					160
+	#define		homing_offsetting_zeroPointPtpMovementCalculus			170
+	#define		homing_offsetting_zeroPointPtpMovement					180
+	
+	#define		homing_resetProbe										199
+		
+	#define		homing_zeroPointOffsetSetup						500
+	#define		homing_deinitHomingSwitch						510
+	#define		homing_movementTypeSelection					1000
+	
+	#define		method_negativeLatch							-2		// negative edge + latch
+	#define		method_negative									-1		// negative edge
+	#define		method_positive									1		//positive edge
+	#define		method_positiveLatch							2		//positive edge + latch
+	
+// ptp movement
+	#define		ptpMov_accellMovement					0
+	#define		ptpMov_cruiseMovement					10
+	#define		ptpMov_deccellMovement					20
+	#define		ptpMov_finalDelay						30
+
+EXTRA_SETUP ()
+{// initialize variables
+	  pos_scale = 1.0;
+	  pos_scale_old = pos_scale + 1.0;
+	  pos_scale_rcpt = 1.0;
+	  velo_scale = 1.0;
+	  velo_scale_old = velo_scale + 1.0;
+	  velo_scale_rcpt = 1.0;
+	  auto_fault_reset = 1;
+	  return 0;
+}
+
+void check_scales(hal_float_t *scale,float *scale_old, double *scale_rcpt) {
+  // check for change in scale value
+  if (*scale != *scale_old) {
+    // scale value has changed, test and update it
+    if ((*scale < 1e-20) && (*scale > -1e-20)) {
+      // value too small, divide by zero is a bad thing
+      *scale = 1.0;
+    }
+    // save new scale to detect future changes
+    *scale_old = *scale;
+    // we actually want the reciprocal
+    *scale_rcpt = 1.0 / *scale;
+  }
+}
+
+void getOperationBits3(uint32_t inputWord, uint32_t bitShiftRight, uint32_t numberOfRestBits, hal_bit_t *out0, hal_bit_t *out1, hal_bit_t *out2, hal_bit_t *out3)
+{
+	uint32_t editTemp = inputWord << (32 - (bitShiftRight + numberOfRestBits));
+	editTemp = editTemp >> (32 - (numberOfRestBits));
+    *out0 = (editTemp == 0);
+    *out1 = (editTemp == 1);
+    *out2 = (editTemp == 2);
+    *out3 = (editTemp == 3);
+	return;
+}
+  
+static inline double dsgn(double z){ return (z >= 0.0) ? 1.0 : -1.0; }
+  
+	FUNCTION(read_all) 
+	{
+		if(!scan){
+			if(prBase != 0){
+				resolution = (1 << prBase);  
+				if(resolution != 0 && screw_pitch != 0){
+					incremental_pos_scale = (double)resolution / (double)screw_pitch;
+					incremental_pos_scale_rcpt = 1.0 / (double)incremental_pos_scale;
+					resolution_old = resolution;
+					screw_pitch_old = screw_pitch;
+				}
+			}
+			
+			if(reverseDistance < screw_pitch)
+			{
+				reverseDistanceLocal = screw_pitch/2;	//reverseDistanceLocal
+			}
+		}
+		
+		// check for change in scale value
+			check_scales(&pos_scale, &pos_scale_old, &pos_scale_rcpt);
+			check_scales(&velo_scale, &velo_scale_old, &velo_scale_rcpt);
+		// check resolutions
+			if(resolution != resolution_old || screw_pitch != screw_pitch_old)
+			{
+				if(resolution != 0 && screw_pitch != 0.0)
+				{
+					incremental_pos_scale = resolution / screw_pitch;
+					incremental_pos_scale_rcpt = 1.0 / incremental_pos_scale;
+					resolution_old = resolution;
+					screw_pitch_old = screw_pitch;
+				}
+				
+				if(screw_pitch != 0.0)
+				{
+					screw_pitch_rcpt = 1 / screw_pitch;
+				}
+			}
+		
+		// return value from incremental interface
+			pos_fb_from_incremental = ((double)drv_actual_position_incremental) * pos_scale_rcpt * incremental_pos_scale_rcpt;
+			pos_fb_from_incremental_dro = ((double)drv_actual_position_incremental_dro) * pos_scale_rcpt * incremental_pos_scale_rcpt;
+			
+			if(drv_probe_edgeOld != drv_probe_edge)
+			{
+				probedEdge = ((double)drv_probe_edge) * pos_scale_rcpt * incremental_pos_scale_rcpt;
+				probedEdgeOld = probedEdge;
+				drv_probe_edgeOld = drv_probe_edge;
+			}
+			
+			if(drv_probe_edgeNegOld != drv_probe_edgeNeg)
+			{
+				probedEdgeNeg = ((double)drv_probe_edgeNeg) * pos_scale_rcpt * incremental_pos_scale_rcpt;
+				probedEdgeNegOld = probedEdgeNeg;
+				drv_probe_edgeNegOld = drv_probe_edgeNeg;
+			}
+			
+			pos_fb = pos_fb_from_incremental;
+		// read velocity feedback from increments to m/s
+			velocity_fb_from_incremental = (((double)drv_actual_velocity_incremental) * screw_pitch * velo_scale_rcpt)/(one_velo_increments * minute_to_second);
+		
+		if(home || homingStatus != homing_initHomingSwitch)
+		{
+			pos_fb = pos_cmd;
+		}
+		else
+		{
+			pos_fb = pos_fb + homeProbedOffset; // this replace by statement upper
+		}
+		
+		stat_drive_processing_cmds = ((statusword >> 3) & 1);
+		stat_rt_bit_1 = ((statusword >> 6) & 1);
+		stat_rt_bit_2 = ((statusword >> 7) & 1);
+		uint32_t shift = 8;
+		uint32_t width = 3;
+		uint32_t wordTemp = statusword;
+		getOperationBits3(wordTemp, shift, width, &stat_mode_0, &stat_mode_1, &stat_mode_2, &stat_mode_3);
+		stat_info = ((statusword >> 11) & 1);
+		stat_warning = ((statusword >> 12) & 1);
+		stat_error = ((statusword >> 13) & 1) || (hommingError != 0);
+		shift = 14;
+		width = 2;
+		getOperationBits3(wordTemp, shift, width, &stat_not_ready, &stat_ready_main_power_on, &stat_ready_free_to_rotate, &stat_drive_enabled);
+		
+		stat_di_1 = ((drv_actual_digital_inputs >> 0) & 1);
+		stat_di_2 = ((drv_actual_digital_inputs >> 1) & 1);
+		stat_di_3 = ((drv_actual_digital_inputs >> 2) & 1);
+		stat_di_4 = ((drv_actual_digital_inputs >> 3) & 1);
+		stat_di_5 = ((drv_actual_digital_inputs >> 4) & 1);
+		stat_di_6 = ((drv_actual_digital_inputs >> 5) & 1);
+		stat_di_7 = ((drv_actual_digital_inputs >> 6) & 1);
+			
+		// update fault output
+		if (auto_fault_reset_delay > 0) {
+			auto_fault_reset_delay -= period;
+		} 
+		else {
+			drv_fault = (stat_fault || stat_cold_restart_error) && enable;
+		}
+	}
+	
+	FUNCTION(write_all)
+	{
+		double positionOutput = pos_cmd;
+		if(!estop)
+		{
+			if(drive_enable)
+			{
+				//controlword |= (1 << 10);
+				controlword |= (1 << 13);
+				controlword |= (1 << 14);
+				controlword |= (1 << 15);
+			}
+			else
+			{
+				//controlword &= ~(1 << 10);
+				controlword &= ~(1 << 13);
+				controlword &= ~(1 << 14);
+				controlword |= (1 << 15);
+			}
+		}
+		else
+		{
+			controlword = 0;
+		}
+		
+		controlword ^= (1 << 10);
+		
+		//probe_on = 0;
+		probe_on = home_state == homing_searching_ForProbeWithAccell 
+								|| home_state == homing_searching_ForProbeConstSpeed
+								|| home_state == homing_searching_deccellerationAfterProbeHit
+								|| home_state == homing_searching_zeroPointPtpMovementCalculusEdgeFind
+								|| home_state == homing_searching_zeroPointPtpMovementEdgeFind
+								|| home_state == homing_searching_zeroPointPtpMovementCalculus
+								|| home_state == homing_searching_zeroPointPtpMovement;
+		
+		//controlword = (controlword & ~(1 << 7)) | ((probe_on ? 1 : 0) << 7);
+		if (probe_on == 1)
+			controlword |= (1 << 7);
+		else
+			controlword &= ~(1 << 7);
+		
+		if(home)
+		{
+			double deccellerationAfterProbeHit;
+			//bool probe;
+			//probe = homeSwitchNoConfig ? homeSwitch : !homeSwitch;
+			bool homeSwitchLocal;
+			homeSwitchLocal = homeSwitchNoConfig ? homeSwitch : !homeSwitch;
+			
+			/*
+			if (!homeSwitchNoConfig) 
+			{
+				homeSwitchLocal = !homeSwitch;
+			}
+			else
+			{
+				homeSwitchLocal = homeSwitch;
+			}
+			*/
+			switch (home_state){
+				case homing_initHomingSwitch:
+				{
+					probe_on = 0;
+					ui_delay = 0;
+					latching = false;
+					stepper = false;
+					stat_homed = false;
+					stat_homing = true;
+					ui_delay = 0;
+					homingSpeedSI = homingSpeed;
+					hommingAccelSI = homingAccel;
+					hommingAccelSI = fabs(hommingAccelSI);
+					
+					homingSpeedLocal = 0;
+					homingSpeedLocalOld = 0;
+					homeProbedOffset = 0.0;
+					homeFailedOffsett = 0.0;
+					
+					probeEdgeOld = probedEdge;
+					
+					positionOutput = pos_fb_from_incremental;
+					positionMemory = positionOutput;
+					phase = ptpMov_accellMovement;
+					
+					if (homingMethod != 0 && abs(homingMethod) <= 2)
+					{
+						if(homeSwitchLocal)
+						{
+							home_state = homing_accellOutFromHomingSwitch;
+							//home_state = homing_searching_ForProbeWithAccell;
+						}
+						else
+						{
+							home_state = homing_searching_ForProbeWithAccell;
+						}
+					}
+					else
+					{
+						hommingError = home_state + 1000;
+						home_state = homing_initHomingSwitch;
+					}
+				}
+				break;
+
+				case homing_accellOutFromHomingSwitch:
+				{
+					// Get direction from speed sign
+					double direction = (homingSpeedSI >= 0.0) ? -1.0 : 1.0;
+					double speed_target = homingSpeedSI * direction;  // Ensure correct sign
+					double speed_current = homingSpeedLocalOld;
+					double accel_mag = fabs(hommingAccelSI);
+					positionOutput = positionMemory;
+					positionMemory = positionOutput;
+					
+					if(homeSwitchLocal || (!homeSwitchLocal && ui_delay < minimalHomeSwitchPresentDelay))
+					{
+						// Apply acceleration in opposite direction to move away from switch
+						if(direction > 0.0)
+						{
+							// Moving positive, accelerate negative to move away
+							if(fabs(speed_current) < fabs(speed_target))
+							{
+								speed_current = speed_current + direction * accel_mag * periodTime;
+							}
+							
+							// Calculate position: s = s0 + v0*t - 0.5*a*t^2
+							double displacement = speed_current * periodTime + direction * 0.5 * accel_mag * periodTime * periodTime;
+							positionOutput = positionMemory + displacement;
+							homingSpeedLocalOld = speed_current;
+							positionMemory = positionOutput;
+							
+							// Check if we've reached target speed (in opposite direction)
+							if(fabs(speed_current) >= fabs(speed_target))
+							{
+								//speed_current = -fabs(speed_target);
+								//homingSpeedLocalOld = speed_current;
+								ui_delay = 0;
+								home_state = homing_cruiseMovingFromHomingSwitch;
+							}
+						}
+						else
+						{
+							// Moving negative, accelerate positive to move away
+							if(fabs(speed_current) < fabs(speed_target))
+							{
+								speed_current = speed_current + direction * accel_mag * periodTime;
+							}
+							
+							// Calculate position: s = s0 + v0*t + 0.5*a*t^2
+							double displacement = speed_current * periodTime + direction * 0.5 * accel_mag * periodTime * periodTime;
+							positionOutput = positionMemory + displacement;
+							homingSpeedLocalOld = speed_current;
+							positionMemory = positionOutput;
+							
+							// Check if we've reached target speed (in opposite direction)
+							if(fabs(speed_current) >= fabs(speed_target))
+							{
+								ui_delay = 0;
+								home_state = homing_cruiseMovingFromHomingSwitch;
+							}
+						}
+					}
+					else
+					{
+						ui_delay = 0;
+						double displacement = speed_current * periodTime;
+						positionOutput = positionMemory + displacement;
+						homingSpeedLocalOld = speed_current;
+						positionMemory = positionOutput;
+						home_state = homing_cruiseMovingFromHomingSwitch;
+					}
+					
+					if (!homeSwitchLocal)
+					{
+						ui_delay++;
+					}
+					
+					homingSpeedLocalOld = speed_current;
+					positionMemory = positionOutput;
+				}
+				break;
+
+				case homing_cruiseMovingFromHomingSwitch:
+				{
+					positionOutput = positionMemory;
+					positionMemory = positionOutput;
+					
+					// Get direction (should be opposite of homing direction to move away from switch)
+					double direction = (homingSpeedSI >= 0.0) ? -1.0 : 1.0;  // Opposite direction
+					double speed = fabs(homingSpeedSI);
+					
+					positionOutput = positionMemory + (homingSpeedLocalOld * periodTime);
+					positionMemory = positionOutput;
+					
+					if(!homeSwitchLocal)
+					{
+						if(ui_delay > minimalHomeSwitchPresentDelay)
+						{
+							ui_delay = 0;
+							home_state = homing_deccellAfterMovingFromHomingSwitch;
+						}
+						else
+						{
+							ui_delay++;
+						}
+					}
+				}
+				break;
+
+				case homing_deccellAfterMovingFromHomingSwitch:
+				{
+					if (hommingDeccel == 0.0)
+					{
+						deccellerationAfterProbeHit = fabs(hommingAccelSI) * 10;
+					}
+					else
+					{
+						deccellerationAfterProbeHit = fabs(hommingDeccel);
+					}
+					
+					double speed_current = homingSpeedLocalOld;
+					double decel_mag = deccellerationAfterProbeHit;
+					double decel_dir = (speed_current >= 0.0) ? -1.0 : 1.0;  // Decelerate toward zero
+					
+					// Apply deceleration
+					speed_current = speed_current + decel_dir * decel_mag * periodTime;
+					
+					// Clamp speed to zero if we overshoot
+					if((decel_dir < 0 && speed_current < 0) || (decel_dir > 0 && speed_current > 0))
+					{
+						speed_current = 0.0;
+					}
+					
+					// Calculate displacement using average velocity
+					double avg_speed = (homingSpeedLocalOld + speed_current) * 0.5;
+					double displacement = avg_speed * periodTime;
+					
+					positionOutput = positionMemory + displacement;
+					positionMemory = positionOutput;
+					homingSpeedLocalOld = speed_current;
+					
+					if (fabs(speed_current) < nearZero)  // Nearly stopped
+					{
+						homingSpeedLocalOld = 0.0;
+						if(ui_delay > waitingDelay)
+						{
+							ui_delay = 0;
+							home_state = homing_searching_ForProbeWithAccell;
+						}
+						else
+						{
+							ui_delay++;
+						}
+					}
+				}
+				break;
+
+				case homing_searching_ForProbeWithAccell:
+				{
+					double target_speed = homingSpeedSI;
+					double current_speed = homingSpeedLocalOld;
+					double accel_mag = fabs(hommingAccelSI);
+					
+					// Calculate speed difference
+					double speed_diff = target_speed - current_speed;
+					
+					// Determine acceleration direction
+					double accel_dir = (speed_diff >= 0.0) ? 1.0 : -1.0;
+					
+					// Apply acceleration
+					double speed_change = accel_dir * accel_mag * periodTime;
+					
+					// Don't overshoot the target speed
+					if (fabs(speed_change) > fabs(speed_diff))
+					{
+						homingSpeedLocalOld = target_speed;
+					}
+					else
+					{
+						homingSpeedLocalOld = current_speed + speed_change;
+					}
+					
+					// Calculate displacement using average velocity
+					double avg_velocity = (current_speed + homingSpeedLocalOld) * 0.5;
+					double displacement = avg_velocity * periodTime;
+					
+					positionOutput = positionMemory + displacement;
+					positionMemory = positionOutput;
+					
+					// Check if we've reached target speed (with tolerance)
+					if (fabs(homingSpeedLocalOld - target_speed) < nearZero)
+					{
+						home_state = homing_searching_ForProbeConstSpeed;
+					}
+					
+					// Check for probe trigger
+					if(probedEdge != probeEdgeOld)
+					{
+						probeEdgeOld = probedEdge;
+						probedEdgeFromSwitch = pos_fb_from_incremental;
+						home_state = homing_searching_deccellerationAfterProbeHit;
+					}
+				}
+				break;
+
+				case homing_searching_ForProbeConstSpeed:
+				{
+					positionOutput = positionMemory + (homingSpeedSI * periodTime);
+					positionMemory = positionOutput;
+					
+					if(probedEdge != probeEdgeOld)
+					{
+						probeEdgeOld = probedEdge;
+						probedEdgeFromSwitch = pos_fb_from_incremental;
+						homingSpeedLocalOld = homingSpeedSI;
+						home_state = homing_searching_deccellerationAfterProbeHit;
+					}
+				}
+				break;
+
+				case homing_searching_deccellerationAfterProbeHit:
+				{
+					if (hommingDeccel == 0.0)
+					{
+						deccellerationAfterProbeHit = fabs(hommingAccelSI) * 10;
+					}
+					else
+					{
+						deccellerationAfterProbeHit = fabs(hommingDeccel);
+					}
+					
+					double speed_current = homingSpeedLocalOld;
+					double decel_mag = deccellerationAfterProbeHit;
+					double decel_dir = (speed_current >= 0.0) ? -1.0 : 1.0;  // Decelerate toward zero
+					
+					// Apply deceleration
+					speed_current = speed_current + decel_dir * decel_mag * periodTime;
+					
+					// Clamp speed to zero if we overshoot
+					if((decel_dir < 0 && speed_current < 0) || (decel_dir > 0 && speed_current > 0))
+					{
+						speed_current = 0.0;
+					}
+					
+					// Calculate displacement using average velocity
+					double avg_speed = (homingSpeedLocalOld + speed_current) / 2.0;
+					double displacement = avg_speed * periodTime;
+					
+					positionOutput = positionMemory + displacement;
+					positionMemory = positionOutput;
+					homingSpeedLocalOld = speed_current;
+					
+					if (fabs(speed_current) < nearZero)  // Nearly stopped
+					{
+						homingSpeedLocalOld = 0.0;
+						positionMemory = positionOutput;
+						//ui_delay = 0;
+						//stepper = false;
+						stepper = true;
+						if(stepper)
+						{
+							if(ui_delay > waitingDelay)
+							{
+								ui_delay = 0;
+								stepper = false;
+								home_state = homing_searching_zeroPointPtpMovementCalculusEdgeFind;
+							}
+							else
+							{
+								ui_delay++;
+							}
+						}
+					}
+				}
+				break;
+
+				case homing_searching_zeroPointPtpMovementCalculusEdgeFind:
+				{
+					if(homingSpeedSI != 0.0)
+					{
+						vlim = homingSpeedSI;
+					}
+					else
+					{
+						hommingError = home_state + 1000;
+						home_state = homing_initHomingSwitch;
+						return;
+					}
+					
+					if(hommingAccelSI != 0.0)
+					{
+						alim = hommingAccelSI;
+					}
+					else
+					{
+						hommingError = home_state + 1001;
+						home_state = homing_initHomingSwitch;
+						return;
+					}
+					
+					// Store original signs
+					double original_vlim_sign = (vlim >= 0.0) ? 1.0 : -1.0;
+					
+					// Use absolute values for calculations
+					vlim_abs = fabs(vlim);
+					alim_abs = fabs(alim);
+					
+					// actual position point setup
+					x0 = pos_fb_from_incremental;
+					
+					// target position calculation - consider direction
+					if(original_vlim_sign > 0.0)
+					{
+						// Moving in positive direction
+						xf = probedEdge - fabs(reverseDistanceLocal);
+					}
+					else
+					{
+						// Moving in negative direction
+						xf = probedEdge + fabs(reverseDistanceLocal);
+					}
+					
+					// trajectory calculation
+					double posDif0 = xf - x0;
+					
+					// Calculate direction based on actual needed movement
+					if(fabs(posDif0) < pos_eps)
+					{
+						// Already at target
+						dir = 0.0;
+					}
+					else
+					{
+						dir = (posDif0 >= 0.0) ? 1.0 : -1.0;
+					}
+					
+					// trajectory absolute calculation
+					double posDif0Abs = fabs(posDif0);
+					
+					// time of accell/deccell
+					double Ta_cand0 = vlim_abs / alim_abs;
+					
+					// trajectory of accell/deccell
+					double Da_acc0  = 0.5 * alim_abs * Ta_cand0 * Ta_cand0;
+					
+					// non constant speed movement trajectory calculation
+					double Dmin0    = 2.0 * Da_acc0;
+					
+					// type of movement calculation metric or trapezoidal profile
+					if (posDif0Abs <= Dmin0 + pos_eps)
+					{// metric (triangular profile)
+						Ta = sqrt(posDif0Abs / alim_abs);
+						Td = Ta;
+						Tc = 0.0;
+						// Recalculate vlim based on triangular profile
+						vlim_abs = alim_abs * Ta;
+					}
+					else 
+					{// trapezoidal
+						Ta = Ta_cand0;
+						Td = Ta_cand0;
+						double Dcruise = posDif0Abs - 2.0 * Da_acc0;
+						Tc = Dcruise / vlim_abs;
+					}
+					
+					// Reset movement state
+					t_acc_elapsed = 0.0;
+					t_cruise_elapsed = 0.0;
+					t_dec_elapsed = 0.0;
+					v = 0.0;  // Reset velocity
+					
+					stepper = true;
+					if(stepper)
+					{
+						stepper = false;
+						phase = ptpMov_accellMovement;
+						home_state = homing_searching_zeroPointPtpMovementEdgeFind;
+					}
+					
+					if (fabs(posDif0) < pos_eps)
+					{// check if movement is less than resolution
+						if(homingMethod >= 0)
+						{
+							home_state = homing_zeroPointOffsetSetup;
+							phase = ptpMov_finalDelay;
+						}
+					}
+					
+					// write position command
+					positionOutput = positionMemory;
+				}
+				break;
+
+				case homing_searching_zeroPointPtpMovementEdgeFind:
+				{
+					positionOutput = positionMemory;
+					switch(phase)
+					{
+						case ptpMov_accellMovement:
+						{
+							// Acceleration phase
+							a = alim_abs * dir;
+							v += a * periodTime;
+							
+							positionOutput = positionMemory + v * periodTime - 0.5 * a * periodTime * periodTime;
+							
+							t_acc_elapsed += periodTime;
+							if (t_acc_elapsed >= Ta)
+							{
+								// End of acceleration phase
+								v = vlim_abs * dir;
+								if (Tc > 0)
+								{
+									phase = ptpMov_cruiseMovement;
+								}
+								else
+								{
+									phase = ptpMov_deccellMovement;
+								}
+							}
+						}
+						break;
+							
+						case ptpMov_cruiseMovement:
+						{
+							// Cruise phase
+							a = 0.0;
+							v = vlim_abs * dir;
+							positionOutput = positionMemory + v * periodTime;
+							
+							t_cruise_elapsed += periodTime;
+							if (t_cruise_elapsed >= Tc)
+							{
+								phase = ptpMov_deccellMovement;
+							}
+						}
+						break;
+							
+						case ptpMov_deccellMovement:
+						{
+							// Deceleration phase
+							a = -alim_abs * dir;
+							v += a * periodTime;
+							
+							positionOutput = positionMemory + v * periodTime - 0.5 * a * periodTime * periodTime;
+							
+							t_dec_elapsed += periodTime;
+							if (t_dec_elapsed >= Td)
+							{
+								// End of movement
+								v = 0.0;
+								a = 0.0;
+								phase = ptpMov_finalDelay;
+							}
+						}
+						break;
+						
+						case ptpMov_finalDelay:
+						{
+							positionOutput = positionMemory;
+							double finalMovement = xf - pos_fb_from_incremental;
+							if(fabs(finalMovement) > nearZero)
+							{
+								positionOutput = positionMemory + (finalMovement * 0.01);
+								positionMemory = positionOutput;
+							}
+							else
+							{
+								positionOutput = positionMemory;
+								positionMemory = positionOutput;
+								if(ui_delay > waitingDelay)
+								{
+									int32_t methodLocal = abs(homingMethod);
+									
+									switch (methodLocal)
+									{
+										case 1: // single trigger
+											if(homingMethod > 0)
+											{// rising edge homing method
+												phase = ptpMov_accellMovement;
+												stepper = false;
+												home_state = homing_searching_zeroPointPtpMovementCalculus;
+												ui_delay = 0;
+											}
+											else
+											{// falling edge homing method
+												if (probedEdgeNeg != 0.0)
+												{
+													phase = ptpMov_accellMovement;
+													stepper = false;
+													home_state = homing_searching_zeroPointPtpMovementCalculus;
+													ui_delay = 0;
+												}
+												else
+												{
+													hommingError = home_state + 1001;
+													return;
+												}
+											}
+										break;
+										
+										case 2: // latching trigger
+											if (latching)
+											{
+												if(homingMethod > 0)
+												{// rising edge homing method
+													phase = ptpMov_accellMovement;
+													stepper = false;
+													home_state = homing_searching_zeroPointPtpMovementCalculus;
+													ui_delay = 0;
+												}
+												else
+												{// falling edge homing method
+													if (probedEdgeNeg != 0.0)
+													{
+														phase = ptpMov_accellMovement;
+														stepper = false;
+														home_state = homing_searching_zeroPointPtpMovementCalculus;
+														ui_delay = 0;
+													}
+													else
+													{
+														hommingError = home_state + 1001;
+														return;
+													}
+												}
+											}
+											else
+											{
+												home_state = homing_resetProbe;
+											}
+										break;
+									}
+								}
+								else
+								{
+									ui_delay++;
+								}
+							}
+						}
+						break;
+					}
+					positionMemory = positionOutput;
+				}
+				break;
+
+				case homing_searching_zeroPointPtpMovementCalculus:
+				{
+					hommingAccelSI = fabs(hommingAccelSI);
+					
+					vlim = fabs(homingSpeedSI);
+					alim = fabs(hommingAccelSI);
+					
+					// actual position point setup
+					x0 = pos_fb_from_incremental;
+					// target position point setup
+					if(homingMethod >= 0)
+					{
+						xf = probedEdge;
+					}
+					else
+					{
+						xf = probedEdgeNeg;
+					}
+					
+					// trajectory calculation
+					double posDif1 = xf - x0;
+					
+					// trajectory sign calculation
+					dir = (fabs(posDif1) < pos_eps) ? 0.0 : ((posDif1 >= 0.0) ? 1.0 : -1.0);
+					
+					// trajectory absolute calculation
+					double posDif1Abs = fabs(posDif1);
+					
+					// time of accell/deccell
+					double Ta_cand1 = vlim / alim;
+					
+					// trajectory of accell/deccell
+					double Da_acc1  = 0.5 * alim * Ta_cand1 * Ta_cand1;
+					
+					// non constant speed movement trajectory calculation
+					double Dmin1    = 2.0 * Da_acc1;
+					
+					// type of movement calculation metric or trapezoidal profile
+					if (posDif1Abs <= Dmin1 + pos_eps)
+					{// metric 
+						Ta = sqrt(posDif1Abs / alim);
+						Td = Ta;
+						Tc = 0.0;
+					}
+					else 
+					{// trapezoidal
+						Ta = Ta_cand1;
+						Td = Ta_cand1;
+						double Dcruise = posDif1Abs - 2.0*Da_acc1;
+						Tc = Dcruise / vlim;
+					}
+					
+					stepper = true;
+					if(stepper)
+					{
+						stepper = false;
+						phase = ptpMov_accellMovement;
+						home_state = homing_searching_zeroPointPtpMovement;
+					}
+					// write position command to not jerk the axis 
+					positionOutput = positionMemory;
+				}
+				break;
+
+				case homing_searching_zeroPointPtpMovement:
+				{
+					positionOutput = positionMemory;
+					switch(phase){
+						case ptpMov_accellMovement:
+							a = alim * dir;
+							v += a * periodTime;
+							positionOutput = positionMemory + v * periodTime - 0.5 * a * periodTime * periodTime;
+							Ta -= periodTime;
+							if (Ta <= 0){
+								if (Tc > 0){ phase = ptpMov_cruiseMovement; }
+								else       { phase = ptpMov_deccellMovement; }
+							}
+						break;
+							
+						case ptpMov_cruiseMovement:
+							a = 0.0;
+							v = vlim * dir;
+							positionOutput = positionMemory + v * periodTime;
+							Tc -= periodTime;
+							if (Tc <= 0) phase = ptpMov_deccellMovement;
+						break;
+							
+						case ptpMov_deccellMovement:
+							a = -alim * dir;
+							v += a * periodTime;
+							positionOutput = positionMemory + v * periodTime - 0.5 * a * periodTime * periodTime;
+							Td -= periodTime;
+							if (Td <= periodTime*0.5){
+								v=0;
+								a=0;
+								phase = ptpMov_finalDelay;
+							}
+						break;
+							
+						case ptpMov_finalDelay:
+							double finalMovement = xf - pos_fb_from_incremental;
+							if(fabs(finalMovement) > nearZero)
+							{
+								positionOutput = positionMemory + (finalMovement * 0.001);
+							}
+							else
+							{
+								positionOutput = positionMemory;
+								if(ui_delay > waitingDelay)
+								{
+									phase = ptpMov_accellMovement;
+									stepper = false;
+									home_state = homing_zeroPointOffsetSetup;
+									ui_delay = 0;
+								}
+								else
+								{
+									ui_delay++;
+								}
+							}
+						break;
+					}
+					positionMemory = positionOutput;
+				}
+				break;
+
+				case homing_offsetting_zeroPointPtpMovementCalculus:
+				{
+					stepper = false;
+					if(homingSpeedSI != 0.0)
+					{
+						vlim = homingSpeedSI;
+					}
+					else
+					{
+						vlim = fabs(homingSpeed); // Use default homing speed if not set
+					}
+					
+					if(hommingAccelSI != 0.0)
+					{
+						alim = hommingAccelSI;
+					}
+					else
+					{
+						alim = fabs(homingAccel); // Use default homing acceleration if not set
+					}
+					
+					// Use absolute values for calculations
+					vlim_abs = fabs(vlim);
+					alim_abs = fabs(alim);
+					
+					// Start from current position
+					x0 = pos_fb_from_incremental;
+					
+					// Target is the current zero point (which is probedEdge or probedEdgeNeg) plus the final offset
+					double zeroPoint = 0.0;
+					if(homingMethod >= 0)
+					{
+						zeroPoint = probedEdge; // Rising edge zero point
+					}
+					else
+					{
+						zeroPoint = probedEdgeNeg; // Falling edge zero point
+					}
+					
+					// Apply final offset: homeFinalOffset should be the desired machine coordinate position
+					// For example, if you want the zero point to be at machine coordinate 10mm, set homeFinalOffset = 10.0
+					// If you want the zero point at -5mm, set homeFinalOffset = -5.0
+					xf = zeroPoint - homeFinalOffset;
+					
+					// trajectory calculation
+					double posDif = xf - x0;
+					
+					// Calculate direction based on actual needed movement
+					if(fabs(posDif) < pos_eps)
+					{
+						// Already at target
+						dir = 0.0;
+					}
+					else
+					{
+						dir = (posDif >= 0.0) ? 1.0 : -1.0;
+						//dir = (homeFinalOffset >= 0.0) ? 1.0 : -1.0;
+					}
+					
+					// trajectory absolute calculation
+					double posDifAbs = fabs(posDif);
+					
+					// time of accell/deccell
+					double Ta_cand = vlim_abs / alim_abs;
+					
+					// trajectory of accell/deccell
+					double Da_acc  = 0.5 * alim_abs * Ta_cand * Ta_cand;
+					
+					// non constant speed movement trajectory calculation
+					double Dmin    = 2.0 * Da_acc;
+					
+					// type of movement calculation metric or trapezoidal profile
+					if (posDifAbs <= Dmin + pos_eps)
+					{// metric (triangular profile)
+						Ta = sqrt(posDifAbs / alim_abs);
+						Td = Ta;
+						Tc = 0.0;
+						// Recalculate vlim based on triangular profile
+						vlim_abs = alim_abs * Ta;
+					}
+					else 
+					{// trapezoidal
+						Ta = Ta_cand;
+						Td = Ta_cand;
+						double Dcruise = posDifAbs - 2.0 * Da_acc;
+						Tc = Dcruise / vlim_abs;
+					}
+					
+					// Reset movement state
+					t_acc_elapsed = 0.0;
+					t_cruise_elapsed = 0.0;
+					t_dec_elapsed = 0.0;
+					v = 0.0;  // Reset velocity
+					
+					phase = ptpMov_accellMovement;
+					home_state = homing_offsetting_zeroPointPtpMovement;
+					
+					// write position command
+					positionOutput = positionMemory;
+				}
+				break;
+
+				case homing_offsetting_zeroPointPtpMovement:
+				{
+					positionOutput = positionMemory;
+					switch(phase)
+					{
+						case ptpMov_accellMovement:
+						{
+							// Acceleration phase
+							a = alim_abs * dir;
+							v += a * periodTime;
+							
+							positionOutput = positionMemory + v * periodTime - 0.5 * a * periodTime * periodTime;
+							
+							t_acc_elapsed += periodTime;
+							if (t_acc_elapsed >= Ta)
+							{
+								// End of acceleration phase
+								v = vlim_abs * dir;
+								if (Tc > 0)
+								{
+									phase = ptpMov_cruiseMovement;
+								}
+								else
+								{
+									phase = ptpMov_deccellMovement;
+								}
+							}
+						}
+						break;
+							
+						case ptpMov_cruiseMovement:
+						{
+							// Cruise phase
+							a = 0.0;
+							v = vlim_abs * dir;
+							positionOutput = positionMemory + v * periodTime;
+							
+							t_cruise_elapsed += periodTime;
+							if (t_cruise_elapsed >= Tc)
+							{
+								phase = ptpMov_deccellMovement;
+							}
+						}
+						break;
+							
+						case ptpMov_deccellMovement:
+						{
+							// Deceleration phase
+							a = -alim_abs * dir;
+							v += a * periodTime;
+							
+							positionOutput = positionMemory + v * periodTime - 0.5 * a * periodTime * periodTime;
+							
+							t_dec_elapsed += periodTime;
+							if (t_dec_elapsed >= Td)
+							{
+								// End of movement
+								v = 0.0;
+								a = 0.0;
+								phase = ptpMov_finalDelay;
+							}
+						}
+						break;
+						
+						case ptpMov_finalDelay:
+						{
+							positionOutput = positionMemory;
+							double finalMovement = xf - pos_fb_from_incremental;
+							if(fabs(finalMovement) > nearZero)
+							{
+								// Small correction to reach exact target
+								positionOutput = positionMemory + (finalMovement * 0.01);
+								positionMemory = positionOutput;
+							}
+							else
+							{
+								if(ui_delay > waitingDelay)
+								{
+									stepper = true;
+									if(stepper)
+									{
+										ui_delay = 0;
+										phase = ptpMov_accellMovement;
+										home_state = homing_deinitHomingSwitch;
+									}
+									positionOutput = positionMemory;
+									positionMemory = positionOutput;
+								}
+								else
+								{
+									ui_delay++;
+								}
+								
+								// Reached target, update homeProbedOffset
+								positionOutput = positionMemory;
+								positionMemory = positionOutput;
+							}
+						}
+						break;
+					}
+					positionMemory = positionOutput;
+				}
+				break;
+
+				case homing_resetProbe:
+				{
+					int32_t homingMethodLocal = abs(homingMethod);
+					
+					positionOutput = positionMemory;
+					positionMemory = positionOutput;
+					
+					switch (homingMethodLocal){
+						case 1: //no latching
+							if(homingMethod > 0)
+							{// rising edge homing method
+								phase = ptpMov_accellMovement;
+								stepper = false;
+								home_state = homing_zeroPointOffsetSetup;
+								ui_delay = 0;
+							}
+							else
+							{
+								if (probedEdgeNeg != 0.0)
+								{
+									phase = ptpMov_accellMovement;
+									stepper = false;
+									home_state = homing_zeroPointOffsetSetup;
+									ui_delay = 0;
+								}
+								else
+								{
+									hommingError = home_state + 1001;
+									return;
+								}
+							}
+						break;
+						
+						case 2: //final latching
+							
+							if(ui_delay > waitingDelay)
+							{
+								if(homingSpeedLatch != 0.0)// speed edit to latch
+								{
+									homingSpeedSI = homingSpeedLatch;
+								}
+								else
+								{
+									homingSpeedSI = homingSpeed * 0.2;
+								}
+							
+								if(homingAccelLatch != 0.0)// accell edit to latch
+								{
+									hommingAccelSI = homingAccelLatch;
+								}
+								else
+								{
+									hommingAccelSI = homingAccel * 0.2;
+								}
+								
+								hommingAccelSI = fabs(hommingAccelSI);
+								
+								latching = true;
+								home_state = homing_searching_ForProbeWithAccell;
+								ui_delay = 0;
+							}
+							else
+							{
+								if (latching)
+								{
+									phase = ptpMov_accellMovement;
+									stepper = false;
+									latching = false;
+									home_state = homing_zeroPointOffsetSetup;
+									ui_delay = 0;
+								}
+								else
+								{
+									ui_delay++;
+								}
+							}
+						break;
+					}
+					positionOutput = positionMemory;
+					positionMemory = positionOutput;
+				}
+				break;
+
+				case homing_zeroPointOffsetSetup:
+				{
+					if(homingMethod >= 0)
+					{// homing at rising edge offset setup
+						if(probedEdge >= 0.0)
+						{
+							homeProbedOffset = -fabs(probedEdge);
+						}
+						else
+						{
+							homeProbedOffset = fabs(probedEdge);
+						}
+					}
+					else
+					{// homing at falling edge offset setup
+						if(probedEdgeNeg >= 0.0)
+						{
+							homeProbedOffset = -fabs(probedEdgeNeg);
+						}
+						else
+						{
+							homeProbedOffset = fabs(probedEdgeNeg);
+						}
+					}
+					
+					if (homeProbedOffset != homeProbedOffsetOld)
+					{
+						if (homeFinalOffset != 0.0) 
+						{
+							home_state = homing_offsetting_zeroPointPtpMovementCalculus;
+						}
+						else
+						{
+							home_state = homing_deinitHomingSwitch;
+						}
+					}
+					
+					positionOutput = positionMemory;
+					positionMemory = positionOutput;
+				}
+				break;
+
+				case homing_deinitHomingSwitch:
+				{
+					if(homeProbedOffset != 0)
+					{
+						//probeEdgeOld = probedEdge;
+						homeFailedOffsett = 0.0;
+						homeProbedOffsetOld = homeProbedOffset;
+						stat_homed = true;
+						home_state = homing_initHomingSwitch;
+						positionOutput = positionMemory;
+						positionMemory = positionOutput;
+						ui_delayFinal = waitingDelay;
+						home = false;
+					}
+				}
+				break;
+			}
+			homingStatus = home_state;
+			
+		}
+		else
+		{
+			stat_homing = false;
+			home_state = homing_initHomingSwitch;
+			
+			if(hommingError || homingStatus != homing_initHomingSwitch)
+			{
+				positionOutput = positionMemory;
+				if (!drive_enable)
+				{
+					homeProbedOffset = pos_cmd - positionMemory;
+					homingStatus = homing_initHomingSwitch;
+				}
+			}
+			else
+			{
+				positionOutput = pos_cmd - homeProbedOffset;
+			}
+		}
+		
+		positionOutputCompensated = positionOutput;
+		
+		// 1. Calculate the time shift continuously using floating point precision
+		const double LTs = lead_cycles * periodTime; 
+
+		// 2. Pure velocity lookahead (perfectly counters linear speed-dependent lag)
+		double lead = vel_cmd * LTs;
+
+		// 3. Apply the feedforward gain (kff should be tuned to 1.0)
+		posCompensation = kff * lead;
+
+		// 4. Always apply the compensation, even at a standstill.
+		// This prevents the violent "snap back" when vel_cmd reaches 0.0.
+		positionOutputCompensated = positionOutput + posCompensation;
+
+		// 5. Calculate and track the following error strictly for diagnostics.
+		// Notice that ferr is NO LONGER fed back into posCompensation.
+		double ferr = positionOutput - pos_fb_from_incremental;
+
+		if(fabs(ferr) > fabs(fErrorOld) || fTopError == 0.0)
+		{
+			fErrorOld = ferr;
+			fTopError = fErrorOld;
+		}
+		
+		//positionOutputCompensated = positionOutput + posCompensation;
+		
+		if(ui_delayFinal > 0)
+		{
+			positionOutputCompensated = positionOutput;
+			ui_delayFinal--;
+		}
+		
+		//drv_target_position_incremental = (int32_t)(positionOutput * pos_scale * incremental_pos_scale);
+		drv_target_position_incremental = (int32_t)(positionOutputCompensated * pos_scale * incremental_pos_scale);
+		
+		if(screw_pitch){
+			drv_target_velocity_incremental = (int32_t)(((double)(vel_cmd) * minute_to_second * one_velo_increments * velo_scale)/ screw_pitch);
+		}
+		
+		homeSwitchOld = homeSwitch;
+	}

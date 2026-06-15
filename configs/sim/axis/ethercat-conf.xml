@@ -1,0 +1,215 @@
+<masters>
+	<master idx="0" appTimePeriod="250000" refClockSyncCycles="1">
+		<slave idx="0" type="generic" vid="0x00000002" pid="0x14536012" name="Drive-1-AX520-0" configPdos="true">
+			  <initCmds filename="initCmds/Drive-1-AX520-0-initCmds.xml" />
+			  <syncManager idx="0" dir="out" />
+			  <syncManager idx="1" dir="in" />
+			  <syncManager idx="2" dir="out">
+				<pdo idx="0018">
+				  <pdoEntry idx="0086" subIdx="01" bitLen="16" halPin="Master-control-0" halType="u32">
+					<!--MDT 1-Master control word-0-->
+				  </pdoEntry>
+				  <pdoEntry idx="002F" subIdx="01" bitLen="32" halPin="Position-comman-1" halType="s32">
+					<!--MDT 1-Position command value-1-->
+				  </pdoEntry>
+				  <pdoEntry idx="0024" subIdx="01" bitLen="32" halPin="Velocity-comman-2" halType="s32">
+					<!--MDT 1-Velocity command value-2-->
+				  </pdoEntry>
+				</pdo>
+				<pdo idx="1018">
+				  <pdoEntry idx="0086" subIdx="02" bitLen="16" halPin="Master-control-3" halType="s32">
+					<!--MDT 2-Master control word-3-->
+				  </pdoEntry>
+				  <pdoEntry idx="002F" subIdx="02" bitLen="32" halPin="Position-comman-4" halType="s32">
+					<!--MDT 2-Position command value-4-->
+				  </pdoEntry>
+				  <pdoEntry idx="0024" subIdx="02" bitLen="32" halPin="Velocity-comman-5" halType="s32">
+					<!--MDT 2-Velocity command value-5-->
+				  </pdoEntry>
+				</pdo>
+			  </syncManager>
+			  <syncManager idx="3" dir="in">
+				<pdo idx="0010">
+				  <pdoEntry idx="0087" subIdx="01" bitLen="16" halPin="Drive-status-wo-6" halType="u32">
+					<!--AT 1-Drive status word-6-->
+				  </pdoEntry>
+				  <pdoEntry idx="0033" subIdx="01" bitLen="32" halPin="Position-feedba-7" halType="s32">
+					<!--AT 1-Position feedback value 1 (motor feedback)-7-->
+				  </pdoEntry>
+				  <pdoEntry idx="0082" subIdx="01" bitLen="32" halPin="Probe-value-1-p-8" halType="s32">
+					<!--AT 1-Probe value 1 positive edge-8-->
+				  </pdoEntry>
+				  <pdoEntry idx="0083" subIdx="01" bitLen="32" halPin="Probe-value-1-n-9" halType="s32">
+					<!--AT 1-Probe value 1 negative edge-9-->
+				  </pdoEntry>
+				  <pdoEntry idx="00B3" subIdx="01" bitLen="16" halPin="Probe-status-10" halType="s32">
+					<!--AT 1-Probe status-10-->
+				  </pdoEntry>
+				  <pdoEntry idx="8321" subIdx="01" bitLen="16" halPin="Digital-inputs-11" halType="s32">
+					<!--AT 1-Digital inputs, state-11-->
+				  </pdoEntry>
+				  <pdoEntry idx="87D1" subIdx="01" bitLen="16" halPin="Safety-option-d-12" halType="s32">
+					<!--AT 1-Safety option diagnostics-12-->
+				  </pdoEntry>
+				  <pdoEntry idx="87D2" subIdx="01" bitLen="16" halPin="Safety-option-s-13" halType="s32">
+					<!--AT 1-Safety option state-13-->
+				  </pdoEntry>
+				  <pdoEntry idx="00BD" subIdx="01" bitLen="32" halPin="Following-dista-14" halType="s32">
+					<!--AT 1-Following distance-14-->
+				  </pdoEntry>
+				</pdo>
+				<pdo idx="1010">
+				  <pdoEntry idx="0087" subIdx="02" bitLen="16" halPin="Drive-status-wo-15" halType="s32">
+					<!--AT 2-Drive status word-15-->
+				  </pdoEntry>
+				  <pdoEntry idx="0033" subIdx="02" bitLen="32" halPin="Position-feedba-16" halType="s32">
+					<!--AT 2-Position feedback 1 value-16-->
+				  </pdoEntry>
+				  <pdoEntry idx="0082" subIdx="02" bitLen="32" halPin="Probe-value-1-p-17" halType="s32">
+					<!--AT 2-Probe value 1 positive edge-17-->
+				  </pdoEntry>
+				  <pdoEntry idx="0083" subIdx="02" bitLen="32" halPin="Probe-value-1-n-18" halType="s32">
+					<!--AT 2-Probe value 1 negative edge-18-->
+				  </pdoEntry>
+				  <pdoEntry idx="00B3" subIdx="02" bitLen="16" halPin="Probe-status-19" halType="s32">
+					<!--AT 2-Probe status-19-->
+				  </pdoEntry>
+				</pdo>
+			  </syncManager>
+			<dcConf assignActivate="0x0730" sync0Cycle="250000" sync0Shift="-125000" sync1Cycle="0" sync1Shift="0"/>
+		</slave>
+		<slave idx="1" type="generic" vid="0x0000006a" pid="0x03000700" name="x-s343" configPdos="true">
+			<!-- driver outputs setup -->
+			<!-- reset number of mapped PDOs -->
+			<sdoConfig idx="1A00" subIdx="00">
+			<sdoDataRaw data="00 3F 6C 65"/>
+			</sdoConfig>
+			<!-- status word UINT16 -->
+			<sdoConfig idx="1A00" subIdx="01">
+			<sdoDataRaw data="10 00 41 60"/>
+			</sdoConfig>
+			<!-- incremental position from motor feedback INT32 -->
+			<sdoConfig idx="1A00" subIdx="02">
+			<sdoDataRaw data="20 00 63 60"/>
+			</sdoConfig>
+			<!--
+			 incremental position from motor extrenal feedback INT32 
+			-->
+			<sdoConfig idx="1A00" subIdx="03">
+			<sdoDataRaw data="20 00 50 20"/>
+			</sdoConfig>
+			<!-- actual velocity in incremental status INT32 -->
+			<sdoConfig idx="1A00" subIdx="04">
+			<sdoDataRaw data="20 00 6C 60"/>
+			</sdoConfig>
+			<!-- internal operation mode INT16 -->
+			<sdoConfig idx="1A00" subIdx="05">
+			<sdoDataRaw data="10 00 53 23"/>
+			</sdoConfig>
+			<!-- driver warning code INT32 -->
+			<sdoConfig idx="1A00" subIdx="06">
+			<sdoDataRaw data="20 00 00 20"/>
+			</sdoConfig>
+			<!-- actual AI status INT16 -->
+			<sdoConfig idx="1A00" subIdx="07">
+			<sdoDataRaw data="10 01 B2 20"/>
+			</sdoConfig>
+			<!-- actual AI status INT16 -->
+			<sdoConfig idx="1A00" subIdx="08">
+			<sdoDataRaw data="10 02 B2 20"/>
+			</sdoConfig>
+			<!-- driver warning code INT32 -->
+			<sdoConfig idx="1A00" subIdx="09">
+			<sdoDataRaw data="20 00 02 10"/>
+			</sdoConfig>
+			<!-- define number of mapped PDOs -->
+			<sdoConfig idx="1A00" subIdx="00">
+			<sdoDataRaw data="09 40 6F 77"/>
+			</sdoConfig>
+			<!-- driver outputs end setup -->
+			<!-- driver inputs setup -->
+			<!-- reset number of mapped PDOs -->
+			<sdoConfig idx="1600" subIdx="00">
+			<sdoDataRaw data="00 3F 6C 65"/>
+			</sdoConfig>
+			<!--
+			 0x6041 0010 == register 0x6041 + value 0x10(16bit decimal) 
+			-->
+			<sdoConfig idx="1600" subIdx="01">
+			<sdoDataRaw data="10 00 40 60"/>
+			</sdoConfig>
+			<!-- 0x60C1 0020 == 0x20 == 0d32 bit INT32-->
+			<sdoConfig idx="1600" subIdx="02">
+			<sdoDataRaw data="20 00 C1 60"/>
+			</sdoConfig>
+			<!-- actual velocity in incremental status INT32 -->
+			<sdoConfig idx="1600" subIdx="03">
+			<sdoDataRaw data="20 00 FF 60"/>
+			</sdoConfig>
+			<!-- opmode request UINT16 -->
+			<sdoConfig idx="1600" subIdx="04">
+			<sdoDataRaw data="10 00 52 23"/>
+			</sdoConfig>
+			<!-- digital outputs write INT16 -->
+			<sdoConfig idx="1600" subIdx="05">
+			<sdoDataRaw data="10 00 02 23"/>
+			</sdoConfig>
+			<!-- define number of mapped PDOs -->
+			<sdoConfig idx="1600" subIdx="00">
+			<sdoDataRaw data="05 40 6F 77"/>
+			</sdoConfig>
+			<!-- driver inputs end setup -->
+			<sdoConfig idx="1C12" subIdx="01">
+			<sdoDataRaw data="00 16"/>
+			</sdoConfig>
+			<sdoConfig idx="1C12" subIdx="00">
+			<sdoDataRaw data="01"/>
+			</sdoConfig>
+			<sdoConfig idx="1C13" subIdx="01">
+			<sdoDataRaw data="00 1A"/>
+			</sdoConfig>
+			<sdoConfig idx="1C13" subIdx="00">
+			<sdoDataRaw data="01"/>
+			</sdoConfig>
+			
+			<!-- Set OpMode to Cyclic Synchronous Position -->
+			<sdoConfig idx="6060" subIdx="00">
+			<sdoDataRaw data="FA"/>
+			</sdoConfig>
+			<!-- Set Cycle Time -->
+			<sdoConfig idx="60C2" subIdx="01">
+			<sdoDataRaw data="19"/>
+			</sdoConfig>
+			<!-- Set Cycle exp = (-3) == 10^(-3) -->
+			<sdoConfig idx="60C2" subIdx="02">
+			<sdoDataRaw data="FB"/>
+			</sdoConfig>
+		
+			<syncManager idx="0" dir="out"> </syncManager>
+			<syncManager idx="1" dir="in"> </syncManager>
+			<syncManager idx="2" dir="out">
+				<pdo idx="1600">
+					<pdoEntry idx="6040" subIdx="00" bitLen="16" halPin="target-controlword" halType="u32"/>
+					<pdoEntry idx="60C1" subIdx="00" bitLen="32" halPin="target-position-inc" halType="s32"/>
+					<pdoEntry idx="60FF" subIdx="00" bitLen="32" halPin="target-velocity-inc" halType="s32"/>
+					<pdoEntry idx="2352" subIdx="00" bitLen="16" halPin="target-internal-opmode" halType="s32"/>
+					<pdoEntry idx="2302" subIdx="00" bitLen="16" halPin="target-digital-output" halType="s32"/>
+				</pdo>
+			</syncManager>
+			<syncManager idx="3" dir="in">
+				<pdo idx="1A00">
+					<pdoEntry idx="6041" subIdx="00" bitLen="16" halPin="actual-statusword" halType="u32"/>
+					<pdoEntry idx="6063" subIdx="00" bitLen="32" halPin="actaul-position-inc" halType="s32"/>
+					<pdoEntry idx="2050" subIdx="00" bitLen="32" halPin="actaul-position-inc-dro" halType="s32"/>
+					<pdoEntry idx="606C" subIdx="00" bitLen="32" halPin="actual-velocity-inc" halType="s32"/>
+					<pdoEntry idx="2353" subIdx="00" bitLen="16" halPin="actual-internal-opmode" halType="s32"/>
+					<pdoEntry idx="2000" subIdx="00" bitLen="32" halPin="actual-warning-code" halType="s32"/>
+					<pdoEntry idx="20B2" subIdx="01" bitLen="16" halPin="actual-analog-input-1-mV" halType="s32"/>
+					<pdoEntry idx="20B2" subIdx="02" bitLen="16" halPin="actual-analog-input-2-mV" halType="s32"/>
+					<pdoEntry idx="1002" subIdx="00" bitLen="32" halPin="status-register" halType="u32"/>
+				</pdo>
+			</syncManager>
+			<dcConf assignActivate="0x0300" sync0Cycle="250000" sync0Shift="-125000" sync1Cycle="0" sync1Shift="0"/>
+		</slave>
+	</master>
+</masters>

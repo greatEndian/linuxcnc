@@ -1,0 +1,627 @@
+component ds402 "HAL ds402 Drive interface layer";
+//
+//    Author 2019 Dominik Braun <dominik.braun@eventor.de>
+//    Customizer (C) 2023 foxington <chabron94@gmail.com>
+//
+//    This program is free software; you can redistribute it and/or modify
+//    it under the terms of the GNU General Public License as published by
+//    the Free Software Foundation; either version 2 of the License, or
+//    (at your option) any later version.
+//
+//    This program is distributed in the hope that it will be useful,
+//    but WITHOUT ANY WARRANTY; without even the implied warranty of
+//    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+//    GNU General Public License for more details.
+//
+//    You should have received a copy of the GNU General Public License
+//    along with this program; if not, write to the Free Software
+//    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301 USA
+//
+author "foxington";
+license "GPL";
+
+description """
+HAL Interface for ds402 Devices,
+
+this component acts as a glue layer between hardware to Hal modules like Ethercat, CAN-Bus or others.\n
+It translates raw IO Data from the PDOs to the common linuxcnc Hal pin structure and has build in logic\n
+ 
+for the ds402 State Control, feedback handling, external homing and build in scaling functions.\n
+
+It delivers two functions: read_all and write_all.\n
+The concept of integration in the correspondending task should be as following: \n
+
+
+
+###################      ###########       #########     ############      #####################\n
+#HARDWARE INPUT   #      #  ds402  #       #Motion #     #   ds402  #      #  Hardware Output  #\n
+#  like           #-->>--#read_all #-->>>--#Pids   #-->--#write_all #-->>--#        like       #\n
+#Ethercat read_all#      #  etc.   #       #       #     #          #      # Ethercat write_all#\n
+###################      ###########       #########     ############      #####################\n
+\n
+Hal Example:\n
+
+#########\n
+# Setup\n
+#########\n
+
+
+loadrt [KINS]KINEMATICS\n
+loadrt [EMCMOT]EMCMOT servo_period_nsec=[EMCMOT]SERVO_PERIOD num_joints=[KINS]JOINTS\n
+(loadusr -W lcec_conf ethercat-conf.xml)\n
+loadrt lcec\n
+loadrt ds402 count=3\n
+loadrt pid names=x-pid,y-pid,z-pid\n
+
+##########################\n
+# Functions servo-thread\n
+##########################\n
+addf lcec.read-all servo-thread\n
+addf ds402.0.read-all servo-thread\n
+addf ds402.1.read-all servo-thread\n
+addf ds402.2.read-all servo-thread\n
+
+addf motion/ PIDs / PCL / etc .\n
+
+addf ds402.0.write-all servo-thread\n
+addf ds402.1.write-all servo-thread\n
+addf ds402.2.write-all servo-thread\n
+addf lcec.write-all servo-thread\n
+#########################################\n
+#nets .....\n
+
+By default the component is set to CSP Mode,\n
+CSV Mode could be selected with an:\n 
+setp ds402.0.csp-mode 1  in hal.\n
+Mode changing in runtime is currently not supported, to avoid\n
+unwanted behaviour.\n 
+
+For using the servo drives internal homing procedure configure your\n
+joint homing to  Home on Index Pulse only and connect the components\n
+home Input to the index-enable Pin:\n
+
+HOME_SEARCH_VEL = 0.0\n
+HOME_LATCH_VEL = 0.2  (Any value but zero, the homing speed is predetermined by the drives configured speed)\n
+HOME_USE_INDEX = TRUE\n
+
+If you are using PIDs, don't forget to connect the PIDs index-enable pin.\n
+
+Even though this component exports many pins, you can choose which functions you want to use:\n
+
+If you would like to use the DS State Machine, connect Statusword and Controlword.\n
+For single use of the scaling function connect only the fb and cmd pins from position or velocity.\n
+If no Drives homing is needed, let the Pins unconnected.""";
+
+//DS IOs
+// user data configuration
+param in unsigned prBase								"incremental resolition per one turn... servo as 2^prBase == 1turn(in counts), for example prbase=16 then 1rev of servo will be 2^16 counts = pitch of screw ";
+param in float screw_pitch 							"value of screw pitch / how far machine move in one servo revolution in cnc machine units (metric/inches)";
+param in float periodTime							"";
+
+pin in bit fault_reset 								"true, sends fault reset command to the Drive";
+pin in bit drive_out_enable 						"enable driver digital outputs control";
+pin in float following_error						"value which should be implemented for internal homing subroutine done joint.0.f-error-lim";
+
+//inputs from drive
+pin in unsigned status_register						"Manufacturer Status Register";
+pin in unsigned statusword       					"Drives ds402 Statusword, index 0x6041";
+pin in signed opmode_display      					"Drives Modes of Operation feedback register, normally - index 0x6061 but for S3xx it is 0x2353"; 
+pin in signed drv_actual_position 					"Drives actual Position, index 0x6064";
+pin in signed drv_actual_position_incremental 		"Drives actual Position, index 0x6063"; 
+pin in signed drv_actual_position_incremental_dro 	"Drives actual position from local linear scale readout, index 0x6063";
+pin in signed drv_actual_velocity_incremental 		"Drives actual Velocity, index 0x606C";
+pin in signed drv_actual_warning_code				"Drives actual warning code";
+pin in signed drv_actual_analog_input_1_mV			"Drives actual analog input 1 value in mV";
+pin in signed drv_actual_analog_input_2_mV			"Drives actual analog input 2 value in mV";
+
+//outputs to drive
+pin out unsigned controlword    				"Drives ds402 Controlword, index 0x6040";
+pin out signed opmode           				"Drives Modes of Operation Input, normally - index 0x6060 but for S3xx it is 0x2352"; 
+pin out signed drv_target_position_incremental  "Position command to the drive, index 0x60C1";
+pin out signed drv_target_velocity_incremental	"Velocity command to the drive, index 0x60FF - (1 RPM = 2^32/(128*4000*60) = 139,81 counts ";
+pin out signed drv_target_do_value				"DO1 and DO2 target values 0x2302";
+
+//Control IOsc for position planner
+pin in bit enable     						"true enables the Drive";
+pin in float pos_cmd  						"target Position, from Motion or PID";
+pin in float vel_cmd 						"target Velocity, from Motion or PID";
+pin in float acc_cmd						"";
+pin out float pos_fb						"Position feedback SI feedback, scaled";
+pin out float pos_fb_from_incremental     	"Position feedback from incremental feedback, scaled";
+pin out float pos_fb_from_incremental_dro  	"Position feedback from incremental feedback secondary position feedback , scaled";
+pin out float velocity_fb_from_incremental 	"Velocity feedback scaled";
+pin out bit drv_fault     					"true indicates an Drive Error";
+pin out bit drv_cold_restart_fault   		"true indicates an Drive Error";
+
+//Homing IOs
+pin io bit home         	"true starts the Drives internal home procedure, connect this to joint.x.index-enable pin";
+pin out bit stat_homed  	"true indicates that the Drive is internaly homed";
+pin out bit stat_homing 	"true indicates that the Drives homing procedure is running";
+
+//Auxilary IOs
+pin out bit stat_ready_to_switchon   		"Drive in DS State: ready to switch on";
+pin out bit stat_switched_on     			"Drive in DS State: switched on";
+pin out bit stat_op_enabled      			"Drive in DS State: Operation enabled";
+pin out bit stat_power_voltage_present 		"Drive in DS State: switched on, Voltage enabled";
+pin out bit stat_fault            			"Drive hast the fault bit set";
+pin out bit stat_no_emergency_stop_active   "Drive in State: Quick Stop";
+pin out bit stat_switched_on_and_disabled  	"Drive in DS State: Switch on disabled";
+pin out bit stat_warning          			"Drive has the warning bit set";
+pin out bit stat_following_error			"Drive has the following error value preset";
+pin out bit stat_internal_homed        		"Drive in State remote / bus operation";
+pin out bit stat_target_reached   			"Drive has reached target position / velocity";
+pin out bit stat_limit_switch_reached 		"Drive has reached  Hardware limit switch or Software limit switch";
+pin out bit stat_reference_run_active		"EtherCAT communication OK";
+pin out bit stat_procedure_error 			"Homing error / emergency stop activated";
+pin out bit stat_cold_restart_error 		"Actual servo amplifier error Fxx can only be cleared by a hardware reset";
+pin out bit stat_motion_task_active 		"Motion task active";
+
+pin out bit stat_any_movement_is_active			"0 - Movement (positioning, homing) active";
+pin out bit stat_reference_point_setted			"1 - reference point set";			
+pin out bit stat_reference_switch_status		"2 - reference switch high (home-position)";
+pin out bit stat_in_position					"3 - In Position";
+pin out bit stat_initialization_done			"10 - Initialization phase finished";
+pin out bit stat_safety_sto_status				"13 - Safety relay selected (AS-option)";
+pin out bit stat_power_enabled					"14 - Power stage enabled";
+pin out bit stat_homing_movement_active			"16 - Homing move active";
+pin out bit stat_estop_active					"18 - Emergency stop active";
+pin out bit stat_homing_done					"23 - Homing move finished";
+pin out bit stat_cold_restart_error_2			"24 - one of the actual errors will lead to a coldstart of the drive, if resetted";
+
+pin out bit opmode_no_mode        			"Drive has no operation Mode set";
+pin out bit opmode_homing         			"Drive in Mode Homing";
+pin out bit opmode_cyclic_position  		"Drive in Mode Cyclic synchronus Position";
+pin out bit opmode_cyclic_velocity 			"Drive in Mode Cyclic synchronus Velocity";
+
+// power managmet
+pin out float power_miliwatt_level				"Show electric power for HMI purposes";
+
+// digital peripheries control
+pin in bit drv_target_do_1					"Free user defineted output 1";
+pin in bit drv_target_do_2					"Free user defineted output 2";
+
+pin out bit stat_di_1						"Status of user defineted input 1";
+pin out bit stat_di_2						"Status of user defineted input 2";
+pin out bit stat_di_3						"Status of user defineted input 3";
+pin out bit stat_di_4						"Status of user defineted input 4";
+pin out bit stat_hw_enable					"Status of hard used enable";
+
+// analog input value
+pin out float stat_ai_1				"Status of analog input 1";
+pin out float stat_ai_2				"Status of analog input 2";
+
+pin out signed homingStatus 		"";
+
+//parameters
+param rw float pos_scale    	"increments per machine unit";
+param rw float velo_scale   	"velocity in machine units per 1 Motor revolution";
+param rw bit auto_fault_reset 	"true resets an actual Drive Fault automatically at the next enable Signal";
+param rw bit csp_mode 			"true= CS Position Mode, false= CS Velocity Mode, is only recognized at Linuxcnc Startup, default true";
+
+//internals
+variable float pos_scale_old;
+variable float velo_scale_old;
+variable bool  enable_old;
+variable bool  home_old;
+variable bool stat_homed_old;
+variable bool stat_fault_old;
+variable double pos_scale_rcpt;
+variable double velo_scale_rcpt;
+variable bool pos_mode;
+variable bool init_pos_mode = 0;
+variable long auto_fault_reset_delay;
+variable unsigned resolution;
+
+variable float incremental_pos_scale;
+variable double incremental_pos_scale_rcpt;
+variable float incremental_velo_scale;
+variable double incremental_velo_scale_rcpt;
+variable unsigned resolution_old;
+variable float screw_pitch_old;
+variable bool scan = false;
+variable unsigned ui_delay = 0;
+
+variable unsigned homingDelay;
+
+//declare functions
+function read_all;
+function write_all;
+option extra_setup yes;
+;;
+
+#include <stdio.h>
+#include <stdlib.h>
+
+//constants
+#define FAULT_AUTORESET_DELAY_NS				100000000LL
+#define OPMODE_NONE								0
+#define csp_mode_code							250
+#define csv_mode_code 							254
+#define homing_mode_code 						249
+#define homing_mode_code_display_from_drive		8
+#define one_velo_increments						139.81
+#define mm_to_meter								1000
+#define minute_to_second						60
+#define waitingDelay							200
+
+enum HOME_STATE{HOME_TRIGGER, HOME_CONFIRM, HOME_SEEKING};
+static enum HOME_STATE home_state;
+
+enum DRIVE_TYPE{kollmorgen, pilz};
+static enum DRIVE_TYPE drive_type;
+
+EXTRA_SETUP ()  {
+  // initialize variables
+  pos_scale = 1.0;
+  pos_scale_old = pos_scale + 1.0;
+  pos_scale_rcpt = 1.0;
+  velo_scale = 1.0;
+  velo_scale_old = velo_scale + 1.0;
+  velo_scale_rcpt = 1.0;
+  auto_fault_reset = 1;
+  csp_mode = 1; 
+  home_state = HOME_TRIGGER;
+  return 0;
+}
+
+void check_scales(hal_float_t *scale,float *scale_old, double *scale_rcpt) {
+  // check for change in scale value
+  if (*scale != *scale_old) {
+    // scale value has changed, test and update it
+    if ((*scale < 1e-20) && (*scale > -1e-20)) {
+      // value too small, divide by zero is a bad thing
+      *scale = 1.0;
+    }
+    // save new scale to detect future changes
+    *scale_old = *scale;
+    // we actually want the reciprocal
+    *scale_rcpt = 1.0 / *scale;
+  }
+}
+  
+    FUNCTION(read_all) {
+        if(!scan){
+            resolution = (1 << prBase);  
+            if(resolution != 0 && screw_pitch != 0.0){
+                incremental_pos_scale = resolution / screw_pitch;
+                incremental_pos_scale_rcpt = 1.0 / incremental_pos_scale;
+                resolution_old = resolution;
+                screw_pitch_old = screw_pitch;
+            }
+            
+            pos_mode = csp_mode;
+            
+            if(pos_mode){
+                opmode = csp_mode_code;
+            }
+            else{
+                opmode = csv_mode_code;
+            }
+        scan = true;
+        }
+        
+        // check for change in scale value
+        check_scales(&pos_scale, &pos_scale_old, &pos_scale_rcpt);
+        check_scales(&velo_scale, &velo_scale_old, &velo_scale_rcpt);
+            
+        if(resolution != resolution_old || screw_pitch != screw_pitch_old){
+            if(resolution != 0 && screw_pitch != 0.0){
+                incremental_pos_scale = resolution / screw_pitch;
+                incremental_pos_scale_rcpt = 1.0 / incremental_pos_scale;
+                resolution_old = resolution;
+                screw_pitch_old = screw_pitch;
+            }
+        }
+        
+        // return value from incremental interface
+        pos_fb_from_incremental = (drv_actual_position_incremental) * pos_scale_rcpt * incremental_pos_scale_rcpt;
+        pos_fb_from_incremental_dro = ( drv_actual_position_incremental_dro) * pos_scale_rcpt * incremental_pos_scale_rcpt;    
+        
+        //!HOME_TRIGGER
+        //if(home_state != HOME_TRIGGER){
+        if(home){
+            pos_fb_from_incremental = pos_cmd;
+            pos_fb = pos_cmd;
+        }
+            
+        // read velocity feedback from increments to m/s
+            velocity_fb_from_incremental = (drv_actual_velocity_incremental * screw_pitch * velo_scale_rcpt)/(one_velo_increments * minute_to_second);
+        
+        // read Modes of Operation
+        opmode_no_mode = (opmode_display == OPMODE_NONE);
+        opmode_homing = ((opmode_display == homing_mode_code) || (opmode_display == homing_mode_code_display_from_drive));
+        opmode_cyclic_velocity = (opmode_display == csv_mode_code);
+        opmode_cyclic_position = (opmode_display == csp_mode_code);
+
+        // read status
+        stat_ready_to_switchon   		= (statusword >> 0) & 1;
+        stat_switched_on       			= (statusword >> 1) & 1;
+        stat_op_enabled        			= (statusword >> 2) & 1;
+        stat_fault             			= (statusword >> 3) & 1;
+        stat_power_voltage_present		= (statusword >> 4) & 1;
+        stat_no_emergency_stop_active   = (statusword >> 5) & 1;
+        stat_switched_on_and_disabled 	= (statusword >> 6) & 1;
+        stat_warning           			= (statusword >> 7) & 1;
+        stat_following_error			= (statusword >> 8) & 1;
+        stat_internal_homed        		= (statusword >> 9) & 1;
+        stat_target_reached				= (statusword >> 10) & 1;
+        stat_limit_switch_reached 		= (statusword >> 11) & 1;
+        stat_reference_run_active		= (statusword >> 12) & 1;
+        stat_procedure_error			= (statusword >> 13) & 1;
+        stat_cold_restart_error			= (statusword >> 14) & 1;
+        stat_motion_task_active			= (statusword >> 15) & 1;
+
+        stat_any_movement_is_active			= ((status_register >> 0) & 1);
+        stat_reference_point_setted			= ((status_register >> 1) & 1);
+        stat_reference_switch_status		= ((status_register >> 2) & 1);
+        stat_in_position					= ((status_register >> 3) & 1);
+        stat_initialization_done			= ((status_register >> 10) & 1);
+        stat_safety_sto_status				= ((status_register >> 13) & 1);
+        stat_power_enabled					= ((status_register >> 14) & 1);
+        stat_homing_movement_active			= ((status_register >> 16) & 1);
+        stat_estop_active					= ((status_register >> 18) & 1);
+        stat_homing_done					= ((status_register >> 23) & 1);
+        stat_cold_restart_error_2			= ((status_register >> 24) & 1);
+
+        drv_cold_restart_fault = stat_cold_restart_error || stat_cold_restart_error_2;
+        
+        stat_di_1 = ((status_register >> 25) & 1);
+        stat_di_2 = ((status_register >> 26) & 1);
+        stat_di_3 = ((status_register >> 27) & 1);
+        stat_di_4 = ((status_register >> 28) & 1);
+        stat_hw_enable = ((status_register >> 29) & 1);
+        
+        stat_ai_1 = drv_actual_analog_input_1_mV * 0.0001;
+        stat_ai_2 = drv_actual_analog_input_2_mV * 0.0001; 	
+        
+        // update fault output
+        if (auto_fault_reset_delay > 0) {
+            auto_fault_reset_delay -= period;
+        } 
+        else {
+            drv_fault = (stat_fault || stat_cold_restart_error) && enable;
+        }
+    }
+
+	FUNCTION(write_all){
+		int enable_edge;
+
+		if(opmode){
+			controlword |= (1 << 2); // activation bit 0 & 1 status word
+		}
+		
+		// driver additional informations transfer
+		if(drive_out_enable){
+			drv_target_do_value |= (drv_target_do_1 << 0);
+			drv_target_do_value |= (drv_target_do_2 << 1);
+		}
+		
+		// detect enable edge
+		enable_edge = enable && !enable_old;
+		enable_old = enable;
+
+		if (stat_power_voltage_present && !stat_cold_restart_error) {
+			if (stat_fault) {
+				if(!enable) {
+					controlword &= ~(1 << 0); // reset switch on
+					controlword &= ~(1 << 1); // reset enable voltage
+					controlword &= ~(1 << 3); // reset enable op
+				}
+				
+				if(home_state != HOME_TRIGGER) {
+					bool bDriveHomingCommandActive = ((controlword >> 4) & 1) || ((controlword >> 11) & 1);
+					if(bDriveHomingCommandActive){
+						controlword &= ~(1 << 4);// reset  homing subroutine request reset
+						controlword &= ~(1 << 11); // homing subroutine request reset
+					}
+					home_state =  HOME_TRIGGER;
+					if(pos_mode){
+						opmode = csp_mode_code;
+					}
+					else{
+						opmode = csv_mode_code;
+					}
+				}
+				
+				if (fault_reset) {
+				  controlword |= (1 << 7); // fault reset
+				}
+				
+				if (auto_fault_reset && enable_edge) {
+				  auto_fault_reset_delay = FAULT_AUTORESET_DELAY_NS;
+				  controlword |= (1 << 7); // fault reset
+				}
+			}
+			else { // !(stat_fault)
+				if (stat_switched_on_and_disabled) {
+					controlword |= (1 << 1); // enable voltage
+				}
+					
+				if(enable){
+					if(stat_ready_to_switchon){
+						controlword |= (1 << 0); // switch on
+						controlword |= (1 << 3); // enable op
+					}
+				}
+				else{ // !enable
+					controlword &= ~(1 << 0); // reset switch on
+					controlword &= ~(1 << 3); // reset enable op
+					
+					if(home_state != HOME_TRIGGER){
+						bool bDriveHomingCommandActive = ((controlword >> 4) & 1) || ((controlword >> 11) & 1);
+						if(bDriveHomingCommandActive){
+							controlword &= ~(1 << 4);// reset  homing subroutine request reset
+							controlword &= ~(1 << 11); // reset homing subroutine request reset
+						}
+
+						if(pos_mode){
+							opmode = csp_mode_code;
+						}
+						else{
+							opmode = csv_mode_code;
+						}
+						home = 0;
+						home_state =  HOME_TRIGGER;	
+					}
+				}
+			}
+		}
+		else { //!stat_power_voltage_present or stat_cold_restart_error 
+			controlword &= ~(1 << 0); // reset switch on
+			controlword &= ~(1 << 1); // reset enable voltage
+			controlword &= ~(1 << 2); // reset activation bit 0 & 1 status word 
+			controlword &= ~(1 << 3); // reset enable op
+			
+			if(home_state != HOME_TRIGGER){
+				bool bDriveHomingCommandActive = ((controlword >> 4) & 1) || ((controlword >> 11) & 1);
+				if(bDriveHomingCommandActive){
+					controlword &= ~(1 << 4);// reset  homing subroutine request reset
+					controlword &= ~(1 << 11);// reset  homing subroutine request reset
+				}
+				home_state =  HOME_TRIGGER;	
+				if(pos_mode){
+					opmode = csp_mode_code;
+				}
+				else{
+					opmode = csv_mode_code;
+				}
+			}
+		}
+		
+		// write position command
+		drv_target_position_incremental = (int32_t) (pos_cmd * pos_scale * incremental_pos_scale);
+		
+		if(screw_pitch){
+			drv_target_velocity_incremental = ((minute_to_second * vel_cmd * one_velo_increments * velo_scale)/ screw_pitch);
+		}
+			
+	if(home) {
+			switch (home_state){
+	//#############################################################################3#
+				case HOME_TRIGGER:
+					opmode = homing_mode_code;
+					pos_fb_from_incremental = pos_cmd;
+						if(opmode_homing){
+							pos_fb_from_incremental = pos_cmd;
+							home_state = HOME_CONFIRM;
+							homingStatus = home_state;
+						}
+				break;
+	//#############################################################################3#
+	
+				case HOME_CONFIRM:
+					pos_fb_from_incremental = pos_cmd;
+					
+					switch (opmode_display){
+						case homing_mode_code:
+							controlword |= (1 << 4); // homing subroutine request set
+							if(homingDelay > waitingDelay){
+								if(!stat_internal_homed){
+									home_state = HOME_SEEKING;
+									homingStatus = home_state;
+									homingDelay = 0;
+								}
+							}
+							else{
+								homingDelay++;
+							}
+						break;
+						
+						case homing_mode_code_display_from_drive:
+							controlword |= (1 << 11); // homing subroutine request set
+							if(homingDelay > waitingDelay){
+								if(!stat_internal_homed){
+									home_state = HOME_SEEKING;
+									homingStatus = home_state;
+									homingDelay = 0;
+								}
+							}
+							else{
+								homingDelay++;
+							}
+						break;
+						
+						default:
+						;
+					}
+					
+					/*
+					if(opmode_homing){	// Homing request accepted from driver
+						if(opmode_display == homing_mode_code){
+							controlword |= (1 << 4); // homing subroutine request set
+							if(homingDelay > waitingDelay){
+								if(!stat_internal_homed){
+									home_state = HOME_SEEKING;
+									homingStatus = home_state;
+									homingDelay = 0;
+								}
+							}
+							else{
+								homingDelay++;
+							}
+						}
+						else{
+							if(opmode_display == homing_mode_code_display_from_drive){
+								controlword |= (1 << 11); // homing subroutine request set
+								if(homingDelay > waitingDelay){
+									if(!stat_internal_homed){
+										home_state = HOME_SEEKING;
+										homingStatus = home_state;
+										homingDelay = 0;
+									}
+								}
+								else{
+									homingDelay++;
+								}
+							}
+						}
+					}
+					*/
+				break;
+	//#############################################################################3#		
+			
+				case HOME_SEEKING:
+					if(stat_internal_homed){
+						if(opmode_display == homing_mode_code){
+							controlword &= ~(1 << 4); // reset homing subroutine request reset
+						}
+						else{
+							controlword &= ~(1 << 11); // reset homing subroutine request reset	
+						}
+						
+						if(homingDelay > waitingDelay){
+							if(stat_internal_homed){
+								homingDelay = 0;
+								home = 0;
+								home_state = HOME_TRIGGER;
+								homingStatus = home_state;
+							}
+						}
+						else{
+							homingDelay++;
+						}
+						
+						/*
+						pos_fb_from_incremental = (drv_actual_position_incremental) * pos_scale_rcpt * incremental_pos_scale_rcpt;
+						
+						if(pos_mode){
+							opmode = csp_mode_code;
+						}
+						else{
+							opmode = csv_mode_code;
+						}
+						*/
+					}
+				break;
+	//#############################################################################3#						
+			}
+		}
+		else{
+			if(pos_mode){
+				opmode = csp_mode_code;
+			}
+			else{
+				opmode = csv_mode_code;
+			}		
+		}
+}
