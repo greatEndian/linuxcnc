@@ -779,7 +779,7 @@ struct setup
    * G0/G1 blocks are a tool-axis direction vector (in the work frame) that the
    * interp converts to rotary-axis words per the machine topology. */
   int tcp_vector_mode;          // 1 while G43.5 is the active tool-length mode
-  int tcp_orient_axes;          // [RS274NGC]TCP_ORIENT_AXES: 0=unset, 1=AB (xyzab_tdr_kins), 2=AC (xyzac-trt-kins), 3=BC (xyzbc-trt-kins)
+  int tcp_orient_axes;          // [RS274NGC]TCP_ORIENT_AXES: 0=unset, 1=AB (xyzab_tdr_kins), 2=AC (xyzac-trt-kins), 3=BC (xyzbc-trt-kins), 4=BCHEAD (5axiskins swivel head)
 
   /* stuff for subroutines and control structures */
   int defining_sub;                  // true if in a subroutine defn

@@ -5568,6 +5568,39 @@ int Interp::convert_straight(int move,   //!< either G_0 or G_1
           }
           break;
       }
+      case 4: {
+          /* BCHEAD - swivel HEAD (5axiskins, XYZBC spherical): its forward uses
+           * r = s2r(R, C, 180-B) so the tool-axis (tip->holder, +Z at B=0) is
+           *   v = ( -sin B cos C, -sin B sin C, cos B ).
+           * Inverse:  B = atan2(hypot(i,j), k);  C = atan2(-j, -i)
+           * (C undefined when the tool is parallel to Z, sin B = 0).
+           * HEAD machine: the part is FIXED, so the vector is already in the
+           * machine frame - NO part->table transform (unlike AC/BC). Only the
+           * B/C angle OFFSETS map machine<->program. */
+          double off_b = settings->BB_origin_offset + settings->BB_axis_offset;
+          double off_c = settings->CC_origin_offset + settings->CC_axis_offset;
+          double tilt = hypot(vi, vj);
+          double b_mach = tcp_unwrap_near(atan2(tilt, vk) * 180.0 / M_PI,
+                                          settings->BB_current + off_b);
+          bool c_defined = (tilt > 1e-9);
+          double c_mach = c_defined ? tcp_unwrap_near(atan2(-vj, -vi) * 180.0 / M_PI,
+                                                      settings->CC_current + off_c)
+                                    : 0.0;
+          if (vec_machine_frame) {
+              block->b_number = b_mach; block->b_flag = true;
+              if (c_defined) { block->c_number = c_mach; block->c_flag = true; }
+          } else {
+              double b_prog = b_mach - off_b;
+              block->b_number = vec_incremental ? b_prog - settings->BB_current : b_prog;
+              block->b_flag = true;
+              if (c_defined) {
+                  double c_prog = c_mach - off_c;
+                  block->c_number = vec_incremental ? c_prog - settings->CC_current : c_prog;
+                  block->c_flag = true;
+              }
+          }
+          break;
+      }
       default:
           ERS(_("G43.5: unsupported TCP_ORIENT_AXES topology"));
       }

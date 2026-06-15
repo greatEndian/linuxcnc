@@ -887,15 +887,18 @@ int Interp::init()
            *  "AB" = tool dual-rotary (xyzab_tdr_kins): A about X, B about Y.
            *  "AC" = tilting-rotary table (xyzac-trt-kins): A tilt, C rotary.
            *  "BC" = tilting-rotary table (xyzbc-trt-kins): B tilt, C rotary.
+           *  "BCHEAD" = swivel HEAD (5axiskins, XYZBC spherical): B,C in the
+           *             spindle (head-head). Part fixed -> no part-frame xform.
            * Unset/unknown -> G43.5 is refused. */
           {
               std::string topo = inifile.findStringV("TCP_ORIENT_AXES", "RS274NGC", "");
               _setup.tcp_orient_axes = 0;
               if (!topo.empty()) {
-                  if      (!strcasecmp(topo.c_str(), "AB")) _setup.tcp_orient_axes = 1;
-                  else if (!strcasecmp(topo.c_str(), "AC")) _setup.tcp_orient_axes = 2;
-                  else if (!strcasecmp(topo.c_str(), "BC")) _setup.tcp_orient_axes = 3;
-                  else fprintf(stderr, "rs274ngc: [RS274NGC]TCP_ORIENT_AXES=%s not supported (AB/AC/BC) - G43.5 disabled\n", topo.c_str());
+                  if      (!strcasecmp(topo.c_str(), "AB"))     _setup.tcp_orient_axes = 1;
+                  else if (!strcasecmp(topo.c_str(), "AC"))     _setup.tcp_orient_axes = 2;
+                  else if (!strcasecmp(topo.c_str(), "BC"))     _setup.tcp_orient_axes = 3;
+                  else if (!strcasecmp(topo.c_str(), "BCHEAD")) _setup.tcp_orient_axes = 4;
+                  else fprintf(stderr, "rs274ngc: [RS274NGC]TCP_ORIENT_AXES=%s not supported (AB/AC/BC/BCHEAD) - G43.5 disabled\n", topo.c_str());
               }
           }
           _setup.tool_change_at_g30 = inifile.findBoolV("TOOL_CHANGE_AT_G30", "EMCIO", false);
