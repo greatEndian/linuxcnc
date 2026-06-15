@@ -5592,6 +5592,12 @@ int Interp::convert_straight(int move,   //!< either G_0 or G_1
 		CHKS((block->dollar_number < 0 || block->dollar_number >= settings->num_spindles),
 				(_("Invalid spindle ($) number in G33 move")));
 		settings->active_spindle = (int)block->dollar_number;
+	} else if (settings->default_spindle_set) {
+		/* MCHAN MC8: with no $, thread on THIS channel's default spindle
+		 * ([CHANNEL]SPINDLE) instead of spindle 0 - otherwise a secondary
+		 * channel's G33 hits spindle 0 (foreign) and is refused. ch0 has no
+		 * default set -> active_spindle stays 0 = stock (D7). */
+		settings->active_spindle = settings->default_spindle;
 	}
     CHKS(((settings->spindle_turning[settings->active_spindle] != CANON_CLOCKWISE) &&
            (settings->spindle_turning[settings->active_spindle] != CANON_COUNTERCLOCKWISE)),
@@ -5607,6 +5613,8 @@ int Interp::convert_straight(int move,   //!< either G_0 or G_1
 		CHKS((block->dollar_number < 0 || block->dollar_number >= settings->num_spindles),
 				(_("Invalid spindle ($) number in G33.1 move")));
 		settings->active_spindle = (int)block->dollar_number;
+	} else if (settings->default_spindle_set) {
+		settings->active_spindle = settings->default_spindle;	/* MCHAN MC8: per-channel default spindle */
 	}
     CHKS(((settings->spindle_turning[settings->active_spindle] != CANON_CLOCKWISE) &&
            (settings->spindle_turning[settings->active_spindle] != CANON_COUNTERCLOCKWISE)),
@@ -5627,6 +5635,8 @@ int Interp::convert_straight(int move,   //!< either G_0 or G_1
 		CHKS((block->dollar_number < 0 || block->dollar_number >= settings->num_spindles),
 				(_("Invalid D-number in G76 cycle")));
 		settings->active_spindle = (int)block->dollar_number;
+	} else if (settings->default_spindle_set) {
+		settings->active_spindle = settings->default_spindle;	/* MCHAN MC8: per-channel default spindle */
 	}
     CHKS(((settings->spindle_turning[settings->active_spindle] != CANON_CLOCKWISE) &&
            (settings->spindle_turning[settings->active_spindle] != CANON_COUNTERCLOCKWISE)),

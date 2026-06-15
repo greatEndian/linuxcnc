@@ -1026,6 +1026,14 @@ void emcmotCommandHandler_locked(void *arg, long servo_period)
 	case EMCMOT_SPINDLE_DECREASE:
 	case EMCMOT_SET_SPINDLESYNC: {
 	    int sp = emcmotCommand->spindle;
+	    /* MC8: turning sync OFF (spindlesync==0) only clears the requesting
+	     * channel's OWN coord_tp sync flag - it is harmless regardless of the
+	     * spindle named (STOP_SPEED_FEED_SYNCH historically hardcodes spindle
+	     * 0), so do not ownership-gate it, just like spindle stops/overrides
+	     * are not gated (MC26b). Engaging sync (!=0) stays guarded. */
+	    if (emcmotCommand->command == EMCMOT_SET_SPINDLESYNC
+		&& emcmotCommand->spindlesync == 0.0)
+		break;
 	    if (sp >= 0 && sp < emcmotConfig->numSpindles
 		&& emcmotInternal->spindle_owner[sp] != mchan_active_channel) {
 		reportError(_("ch%d: spindle %d belongs to channel %d - command refused"),
