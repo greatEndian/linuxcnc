@@ -139,3 +139,19 @@ G43.5 tip-hold program (tilt tool to vector 0.5,0,0.866 at a FIXED tip):
    motion -> TCP kins) on a live 5-axis sim, for both topologies. AC/BC now at
    AB's validation bar. Assets: ~/cnc-dev/rtcp-dev/xyzac-trt-dev/{ac,bc}-hl.ini,
    tiphold_{ac,bc}.ngc. AB/AC/BC RTCP = DONE+VALIDATED.
+
+================================================================================
+## 2026-06-15 UPDATE — HEAD-HEAD family DONE (BCHEAD via 5axiskins)
+================================================================================
+Implemented G43.5 vector TCP for the swivel-HEAD family (5axiskins XYZBCW, B+C
+in the spindle). TCP_ORIENT_AXES=BCHEAD. Derived from 5axiskins' s2r forward:
+v=(-sinB cosC, -sinB sinC, cosB) -> B=atan2(hypot(i,j),k), C=atan2(-j,-i).
+HEAD machine: no part->table transform (part fixed). VERIFIED offline (2M+ vecs,
+1.5e-15) + rs274 matrix + LIVE-SIM tip-hold on the 5axiskins bridgemill (B30/
+C-180, Z compensates, tip held). fork-upstream a935774b2c + multichannel-upstream
+893db8dbf1. Gate 9/9. Sim assets: ~/cnc-dev/rtcp-dev/bchead-sim/.
+
+  UPDATED COVERAGE:  table-table (AB/AC/BC) DONE+sim  +  head-head (5axiskins)
+  DONE+sim  =>  the TWO most common 5-axis families fully covered.
+  Remaining: head-table mixed (maxkins ~2d, needs switchkins) ; con=+1 ~0.5d ;
+  refinements. The big families are done.
