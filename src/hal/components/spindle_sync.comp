@@ -10,6 +10,20 @@ Typical wiring: *master-pos* <= spindle.0.revs, *slave-pos* <= spindle.1.revs,
 input (select it over spindle.1.speed-out with a mux2 keyed on *enable*).  The
 output is feed-forward (ratio * master speed) plus a proportional phase
 correction, so speed is matched immediately and any phase error decays to zero.
+
+Engaging from G-code: drive *enable* (and the mux2 select) from a motion digital
+output so the sync is turned on and off in the part program, e.g.
+
+    loadrt mux2 names=spindle_sel
+    net sub-engage motion.digital-out-00 => spindle_sync.enable spindle_sel.sel
+    net sub-normal spindle.1.speed-out   => spindle_sel.in0
+    net sub-follow spindle_sync.out      => spindle_sel.in1
+    net sub-cmd    spindle_sel.out       => <slave spindle velocity input>
+
+Then M64 P0 engages the follower and M65 P0 returns the slave to its own command.
+For a known relative chuck angle, index-reference both spindles (cycle their
+index-enable) before engaging and set *phase* to the desired offset.  Wait for
+*locked* before gripping.
 """;
 
 pin in  float master_pos  "Master spindle position feedback, revolutions (e.g. spindle.0.revs)";
