@@ -1609,6 +1609,10 @@ The machine's rotary topology is selected with the
 |`BCHEAD` |swivel head (5axiskins): B and C in the spindle head
 |====
 
+For the `AC` and `BC` tables, also set
+<<sub:ini:sec:rs274ngc,`[RS274NGC]TCP_CONVENTIONAL_DIRECTIONS`>> to match the
+kins module's `conventional-directions` HAL pin (it defaults to off).
+
 .G43.5 Example
 [source,ngc]
 ----

@@ -901,6 +901,12 @@ int Interp::init()
                   else fprintf(stderr, "rs274ngc: [RS274NGC]TCP_ORIENT_AXES=%s not supported (AB/AC/BC/BCHEAD) - G43.5 disabled\n", topo.c_str());
               }
           }
+          /* TCP_CONVENTIONAL_DIRECTIONS selects the rotary direction sense used
+           * when G43.5 solves a tool vector into AC/BC angles.  It MUST match the
+           * trt kins module's conventional-directions HAL pin (default false =>
+           * con-1); only the AC/BC topologies have this pin (AB/BCHEAD ignore it). */
+          _setup.tcp_conventional_directions =
+              inifile.findBoolV("TCP_CONVENTIONAL_DIRECTIONS", "RS274NGC", false);
           _setup.tool_change_at_g30 = inifile.findBoolV("TOOL_CHANGE_AT_G30", "EMCIO", false);
           _setup.tool_change_quill_up = inifile.findBoolV("TOOL_CHANGE_QUILL_UP", "EMCIO", false);
           _setup.tool_change_with_spindle_on = inifile.findBoolV("TOOL_CHANGE_WITH_SPINDLE_ON", "EMCIO", false);
