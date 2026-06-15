@@ -1607,11 +1607,19 @@ The machine's rotary topology is selected with the
 |`AC`     |tilting-rotary table (xyzac-trt-kins): A tilt, C rotary
 |`BC`     |tilting-rotary table (xyzbc-trt-kins): B tilt, C rotary
 |`BCHEAD` |swivel head (5axiskins): B and C in the spindle head
+|`BCHT`   |head-table "mixed" (maxkins): B tilting head + C rotary table
 |====
 
-For the `AC` and `BC` tables, also set
+For the `AC`, `BC` and `BCHT` machines, also set
 <<sub:ini:sec:rs274ngc,`[RS274NGC]TCP_CONVENTIONAL_DIRECTIONS`>> to match the
 kins module's `conventional-directions` HAL pin (it defaults to off).
+
+The `BCHT` (maxkins) module is permanently full-kinematics and not switchable,
+so it requires <<sub:ini:sec:rs274ngc,`[RS274NGC]TCP_NO_SWITCH = 1`>>; G43.5 then
+solves the tool vector into B/C words without requesting a kinematics switch.
+The tool vector is interpreted relative to the part (the C table reorients the
+part under the head).  Non-zero B/C work offsets are not yet supported with a
+`BCHT` tool vector.
 
 .G43.5 Example
 [source,ngc]

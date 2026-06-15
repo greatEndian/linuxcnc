@@ -779,8 +779,9 @@ struct setup
    * G0/G1 blocks are a tool-axis direction vector (in the work frame) that the
    * interp converts to rotary-axis words per the machine topology. */
   int tcp_vector_mode;          // 1 while G43.5 is the active tool-length mode
-  int tcp_orient_axes;          // [RS274NGC]TCP_ORIENT_AXES: 0=unset, 1=AB (xyzab_tdr_kins), 2=AC (xyzac-trt-kins), 3=BC (xyzbc-trt-kins), 4=BCHEAD (5axiskins swivel head)
-  int tcp_conventional_directions; // [RS274NGC]TCP_CONVENTIONAL_DIRECTIONS: must match the trt kins conventional-directions HAL pin (0=default/con-1, 1=con+1); only AC/BC use it
+  int tcp_orient_axes;          // [RS274NGC]TCP_ORIENT_AXES: 0=unset, 1=AB (xyzab_tdr_kins), 2=AC (xyzac-trt-kins), 3=BC (xyzbc-trt-kins), 4=BCHEAD (5axiskins swivel head), 5=BCHT (maxkins B-head + C-table)
+  int tcp_conventional_directions; // [RS274NGC]TCP_CONVENTIONAL_DIRECTIONS: must match the trt/maxkins conventional-directions HAL pin (0=default/con-1, 1=con+1); AC/BC/BCHT use it
+  int tcp_no_switch;            // [RS274NGC]TCP_NO_SWITCH: 1 => kins is permanently full-kinematics & non-switchable (e.g. maxkins); G43.4/G43.5/G49 skip the switchkins-type request
 
   /* stuff for subroutines and control structures */
   int defining_sub;                  // true if in a subroutine defn

@@ -5610,6 +5610,50 @@ int Interp::convert_straight(int move,   //!< either G_0 or G_1
           }
           break;
       }
+      case 5: {
+          /* BCHT - head-table "mixed" (maxkins): B tilts the spindle HEAD, so the
+           * tool axis in the MACHINE frame lies in the XZ plane,
+           *   u = ( con sin B, 0, cos B );
+           * C is a rotary TABLE that carries the part, so the tool axis relative
+           * to the PART is Rz(C)*u.  For a part-frame vector v = (i, j, k):
+           *   C = atan2(j, i)               (rotate the part to bring v into the
+           *                                  machine XZ plane the head can reach)
+           *   B = atan2(con*hypot(i,j), k)
+           * (C undefined when the tool is parallel to Z, hypot(i,j) = 0).
+           * con matches the maxkins conventional-directions pin (selected by
+           * TCP_CONVENTIONAL_DIRECTIONS).  maxkins is permanently full-kinematics
+           * and non-switchable, so this topology requires
+           * [RS274NGC]TCP_NO_SWITCH=1. */
+          const double con = settings->tcp_conventional_directions ? 1.0 : -1.0;
+          double off_b = settings->BB_origin_offset + settings->BB_axis_offset;
+          double off_c = settings->CC_origin_offset + settings->CC_axis_offset;
+          /* Rotary work offsets would rotate the part frame relative to the
+           * machine; the head-table offset transform is not yet derived, so
+           * refuse them rather than emit a wrong orientation. */
+          CHKS((!vec_machine_frame && (fabs(off_b) > 1e-9 || fabs(off_c) > 1e-9)),
+               (_("G43.5 (BCHT): rotary work offsets on B/C are not supported with a tool vector")));
+          double tilt = hypot(vi, vj);
+          double b_mach = tcp_unwrap_near(atan2(con * tilt, vk) * 180.0 / M_PI,
+                                          settings->BB_current + off_b);
+          bool c_defined = (tilt > 1e-9);
+          double c_mach = c_defined ? tcp_unwrap_near(atan2(vj, vi) * 180.0 / M_PI,
+                                                      settings->CC_current + off_c)
+                                    : 0.0;
+          if (vec_machine_frame) {
+              block->b_number = b_mach; block->b_flag = true;
+              if (c_defined) { block->c_number = c_mach; block->c_flag = true; }
+          } else {
+              double b_prog = b_mach - off_b;
+              block->b_number = vec_incremental ? b_prog - settings->BB_current : b_prog;
+              block->b_flag = true;
+              if (c_defined) {
+                  double c_prog = c_mach - off_c;
+                  block->c_number = vec_incremental ? c_prog - settings->CC_current : c_prog;
+                  block->c_flag = true;
+              }
+          }
+          break;
+      }
       default:
           ERS(_("G43.5: unsupported TCP_ORIENT_AXES topology"));
       }
@@ -6509,7 +6553,10 @@ int Interp::convert_tool_length_offset(int g_code,       //!< g_code being execu
   settings->tcp_vector_mode = 0;
   if (g_code == G_49) {
     idx = 0;
-    kins_switch = 0;  /* G43_4_RTCP: G49 always lands in identity kinematics */
+    /* G43_4_RTCP: G49 lands in identity kinematics, unless the kins is a
+     * permanently full-kinematics non-switchable module (TCP_NO_SWITCH) which
+     * has no identity mode to switch to. */
+    kins_switch = settings->tcp_no_switch ? -1 : 0;
   } else if (g_code == G_43 || g_code == G_43_4 || g_code == G_43_5) {  /* G43_4_RTCP: same TLO path as G43 */
       logDebug("convert_tool_length_offset h_flag=%d h_number=%d toolchange_flag=%d current_pocket=%d\n",
 	      block->h_flag,block->h_number,settings->toolchange_flag,settings->current_pocket);
@@ -6552,7 +6599,10 @@ int Interp::convert_tool_length_offset(int g_code,       //!< g_code being execu
        * construction (forgotten tool / unmeasured tool table entry). */
       CHKS(settings->g43_with_zero_offset,
            (_("G43.4/G43.5: tool length offset is all zero - load a measured tool (Tn M6 or H word) before enabling TCP")));
-      kins_switch = 1;  /* request TCP kinematics */
+      /* request TCP kinematics, unless TCP_NO_SWITCH (always-TCP non-switchable
+       * kins, e.g. maxkins) - then there is nothing to switch and G43.5 still
+       * solves the tool vector into rotary words below. */
+      kins_switch = settings->tcp_no_switch ? -1 : 1;
       if (g_code == G_43_5) {  /* G43_5_VECTOR */
         CHKS((settings->tcp_orient_axes == 0),
              (_("G43.5: [RS274NGC]TCP_ORIENT_AXES is not configured (or not a supported topology)")));

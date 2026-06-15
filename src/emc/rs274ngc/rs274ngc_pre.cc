@@ -898,15 +898,22 @@ int Interp::init()
                   else if (!strcasecmp(topo.c_str(), "AC"))     _setup.tcp_orient_axes = 2;
                   else if (!strcasecmp(topo.c_str(), "BC"))     _setup.tcp_orient_axes = 3;
                   else if (!strcasecmp(topo.c_str(), "BCHEAD")) _setup.tcp_orient_axes = 4;
-                  else fprintf(stderr, "rs274ngc: [RS274NGC]TCP_ORIENT_AXES=%s not supported (AB/AC/BC/BCHEAD) - G43.5 disabled\n", topo.c_str());
+                  else if (!strcasecmp(topo.c_str(), "BCHT"))   _setup.tcp_orient_axes = 5;
+                  else fprintf(stderr, "rs274ngc: [RS274NGC]TCP_ORIENT_AXES=%s not supported (AB/AC/BC/BCHEAD/BCHT) - G43.5 disabled\n", topo.c_str());
               }
           }
           /* TCP_CONVENTIONAL_DIRECTIONS selects the rotary direction sense used
-           * when G43.5 solves a tool vector into AC/BC angles.  It MUST match the
-           * trt kins module's conventional-directions HAL pin (default false =>
-           * con-1); only the AC/BC topologies have this pin (AB/BCHEAD ignore it). */
+           * when G43.5 solves a tool vector into AC/BC/BCHT angles.  It MUST match
+           * the trt/maxkins module's conventional-directions HAL pin (default
+           * false => con-1); AB/BCHEAD have no such pin and ignore it. */
           _setup.tcp_conventional_directions =
               inifile.findBoolV("TCP_CONVENTIONAL_DIRECTIONS", "RS274NGC", false);
+          /* TCP_NO_SWITCH: set for a permanently full-kinematics, non-switchable
+           * module (e.g. maxkins) that is always tip-following.  G43.4/G43.5/G49
+           * then skip the switchkins-type request (there is no identity mode to
+           * toggle); G43.5 still solves the tool vector into rotary words. */
+          _setup.tcp_no_switch =
+              inifile.findBoolV("TCP_NO_SWITCH", "RS274NGC", false);
           _setup.tool_change_at_g30 = inifile.findBoolV("TOOL_CHANGE_AT_G30", "EMCIO", false);
           _setup.tool_change_quill_up = inifile.findBoolV("TOOL_CHANGE_QUILL_UP", "EMCIO", false);
           _setup.tool_change_with_spindle_on = inifile.findBoolV("TOOL_CHANGE_WITH_SPINDLE_ON", "EMCIO", false);

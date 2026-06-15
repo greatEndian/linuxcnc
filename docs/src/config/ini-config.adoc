@@ -646,17 +646,26 @@ The maximum number of `USER_M_PATH` directories is defined at compile time (typ:
 * `TCP_ORIENT_AXES = AB` - (((TCP ORIENT AXES)))
   Selects the rotary-axis topology used by <<gcode:g43.5,G43.5>> (Tool Center
   Point Control with tool vector) when it solves a tool-axis I/J/K vector into
-  rotary positions. One of `AB`, `AC`, `BC` or `BCHEAD` (case-insensitive).
-  `AB`/`AC`/`BC` are tilting/dual-rotary tables; `BCHEAD` is a swivel spindle
-  head. There is no default: G43.5 errors if this is unset. Not used by G43.4
-  (which takes rotary positions directly from A/B/C words).
+  rotary positions. One of `AB`, `AC`, `BC`, `BCHEAD` or `BCHT`
+  (case-insensitive). `AB`/`AC`/`BC` are tilting/dual-rotary tables; `BCHEAD` is
+  a swivel spindle head; `BCHT` is a head-table "mixed" machine (B tilting head +
+  C rotary table, e.g. maxkins). There is no default: G43.5 errors if this is
+  unset. Not used by G43.4 (which takes rotary positions directly from A/B/C
+  words).
 * `TCP_CONVENTIONAL_DIRECTIONS = 0` (bool, Default: 0) - (((TCP CONVENTIONAL DIRECTIONS)))
-  Only meaningful with `TCP_ORIENT_AXES = AC` or `BC`. It selects the rotary
-  direction sense used when <<gcode:g43.5,G43.5>> solves a tool vector into
-  angles, and MUST match the `conventional-directions` HAL pin of the
-  xyzac-trt-kins / xyzbc-trt-kins module (default `0` matches the kins default).
-  Setting this incorrectly produces a mirrored C angle. The `AB` and `BCHEAD`
-  topologies have no such pin and ignore this setting.
+  Only meaningful with `TCP_ORIENT_AXES = AC`, `BC` or `BCHT`. It selects the
+  rotary direction sense used when <<gcode:g43.5,G43.5>> solves a tool vector
+  into angles, and MUST match the `conventional-directions` HAL pin of the
+  xyzac-trt-kins / xyzbc-trt-kins / maxkins module (default `0` matches the kins
+  default). Setting this incorrectly produces a mirrored angle. The `AB` and
+  `BCHEAD` topologies have no such pin and ignore this setting.
+* `TCP_NO_SWITCH = 0` (bool, Default: 0) - (((TCP NO SWITCH)))
+  Set this to `1` for a kinematics module that is permanently full-kinematics
+  (always tip-following) and not switchable, such as maxkins (the `BCHT`
+  topology). <<gcode:g43.4,G43.4>>, <<gcode:g43.5,G43.5>> and
+  <<gcode:g49,G49>> then skip the switchkins-type request (there is no identity
+  mode to toggle); G43.5 still solves the tool vector into rotary words. Leave at
+  `0` for the normal switchkins-based machines (AB/AC/BC/BCHEAD).
 
 [NOTE]
 ====
