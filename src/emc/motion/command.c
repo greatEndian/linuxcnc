@@ -900,13 +900,10 @@ void emcmotCommandHandler_locked(void *arg, long servo_period)
 		    mchan_active_channel, emcmotCommand->command);
 		return;
 
-	    /* -- dangerous to no-op: refuse loudly -- */
-	    case EMCMOT_PROBE:
-		/* MC25 day-1 guard: one probe input, global trip logic */
-		reportError(_("ch%d: probing is not channel-aware yet (single probe input) - G38 refused on secondary channels"),
-		    mchan_active_channel);
-		(*mchan_echo_status) = EMCMOT_COMMAND_INVALID_COMMAND;
-		return;
+	    /* MC25: EMCMOT_PROBE is NOT refused here any more - a secondary
+	     * channel may use the shared probe input, gated by the day-1
+	     * mutual-exclusion check in the real handler below (the probe move
+	     * is already routed to the channel's own coord_tp). Falls through. */
 	    case EMCMOT_JOINT_UNHOME: {
 		/* MC4/d1 + G28.3: REAL but CHANNEL-SCOPED unhome.
 		 * -1 = all of this channel's joints, -2 = its VOLATILE
@@ -2476,6 +2473,17 @@ void emcmotCommandHandler_locked(void *arg, long servo_period)
 	    /* emcmotInternal->chan[mchan_active_channel].coord_tp up a linear move */
 	    /* requires coordinated mode, enable off, not on limits */
 	    rtapi_print_msg(RTAPI_MSG_DBG, "PROBE");
+	    /* MCHAN MC25 day-1: ONE shared probe input + global trip logic, so
+	     * only one channel may probe at a time. Mutual exclusion: refuse if
+	     * another channel already holds an active probe. (num_channels==1:
+	     * probe_owner only ever this channel -> never fires, D7.) */
+	    if (emcmotStatus->probing &&
+		emcmotInternal->probe_owner != mchan_active_channel) {
+		reportError(_("ch%d: probe busy (channel %d) - G38 refused"),
+		    mchan_active_channel, emcmotInternal->probe_owner);
+		(*mchan_echo_status) = EMCMOT_COMMAND_INVALID_PARAMS;
+		break;
+	    }
 	    if (!GET_MOTION_COORD_FLAG() || !GET_MOTION_ENABLE_FLAG()) {
 		reportError(_("need to be enabled, in coord mode for probe move"));
 		(*mchan_echo_status) = EMCMOT_COMMAND_INVALID_COMMAND;
@@ -2533,6 +2541,7 @@ void emcmotCommandHandler_locked(void *arg, long servo_period)
 	    } else {
 		emcmotStatus->probing = 1;
                 emcmotStatus->probe_type = emcmotCommand->probe_type;
+		emcmotInternal->probe_owner = mchan_active_channel; /* MC25 */
 		SET_MOTION_ERROR_FLAG(0);
 		/* set flag that indicates all joints need rehoming, if any
 		   joint is moved in joint mode, for machines with no forward
