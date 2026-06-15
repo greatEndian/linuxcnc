@@ -224,6 +224,12 @@ typedef struct {
 	hal_s32_t   *waitm_blockers;       /* OUT: bitmask of channels not yet arrived */
 	/* MCHAN MC31 interference observability */
 	hal_bit_t   *interfere_hold;       /* OUT: this channel is co-occupying the keep-out zone */
+	/* MCHAN MC7: per-channel run-status feedback (the global motion.* pins
+	 * report only the machine/ch0 view; these let a per-channel HMI/HAL read
+	 * each channel uniformly as motion.N.*). Computed from chan[N].coord_tp. */
+	hal_bit_t   *in_position;          /* OUT: this channel at rest, queue empty */
+	hal_s32_t   *program_line;         /* OUT: this channel's executing motion line (0 = none) */
+	hal_float_t *distance_to_go;       /* OUT: this channel's remaining distance on the current move */
     } mchan[EMCMOT_MAX_CHANNELS];
 
     /* MCHAN MC10/Phase4: waiting-M deadlock timeout (s); a parked channel
