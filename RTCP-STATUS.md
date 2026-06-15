@@ -127,3 +127,15 @@ so RTCP there is optional/non-standard.
    standard paradigm here -> RECOMMEND NOT implementing unless a need arises.
 
  LEGEND  effort bar: ····· none · █···· ~0.5d · ███·· ~2-3d · █████ ~3-4d
+
+================================================================================
+## 2026-06-15 UPDATE — D1 DONE: AC + BC live-sim validated (tip-hold)
+================================================================================
+Followed DEV-WORKFLOW. Headless xyzac-trt / xyzbc-trt sims (TCP_ORIENT_AXES=AC/BC),
+G43.5 tip-hold program (tilt tool to vector 0.5,0,0.866 at a FIXED tip):
+ - AC: tip held at (0,0,0); joints -> A30.00 C90, Y7.68 Z6.34 compensate. ERROR OK.
+ - BC: tip held at (0,0,0); joints -> B30.00 C180, X-0.18 Z17.99 compensate. ERROR OK.
+=> RTCP holds the tool tip through the FULL pipeline (interp G43.5 IJK->angles ->
+   motion -> TCP kins) on a live 5-axis sim, for both topologies. AC/BC now at
+   AB's validation bar. Assets: ~/cnc-dev/rtcp-dev/xyzac-trt-dev/{ac,bc}-hl.ini,
+   tiphold_{ac,bc}.ngc. AB/AC/BC RTCP = DONE+VALIDATED.
