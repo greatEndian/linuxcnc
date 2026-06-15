@@ -870,6 +870,12 @@ typedef struct emcmot_internal_t {
      * in v1 (the handover band); zone_set=0 = no guard = stock. */
     double interfere_zone[6];
     int    interfere_zone_set;
+    /* MCHAN MC25: which channel currently owns the (single, shared) probe
+     * input. Day-1 mutual exclusion: while emcmotStatus->probing is set, a
+     * G38 from any OTHER channel is refused ("probe busy"); the probe trip in
+     * control.c aborts THIS channel's TP (not always ch0). num_channels=1 ->
+     * always 0 = stock. Per-channel probe pins/state = the full fix (later). */
+    int    probe_owner;
     int idForStep;      /* status id while stepping */
     } emcmot_internal_t;
 

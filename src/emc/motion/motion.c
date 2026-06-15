@@ -1033,6 +1033,8 @@ static int init_comm_buffers(void)
     }
     /* MC31: no interference zone until the master chmap sends one */
     emcmotInternal->interfere_zone_set = 0;
+    /* MC25: channel 0 owns the shared probe input by default (= legacy) */
+    emcmotInternal->probe_owner = 0;
     /* MC6/D6: channel 0 owns every joint by default (= legacy behavior) */
     for (int jn = 0; jn < EMCMOT_MAX_JOINTS; jn++) {
 	emcmotInternal->joint_owner[jn] = 0;
