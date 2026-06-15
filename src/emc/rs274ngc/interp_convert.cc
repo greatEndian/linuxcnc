@@ -5486,6 +5486,88 @@ int Interp::convert_straight(int move,   //!< either G_0 or G_1
           }
           break;
       }
+      case 2: {
+          /* AC tilting-rotary table (xyzac-trt-kins): that module's forward
+           * rotation is Rz(-c)*Rx(-a) (kins default conventional-directions=
+           * false), so the machine tool axis (+Z) seen from the table is
+           *   v = ( sin c sin a, cos c sin a, cos a ).
+           * Inverse:  a = atan2(hypot(i,j), k);  c = atan2(i, j)
+           * (C undefined when the tool is parallel to Z, sin a = 0). */
+          double off_c = settings->CC_origin_offset + settings->CC_axis_offset;
+          if (!vec_machine_frame) {
+              /* part frame -> table frame: v_table = Rz(-off_c)*Rx(-off_a)*v.
+               * Exact identity when both offsets are zero. */
+              double soa = sin(off_a * M_PI / 180.0), coa = cos(off_a * M_PI / 180.0);
+              double soc = sin(off_c * M_PI / 180.0), coc = cos(off_c * M_PI / 180.0);
+              double rx = vi;                       /* Rx(-off_a) */
+              double ry = coa * vj + soa * vk;
+              double rz = -soa * vj + coa * vk;
+              vi = coc * rx + soc * ry;             /* Rz(-off_c) */
+              vj = -soc * rx + coc * ry;
+              vk = rz;
+          }
+          double tilt = hypot(vi, vj);
+          double a_mach = tcp_unwrap_near(atan2(tilt, vk) * 180.0 / M_PI,
+                                          settings->AA_current + off_a);
+          bool c_defined = (tilt > 1e-9);
+          double c_mach = c_defined ? tcp_unwrap_near(atan2(vi, vj) * 180.0 / M_PI,
+                                                      settings->CC_current + off_c)
+                                    : 0.0;
+          if (vec_machine_frame) {
+              block->a_number = a_mach; block->a_flag = true;
+              if (c_defined) { block->c_number = c_mach; block->c_flag = true; }
+          } else {
+              double a_prog = a_mach - off_a;
+              block->a_number = vec_incremental ? a_prog - settings->AA_current : a_prog;
+              block->a_flag = true;
+              if (c_defined) {
+                  double c_prog = c_mach - off_c;
+                  block->c_number = vec_incremental ? c_prog - settings->CC_current : c_prog;
+                  block->c_flag = true;
+              }
+          }
+          break;
+      }
+      case 3: {
+          /* BC tilting-rotary table (xyzbc-trt-kins): forward rotation
+           * Rz(-c)*Ry(-b), so the machine tool axis (+Z) seen from the table is
+           *   v = ( -cos c sin b, sin c sin b, cos b ).
+           * Inverse:  b = atan2(hypot(i,j), k);  c = atan2(j, -i)
+           * (C undefined when the tool is parallel to Z, sin b = 0). */
+          double off_c = settings->CC_origin_offset + settings->CC_axis_offset;
+          if (!vec_machine_frame) {
+              /* part frame -> table frame: v_table = Rz(-off_c)*Ry(-off_b)*v. */
+              double sob = sin(off_b * M_PI / 180.0), cob = cos(off_b * M_PI / 180.0);
+              double soc = sin(off_c * M_PI / 180.0), coc = cos(off_c * M_PI / 180.0);
+              double rx = cob * vi - sob * vk;      /* Ry(-off_b) */
+              double ry = vj;
+              double rz = sob * vi + cob * vk;
+              vi = coc * rx + soc * ry;             /* Rz(-off_c) */
+              vj = -soc * rx + coc * ry;
+              vk = rz;
+          }
+          double tilt = hypot(vi, vj);
+          double b_mach = tcp_unwrap_near(atan2(tilt, vk) * 180.0 / M_PI,
+                                          settings->BB_current + off_b);
+          bool c_defined = (tilt > 1e-9);
+          double c_mach = c_defined ? tcp_unwrap_near(atan2(vj, -vi) * 180.0 / M_PI,
+                                                      settings->CC_current + off_c)
+                                    : 0.0;
+          if (vec_machine_frame) {
+              block->b_number = b_mach; block->b_flag = true;
+              if (c_defined) { block->c_number = c_mach; block->c_flag = true; }
+          } else {
+              double b_prog = b_mach - off_b;
+              block->b_number = vec_incremental ? b_prog - settings->BB_current : b_prog;
+              block->b_flag = true;
+              if (c_defined) {
+                  double c_prog = c_mach - off_c;
+                  block->c_number = vec_incremental ? c_prog - settings->CC_current : c_prog;
+                  block->c_flag = true;
+              }
+          }
+          break;
+      }
       default:
           ERS(_("G43.5: unsupported TCP_ORIENT_AXES topology"));
       }
