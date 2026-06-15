@@ -94,3 +94,36 @@ The parallel (genhex/penta) and robot (genser/puma/scorbot) kins are
 orientation-capable but already produce Cartesian+orientation from their own
 kins - they use tool-frame programming, not the mill RTCP switchkins paradigm,
 so RTCP there is optional/non-standard.
+
+================================================================================
+## VISUAL OVERVIEW — RTCP effort by kinematics (2026-06-15)
+================================================================================
+
+ GROUP 1 — RTCP-RELEVANT  (2-DOF tool orientation = mill paradigm; G43.4/.5 fit)
+ ┌────────────┬────────────────────────┬──────────┬─────────┬─────────────────┐
+ │ kins       │ topology               │switchkins│ status  │ effort          │
+ ├────────────┼────────────────────────┼──────────┼─────────┼─────────────────┤
+ │ xyzab_tdr  │ AB  table dual-rotary  │   yes    │ DONE ✅ │ ·····  0        │
+ │ xyzac-trt  │ AC  trunnion tilt+rot  │   yes    │ DONE ✅ │ ·····  0        │
+ │ xyzbc-trt  │ BC  trunnion tilt+rot  │   yes    │ DONE ✅ │ ·····  0        │
+ │ 5axiskins  │ generic head/table     │   yes    │ OPEN ▢  │ ███··  ~2-3 day │
+ │ maxkins    │ BC  head-table mill    │ NO (add) │ OPEN ▢  │ ███··  ~2 day   │
+ └────────────┴────────────────────────┴──────────┴─────────┴─────────────────┘
+   side items:  AC/BC live-sim validate  █····  ~0.5d   |  con=+1 variant █····  ~0.5d
+   >>> finish ALL mill RTCP (5axiskins + maxkins): ~4-5 days total <<<
+
+ GROUP 2 — ORIENTATION-CAPABLE, RTCP OPTIONAL (kins already emits Cart+orient)
+ ┌────────────┬────────────────────────┬──────────┬──────────┬────────────────┐
+ │ kins       │ type                   │switchkins│ RTCP fit │ effort if forced│
+ ├────────────┼────────────────────────┼──────────┼──────────┼────────────────┤
+ │ genhexkins │ hexapod 6-DOF          │   yes    │ weak     │ ████·  ~2-3 day │
+ │ pentakins  │ pentapod 5-DOF         │ NO (add) │ weak     │ ████·  ~3 day   │
+ │ genserkins │ serial robot 6-DOF     │   yes    │ mismatch │ █████  ~3-4 day │
+ │ ugenserkins│ serial robot           │   yes    │ mismatch │ █████  ~3-4 day │
+ │ pumakins   │ PUMA robot 6-DOF       │   yes    │ mismatch │ █████  ~3-4 day │
+ │ scorbot    │ 5-DOF educational arm  │   arm    │ mismatch │ █████  ~3-4 day │
+ └────────────┴────────────────────────┴──────────┴──────────┴────────────────┘
+   These use TOOL-FRAME programming (robot/parallel). Mill G43.4/.5 is NOT the
+   standard paradigm here -> RECOMMEND NOT implementing unless a need arises.
+
+ LEGEND  effort bar: ····· none · █···· ~0.5d · ███·· ~2-3d · █████ ~3-4d
