@@ -50,3 +50,47 @@ on LINUXCNC upstream + PR #4154 base. Updated 2026-06-15.
 
   RECOMMENDATION: most common family (trunnion) is DONE. Highest value next =
   D1 (finish AC/BC to AB's bar, cheap) then D2 (head-head swivel) or D3 (generic).
+
+================================================================================
+## FULL NATIVE KINEMATICS INVENTORY — RTCP relevance
+================================================================================
+RTCP (tool-center-point with tool-axis orientation, G43.4/G43.5) is meaningful
+only where the machine has 2 orientation DOF that tilt the TOOL vs the PART
+(mill paradigm). Classed below.
+
+  -- RTCP-RELEVANT (2-DOF tool orientation, mill) --------------------------
+  xyzab_tdr-kins   AB  table dual-rotary      switchkins   [DONE]
+  xyzac-trt-kins   AC  trunnion tilt+rotary   switchkins   [DONE]
+  xyzbc-trt-kins   BC  trunnion tilt+rotary   switchkins   [DONE]
+  5axiskins        generic head/table         switchkins   [OPEN D3]
+  maxkins          XYZBC head-table 5ax mill  NO-switchkins[OPEN *NEEDS RTCP*]
+                   ^ Chris Radek's 'max' - a real 5-axis mill (B head + C table,
+                     = the concrete HEAD-TABLE case). Needs switchkins support
+                     ADDED first, then a G43.5 topology case. Effort ~2 days
+                     (switchkins wrap + derive B/C from its fwd + verify).
+
+  -- ORIENTATION-CAPABLE, but TCP is inherent to the kins (RTCP optional) ---
+  genhexkins       hexapod 6-DOF              switchkins   parallel; kins does
+  pentakins        pentapod 5-DOF            NO-switchkins  full Cartesian+orient
+  genserkins/u-    serial robot xyzabcuvw     switchkins   robots: tool-frame
+  pumakins         PUMA 6-DOF robot           switchkins   programming, not the
+  scorbot-kins     5-DOF educational arm      (arm)        mill G43.4/.5 paradigm
+
+  -- NOT RTCP-RELEVANT (no 2-DOF tool orientation) -------------------------
+  trivkins (3-axis/identity), corexykins, rotatekins, matrixkins, rosekins,
+  scarakins (4-axis, tool vertical), tripodkins, lineardeltakins,
+  rotarydeltakins (3-DOF translation), userkins (template).
+
+--------------------------------------------------------------------------------
+## THE ADDITIONAL ONE THAT NEEDS RTCP:  maxkins
+--------------------------------------------------------------------------------
+maxkins is the only remaining NATIVE 5-axis MILL not RTCP-covered. It is a
+HEAD-TABLE machine (B-axis tilt on the head + C-axis rotary table), so it
+doubles as the concrete D4 (head-table) target. Caveat: it is NOT switchkins-
+capable today, so RTCP needs switchkins support wrapped around it first
+(unlike AC/BC/AB which were already switchkins). Effort ~2 days.
+
+The parallel (genhex/penta) and robot (genser/puma/scorbot) kins are
+orientation-capable but already produce Cartesian+orientation from their own
+kins - they use tool-frame programming, not the mill RTCP switchkins paradigm,
+so RTCP there is optional/non-standard.
