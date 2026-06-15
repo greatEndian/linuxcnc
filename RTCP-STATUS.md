@@ -155,3 +155,24 @@ C-180, Z compensates, tip held). fork-upstream a935774b2c + multichannel-upstrea
   DONE+sim  =>  the TWO most common 5-axis families fully covered.
   Remaining: head-table mixed (maxkins ~2d, needs switchkins) ; con=+1 ~0.5d ;
   refinements. The big families are done.
+
+================================================================================
+## 2026-06-15 UPDATE — con=+1 (conventional-directions) variant DONE for AC/BC
+================================================================================
+Closed the conventional-directions gap. trtfuncs.c builds its forward rotation
+with con = conventional-directions ? +1 : -1; the G43.5 AC/BC solver assumed the
+kins default (con-1) only, so a machine with conventional-directions=1 got a
+mirrored C angle. Generalised the inverse + offset transform with con:
+  AC: R=Rz(con*c)*Rx(con*a) -> c=atan2(i,-con*j)
+  BC: R=Rz(con*c)*Ry(con*b) -> c=atan2(j, con*i)
+New INI key [RS274NGC]TCP_CONVENTIONAL_DIRECTIONS (default 0=con-1, must match
+the kins HAL pin; AB/BCHEAD have no such pin and ignore it). con=-1 is
+algebraically identical to the old code => default behaviour unchanged.
+VERIFIED: offline g435_con_test.c (grid + 2,000,000 random incl. offsets, BOTH
+con, worst 1.5e-15); rs274 discriminating matrix (AC C0<->C180, BC C180<->C0 as
+con flips, a/b held 30); gate basic/tlo/abort/mdi-queue 8/8. Community docs
+updated (g-code.adoc + ini-config.adoc). fork-upstream 6ace82c912 +
+multichannel-upstream 3bab3954dc.
+
+  REMAINING: head-table mixed (maxkins ~2d, needs switchkins added first) ;
+  refinements (dual-solution nearest-travel, kinstype INI knob, G43.5 on arcs).
