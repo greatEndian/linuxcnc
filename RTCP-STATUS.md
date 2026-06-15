@@ -176,3 +176,33 @@ multichannel-upstream 3bab3954dc.
 
   REMAINING: head-table mixed (maxkins ~2d, needs switchkins added first) ;
   refinements (dual-solution nearest-travel, kinstype INI knob, G43.5 on arcs).
+
+================================================================================
+## 2026-06-15 UPDATE — BCHT head-table (maxkins) DONE + switchkins decoupled
+================================================================================
+Head-table "mixed" family (maxkins: B tilting head + C rotary table). Two parts:
+
+ 1. DECOUPLE: maxkins is permanently full-kinematics + KINS_NOT_SWITCHABLE (no
+    identity mode). New [RS274NGC]TCP_NO_SWITCH=1 makes G43.4/G43.5/G49 skip the
+    switchkins-type request (which otherwise trips the R10 non-switchable guard).
+    Default 0 => AB/AC/BC/BCHEAD bit-identical.
+ 2. BCHT topology (=5): machine-frame tool axis u=(con sinB,0,cosB); the C table
+    carries the part so relative to the part the axis is Rz(C)*u. Part-frame
+    vector v=(i,j,k) -> C=atan2(j,i), B=atan2(con*hypot(i,j),k). con follows
+    TCP_CONVENTIONAL_DIRECTIONS. Non-zero B/C work offsets refused for now.
+
+A numeric probe (maxkins_axis_probe.c) confirmed maxkins' program-frame
+orientation is C-INDEPENDENT (1-DOF in program coords) but full 2-DOF relative to
+the PART - hence the part-frame interpretation.
+
+VERIFIED: offline maxkins_inv_test.c (grid + 2,000,000 random, both con, 1.5e-15)
++ rs274 (con0 B-45/C45, con1 B+45/C45; BCHT emits 0 switchkins vs AC 1; AC/BC
+unchanged) + gate 8/8 + LIVE headless max5 sim (vector .5/.5/.707 -> B-45/C45,
+tip held at programmed point, linear joints compensate, ERROR OK, NO R10).
+fork-upstream 5fd05e549a + multichannel-upstream 74481bb829. Sim assets:
+~/cnc-dev/rtcp-dev/bcht-sim/. Community docs updated.
+
+  COVERAGE NOW: table-table (AB/AC/BC, +con variants) + head-head (BCHEAD) +
+  head-table (BCHT/maxkins) = all three industrial 5-axis families DONE+sim.
+  REMAINING: refinements only (dual-solution nearest-travel, kinstype knob,
+  G43.5 on arcs, BCHT rotary-offset transform).
