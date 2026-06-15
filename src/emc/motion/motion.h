@@ -138,6 +138,7 @@ extern "C" {
 	EMCMOT_CANCEL_RENDEZVOUS,	/* MCHAN MC10/Phase4: clear this channel's pending waiting-M (abort/reset) */
 	EMCMOT_SET_CHANNEL_FRAME,	/* MCHAN MC31: this channel's world ORIGIN+ORIENT (.frame_origin/.frame_orient) */
 	EMCMOT_SET_INTERFERE_ZONE,	/* MCHAN MC31: world keep-out zone (.zone[6]) */
+	EMCMOT_SET_CHANNEL_IO_RANGE,	/* MCHAN MC27: this channel's allowed digital/analog I/O index window */
 	EMCMOT_SET_TERM_COND,	/* set termination condition (stop, blend) */
 	EMCMOT_SET_NUM_JOINTS,	/* set the number of joints */
 	EMCMOT_SET_NUM_SPINDLES, /* set the number of spindles */
@@ -266,6 +267,8 @@ extern "C" {
 	double frame_origin[3];	/* MCHAN MC31: world ORIGIN x,y,z (SET_CHANNEL_FRAME) */
 	double frame_orient[3];	/* MCHAN MC31: world ORIENT rx,ry,rz deg (SET_CHANNEL_FRAME) */
 	double zone[6];		/* MCHAN MC31: world keep-out box (SET_INTERFERE_ZONE) */
+	int io_dio_base, io_dio_count;	/* MCHAN MC27: this channel's digital I/O window [base,base+count); count=0 = unrestricted */
+	int io_aio_base, io_aio_count;	/* MCHAN MC27: this channel's analog  I/O window [base,base+count); count=0 = unrestricted */
 	double scale;		/* velocity scale or spindle_speed scale arg */
 	double offset;		/* input, output, or home offset arg */
 	double home;		/* joint home position */
@@ -853,6 +856,13 @@ typedef struct emcmot_channel_t {
      * permit is off -> the feed-scale loop forces this channel's net feed to 0
      * (protective hold). Cleared when it leaves the zone or permit goes on. */
     int    interfere_stop;
+    /* MCHAN MC27: this channel's allowed digital/analog I/O index window
+     * (M62-M65 DOUT / M67-M68 AOUT). Writes outside [base, base+count) are
+     * refused so one head's PMC interface can't clobber another's (Fanuc
+     * per-path PMC areas). count==0 = unrestricted = legacy/D7. Set at config
+     * time via EMCMOT_SET_CHANNEL_IO_RANGE from [CHANNEL]DIO_RANGE/AIO_RANGE. */
+    int    dio_base, dio_count;
+    int    aio_base, aio_count;
 } emcmot_channel_t;
 
 typedef struct emcmot_internal_t {
