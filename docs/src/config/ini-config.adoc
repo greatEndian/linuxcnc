@@ -666,6 +666,13 @@ The maximum number of `USER_M_PATH` directories is defined at compile time (typ:
   <<gcode:g49,G49>> then skip the switchkins-type request (there is no identity
   mode to toggle); G43.5 still solves the tool vector into rotary words. Leave at
   `0` for the normal switchkins-based machines (AB/AC/BC/BCHEAD).
+* `TCP_KINSTYPE = 1` (Default: 1) - (((TCP KINSTYPE)))
+  The switchkins type that <<gcode:g43.4,G43.4>> / <<gcode:g43.5,G43.5>> request
+  to enable Tool Center Point control. The default `1` matches the standard
+  `identityfirst` module layout (type `0` = identity, which <<gcode:g49,G49>>
+  selects; type `1` = TCP). Set this only if TCP lives at a different switchkins
+  type (for example a user kinematics module at type `2`). Ignored when
+  `TCP_NO_SWITCH = 1`.
 
 [NOTE]
 ====

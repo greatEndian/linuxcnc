@@ -6599,10 +6599,11 @@ int Interp::convert_tool_length_offset(int g_code,       //!< g_code being execu
        * construction (forgotten tool / unmeasured tool table entry). */
       CHKS(settings->g43_with_zero_offset,
            (_("G43.4/G43.5: tool length offset is all zero - load a measured tool (Tn M6 or H word) before enabling TCP")));
-      /* request TCP kinematics, unless TCP_NO_SWITCH (always-TCP non-switchable
-       * kins, e.g. maxkins) - then there is nothing to switch and G43.5 still
-       * solves the tool vector into rotary words below. */
-      kins_switch = settings->tcp_no_switch ? -1 : 1;
+      /* request TCP kinematics (switchkins type = TCP_KINSTYPE, default 1),
+       * unless TCP_NO_SWITCH (always-TCP non-switchable kins, e.g. maxkins) -
+       * then there is nothing to switch and G43.5 still solves the tool vector
+       * into rotary words below. */
+      kins_switch = settings->tcp_no_switch ? -1 : settings->tcp_kinstype;
       if (g_code == G_43_5) {  /* G43_5_VECTOR */
         CHKS((settings->tcp_orient_axes == 0),
              (_("G43.5: [RS274NGC]TCP_ORIENT_AXES is not configured (or not a supported topology)")));

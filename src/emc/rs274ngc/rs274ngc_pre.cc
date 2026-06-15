@@ -914,6 +914,12 @@ int Interp::init()
            * toggle); G43.5 still solves the tool vector into rotary words. */
           _setup.tcp_no_switch =
               inifile.findBoolV("TCP_NO_SWITCH", "RS274NGC", false);
+          /* TCP_KINSTYPE: the switchkins-type value G43.4/G43.5 request for TCP.
+           * Default 1 matches the standard identityfirst module layout (type 0 =
+           * identity, used by G49; type 1 = TCP).  Set it when TCP lives at a
+           * different switchkins type (e.g. a user kins at type 2). */
+          _setup.tcp_kinstype =
+              inifile.findIntV("TCP_KINSTYPE", "RS274NGC", 1);
           _setup.tool_change_at_g30 = inifile.findBoolV("TOOL_CHANGE_AT_G30", "EMCIO", false);
           _setup.tool_change_quill_up = inifile.findBoolV("TOOL_CHANGE_QUILL_UP", "EMCIO", false);
           _setup.tool_change_with_spindle_on = inifile.findBoolV("TOOL_CHANGE_WITH_SPINDLE_ON", "EMCIO", false);
