@@ -434,6 +434,8 @@ void SELECT_PLANE(CANON_PLANE pl) {
 
 
 void WAIT_RENDEZVOUS(int waitm_num, int waitm_mask) {}
+void HOME_CYCLE(void) {}
+void UNHOME_AXES(void) {}
 
 void SET_TRAVERSE_RATE(double rate) {
     maybe_new_line();   

@@ -247,6 +247,10 @@ extern void SET_XY_ROTATION(double t);
  * at the M-number and continues only when all participants (waitm_mask, or
  * all configured channels if 0) have also arrived. Queue-buster. */
 extern void WAIT_RENDEZVOUS(int waitm_num, int waitm_mask);
+/* G28.2 / G28.3: trigger the machine homing cycle / unhome from G-code
+ * (bare form = all joints). Maps to EMC_JOINT_HOME/UNHOME(-1). */
+extern void HOME_CYCLE(void);
+extern void UNHOME_AXES(void);
 
 /* Offset the origin to the point with absolute coordinates x, y, z,
 a, b, c, u, v, and w. Values of x, y, z, a, b, c, u, v, and w are real 
