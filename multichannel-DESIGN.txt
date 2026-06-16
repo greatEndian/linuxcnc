@@ -1,0 +1,371 @@
+================================================================================
+  MULTICHANNEL LINUXCNC  —  DESIGN FREEZE (Phase 0)
+  "one motion, N channels"  —  Fanuc multi-path style
+  Status:   DESIGN FROZEN 2026-06-10 — NO CODE WRITTEN YET (by decision)
+  Decided:  after research of Siemens 840D (channels/BAG/WAITM/GET-RELEASE),
+            Fanuc 2-path (paths/waiting-M/balance cut/composite control),
+            LinuxCNC internals, and a 4-solution trade study (see notes below).
+================================================================================
+
+GOAL
+----
+Run N independent G-code programs ("channels") simultaneously in ONE LinuxCNC
+session: independent start/stop/feed per channel, cycle-accurate synchronization
+between channels, Fanuc-style coordination codes, all axes on ONE EtherCAT bus.
+Primary reference machine: 2-path lathe (most common industrial case), but the
+design is GENERIC — nothing machine-type-specific in the core.
+
+THE ARCHITECTURE
+----------------
+  CHANNEL 1 stack (stock binaries):        CHANNEL 2 stack (stock binaries):
+    GUI - halui - milltask - io              GUI - halui - milltask - io
+     |  NML buffer set #1 (.nml #1)           |  NML buffer set #2 (.nml #2)
+     |  own INI, own TOOL_TABLE               |  own INI, own TOOL_TABLE
+     v                                        v
+    cmd/status shmem area ch0                cmd/status shmem area ch1
+     +--------------------+--------------------+
+                          v
+        ONE motmod in ONE servo thread (e.g. 250us/1kHz)
+          coord_tp[0..N-1]            <- one TP per channel, ticked every cycle
+          joint-ownership table       <- global joint -> owning channel (DYNAMIC-capable)
+          per-channel letter->joint   <- each channel has its OWN full XYZABCUVW space
+          waiting-M rendezvous engine <- TRANSPORT-AGNOSTIC (see scaling rule)
+          ONE HAL - ONE lcec - ONE EtherCAT bus
+
+KEY PRINCIPLE (decided): synchronization quality = how much clock you share.
+All channels share ONE servo thread = ONE interpolation clock = inter-channel
+sync is exact by construction. This is how Fanuc runs 2-path inside one CNC.
+
+FROZEN DECISIONS
+----------------
+D1. Channels are GENERIC, count N (target 2, design allows more; joints<=16).
+D2. Each channel = native LinuxCNC axis architecture: its own complete
+    XYZABCUVW letter space. INI maps channel axes to global joints:
+        [CHANNEL_1] COORDINATES=XZCY  JOINTS=0,1,2,3   SPINDLES=0
+        [CHANNEL_2] COORDINATES=XZ    JOINTS=4,5       SPINDLES=1
+    (illustrative syntax — finalized in phase 1)
+D3. Userspace stacks (milltask/io/halui/GUI) are UNCHANGED stock binaries,
+    one set per channel, isolated by per-channel .nml + SHMEM_KEY (both already
+    INI-configurable). GUI choice belongs to the integrator.
+D4. Waiting-M sync codes: M200-M229, Fanuc convention - the SAME M-number in
+    two (or more) programs is a rendezvous point; both queues drain (M-codes
+    are queue busters), both channels block until all arrive, then continue
+    in the same servo cycle. Optional P-word = channel mask for N>2.
+    Deadlock guard: INI timeout + GUI error naming who waits for whom.
+D5. Stop semantics: hardware E-STOP and hard limits = ALWAYS machine-global
+    (safety floor, not configurable). Software stop/abort/feed-hold = exported
+    per channel as HAL pins (motion.N.*) PLUS global pins; the integrator
+    selects propagation policy in HAL.
+D6. Joint-ownership table is runtime-DYNAMIC from day 1 (axis sharing /
+    Fanuc composite-style exchange is a config choice, not a redesign);
+    the exchange COMMANDS themselves are phase 5.
+D7. Backward compatibility golden rule: channel count defaults to 1 and the
+    result must be BIT-IDENTICAL to today's behavior. Existing configs are
+    the regression suite. motmod HAL pins become motion.N.* with legacy
+    aliases for channel 0.
+D8. SCALING RULE (the A+D merge): this design is one "timing domain".
+    Machines needing radically different cycle times get N timing domains,
+    each a full multichannel motion process on its own bus/NIC, bridged by
+    the SAME waiting-M codes over a bridge transport (handshake-grade sync).
+    Cost deferred (+2-4 wk when ever needed). Today's only obligations:
+    rendezvous engine transport-agnostic; launcher must not assume exactly
+    one motion process. NEVER promise cycle-accurate sync ACROSS domains.
+
+PROBLEM REGISTER (MC1-MC17) — build guards for these, validate against them
+----------------------------------------------------------------------------
+RT/motion core:
+ MC1  two TPs in one servo cycle (CPU budget)      -> GATE PASSED 2026-06-10:
+      measured worst-case S-curve TP cost on dense 0.01" segments = 41 us/cycle
+      (motion.tp-time-max, tests/mchan-tp-budget, 1 ms period). 2 channels ~8%
+      of the 1 ms budget; ~33% of an eventual 250 us period. Permanent budget
+      tripwire test committed; re-measure after every motion-core change.
+ MC2  task<->motion handshake is single mailbox    -> per-channel cmd/status areas
+ MC3  per-channel free/coord/teleop state machines -> JOG+MODES DONE
+      2026-06-12 (D-MC3-1..6): chan[].virt_state transitions w/ idle
+      refusal + zero-jump resync both directions; per-channel jog
+      (joint- and axis-flavored via letter map, envelope-intersect-joint
+      clamps, own free_tp drive in the mode-aware executor); jog one
+      channel while the other runs AUTO = proven live. Task layer
+      additionally refuses mid-run mode switches (stock). Remaining
+      MC3 scope: per-channel homing interplay = MC4, handwheels = MC7.
+ MC4  homing module is global -> PER-CHANNEL HOMING DONE 2026-06-12
+      (d1-d4 user-approved): ONE global engine scoped per session by a
+      permit mask (homemod joint_in_sequence filter); each channel's
+      Home All homes ITS OWN joints (symmetric incl ch0 = unclaimed);
+      UNHOME channel-scoped (-1/-2/joint, G28.3 backbone); sessions
+      exclusive; HOMING_INTERLOCK all|own = pin
+      motion.mchan-homing-own-idle (default all); own-idle PROVEN: ch1
+      homed while ch0's program ran. Channel sessions do NOT flip the
+      global teleop mode. POWER RULE documented: every channel's task
+      enforces the D5 estop floor -> release estop on ALL panels first.
+      MC4b (per-path G28-triggered referencing) = G28.2/GCODE_HOMING
+      interp bridge, next increment.
+ MC5  estop vs abort semantics                     -> D5 (global floor + HAL policy)
+ MC6  per-channel kins mapping                     -> INI joint map, identity subsets
+ MC7  motion.* HAL pin collisions                  -> motion.N.* + ch0 legacy aliases
+      DONE 2026-06-15 (660083677f): single-motmod = one namespace, no collision;
+      added per-channel feedback motion.N.in-position/program-line/distance-to-go
+      (join MC5/22/31's motion.N.*); global motion.* = machine/legacy-ch0 view.
+ MC8  per-channel spindle / threading (G33/G76)    -> spindle idx already per-command;
+                                                      per-channel threading sim test
+      DONE 2026-06-15 (4dfba83457 + OP9 ba5916fc68): test exposed+fixed 4 bugs -
+      at-speed wait was machine-wide (now per-channel via tpSetNumChannels);
+      G33/G76 no-$ used spindle 0 (now channel default spindle); sync-OFF was
+      ownership-refused (now exempt); canon dropped the secondary synced MOVE
+      (flush_segments checked wrong spindle's synched flag). RIG-PROVEN both
+      channels thread their own spindle independently + per-channel at-speed.
+ MC9  command touching un-owned joint              -> ownership check -> clean GUI error
+Sync:
+ MC10 waiting-M deadlock                           -> timeout + GUI "ch1 waiting for ch2 @M205"
+ MC11 waiting-M ordering                           -> M-codes are queue busters (free)
+ MC12 axis exchange mid-motion                     -> defer-until-idle + zero-motion
+                                                      handoff (pattern proven twice)
+Build/test:
+ MC13 breaking single-channel                      -> D7 golden rule, full config regression
+ MC14 launcher starts one stack                    -> extend scripts/linuxcnc.in for N
+ MC15 hardware risk during dev                     -> SIM-FIRST: 2-channel lathe sim bench
+ MC16 debugging interleaved channels               -> per-channel log prefixes day 1
+ MC17 NML cross-talk                               -> distinct .nml per ch + dup-key guard
+Found during phase-1 implementation (2026-06-11):
+ MC18 stale mailbox echo can swallow a restarted    -> seed task commandNum from current
+      task's first command (echo==fresh num)           echo at connect (harden later)
+ MC19 tpUpdateInitialStatus writes GLOBAL           -> per-channel status block
+      emcmotStatus from ch>0 TPs every cycle
+ MC20 SET_LINE captures GLOBAL enables_new          -> per-channel enables (see MC22)
+
+G-CODE x N-CHANNEL INTERACTION AUDIT (2026-06-11, acknowledged by user)
+-----------------------------------------------------------------------
+Method: every G/M-code family traced interp -> canon -> NML -> EMCMOT handler
+on branch multichannel@d0944730; classified by which state it mutates.
+
+CATEGORY A - per-channel-safe by construction (verified, no action):
+ modal state/G90/G91/G20/G21/G17-19/G40-42/G93-95/G4/O-codes (own Interp);
+ G54-59/G92/G10 (own PARAMETER_FILE - add distinct-var-file config guard a la
+ MC17); G64 P/Q -> SET_TERM_COND routed to chan[].coord_tp; G33/G76 TP side
+ (SET_SPINDLESYNC routed); queued M62-65 (tpSetDout/Aout routed).
+
+CATEGORY B - GLOBAL-STATE LEAKS confirmed in code -> new register items:
+ MC21 G64 R planner switch is global (emcmotStatus->planner_type, read by ALL
+      TPs via tp.c GET_TRAJ_PLANNER_TYPE; single global defer-latch)
+      -> chan[].planner_type + per-channel latch; TP tagged with its channel.
+      SCURVE_PEAK_SCALE pin/INI likewise becomes per-channel.        [HIGH]
+ MC22 feed/rapid override + M48-M53 enables are global (feed_scale,
+      rapid_scale, enables_new; net_feed_scale computed once) -> per-channel
+      scale+enables, per-channel net_feed_scale, motion.N.feed-hold etc.;
+      global pins stay as all-channel floor (Fanuc per-path override).
+      WORST HAZARD: ch1 GUI knob silently slows ch2 cut.         [CRITICAL]
+ MC23 tool offset global (EMCMOT_SET_OFFSET -> emcmotStatus->tool_offset,
+      single HAL pin set, used by probe reporting) -> chan[].tool_offset +
+      motion.N.tooloffset.* (per-path tool comp, both vendors).      [HIGH]
+ MC24 axis-LETTER module is one global 9-slot array (limits/jog/inRange/
+      limits_ok) while every channel has its own letter space -> per-channel
+      axis state (subsumes part of MC3; explicit because G-code range checks
+      validate against the wrong envelope today).                [CRITICAL]
+ MC25 G38 probing: TP routed BUT one probe_input pin + global probing state
+      + global trip logic -> per-channel probe state, INI-assignable probe
+      pin per channel (Fanuc per-path skip signal); day-1 guard = mutual
+      exclusion w/ clear "probe busy (channel N)" error.           [MEDIUM]
+      DONE 2026-06-15 (777c24c6ff): day-1 mutual-exclusion done (any channel
+      may use the shared probe one-at-a-time; probe_owner; trip aborts the
+      probing channel's TP). Per-channel probe pins/state = future.
+ MC26 spindles: per-index state ok, NO channel ownership (any channel can
+      M3/M5/S any spindle) -> enforce [CHANNEL_N]SPINDLES ownership, loud
+      error on foreign spindle; cross-channel use = phase-5 exchange
+      (Fanuc path-spindle assignment).                               [HIGH]
+ MC27 M62-M68/M66 share one global motion.digital/analog-* namespace and
+      immediate writes are unarbitrated -> per-channel index ranges in INI
+      (e.g. ch0 0-31, ch1 32-63) enforced in motion + motion.N.* aliases
+      (Fanuc per-path PMC interface areas).                        [MEDIUM]
+      DONE 2026-06-15 (c67085551e): per-channel DIO/AIO index window
+      [CHANNEL]DIO_RANGE/AIO_RANGE enforced on SET_DOUT/SET_AOUT (outside =
+      refused); EMCMOT_SET_CHANNEL_IO_RANGE via chmap. RIG-PROVEN (M64 P2
+      refused ch0/allowed ch1). M66 input-range = future.
+ MC28 startup CONFIG STORM: every channel's milltask sends the full init
+      sequence (SET_NUM_JOINTS, traj/axis limits, maxFeedScale, ...) into
+      global state - last to boot wins, divergent INIs silently reconfigure
+      the machine -> classify EVERY config command machine-global vs
+      channel-scoped (Siemens $MN_* vs $MC_* machine-data split); globals
+      accepted from ch0 stack ONLY; divergence -> refuse to start. [CRITICAL]
+
+CATEGORY C - machine-global by NATURE -> policy + guard, not per-channel:
+ MC29 G43.4/G43.5/G49 switchkins: kinematicsSwitch() flips the WHOLE
+      machine's kinematics (one module per machine) while other channels may
+      be driving joints -> day-1 rule: switchkins command allowed only when
+      requesting channel owns ALL mapped joints (in practice: single active
+      channel), else clean refusal. Per-channel kins instances (Fanuc 30i
+      per-path TCP) = explicit FUTURE project, NOT in phases 1-5.    [HIGH]
+      DONE 2026-06-15 (d927a321a0): G43.4/G43.5 (req>=1) refused unless the
+      requesting channel owns ALL joints; G49/identity always allowed.
+ (E-stop/enable/hard-limits global floor = D5; homing = MC4 - already frozen.)
+
+PHASING IMPACT: MC21-MC24 + MC28 gate phases 1-2 (load-bearing for two real
+stacks; same disease as MC19/MC20 = the per-channel status/state block work).
+MC25-MC27 + MC29 land in phase 3 with sim tests.
+
+RELATED PROJECT - NO OVERLAP (checked 2026-06-11): joco-nz/linuxcnc-fleet
+("linuxcnc-Headless-UI"): gRPC sidecar wrapping the Python bindings + central
+gateway for fleets of SEPARATE machines; explicitly no core/RT changes, no
+multi-channel anything. COMPLEMENTARY layer ABOVE us: sidecar-per-channel
+would see our N stacks as N machines -> candidate remote multi-channel UI
+(D3 keeps GUI integrator's-choice) + matches the appliance/HMI/MES roadmap.
+
+TIMING BUDGET (frozen 2026-06-10, user decision)
+------------------------------------------------
+ Development and phase-1..4 validation run at SERVO_PERIOD = 1 ms (1 kHz).
+ Rationale: separates functional correctness from performance tuning; EtherCAT
+ CSP drives close their own loops internally, 1 kHz interpolation is sufficient
+ for the reference lathe. After MC1 measurements prove headroom, the period is
+ tightened stepwise toward 250 us. Never tune performance and debug
+ functionality in the same step.
+
+PHASING (no code until explicitly started)
+------------------------------------------
+ 0. THIS DOCUMENT + 2-channel sim config skeleton                     [frozen]
+ 1. Motion core: coord_tp[N], per-channel cmd/status, static owners   [DONE]
+ 2. N-stack launcher + 2-channel SIM, two independent programs        [DONE 2026-06-11]
+ 3. Per-channel jog/modes + homing/estop rules                        <- MC3/4/5
+ 4. Waiting-M rendezvous M200-M229 (transport-agnostic)               <- Fanuc semantics
+ 5. Axis exchange / composite control (ownership handoff commands)
+ [deferred] A-layer: instance-key patch + cross-domain bridge (D8)
+
+MC3 DESIGN DECISIONS (2026-06-12, user-approved q1/q2/q3 = yes/yes/yes)
+------------------------------------------------------------------------
+ D-MC3-1 MODE MODEL: per-channel INDEPENDENT modes (Fanuc 2-path
+   standard, web-verified; Siemens BAG = channels in a group share the
+   mode). Per-channel chan[].virt_state is the BASE MECHANISM; Siemens-
+   style coupling is a CONSTRAINT ON TOP, reserved as
+       [MCHAN] MODE_GROUPS = 0+1     (absent = Fanuc independent;
+                                      mixed setups = real multi-BAG)
+   implemented later in the single mode-request funnel (MC28 gate):
+   group switch fans out when ALL members idle, else clean refusal;
+   fault/stop coupling stays D5's HAL-pin policy. STANDING RULE: no new
+   code may assume "the machine has one mode" - key everything off
+   chan[].virt_state and the door stays open.
+ D-MC3-2 JOG SPACE: joint-space jog on the channel's OWNED joints via
+   its letter map (identity machines: == world jog). Per-channel teleop/
+   axis-module clone deferred to non-identity per-channel kins (future).
+ D-MC3-3 TRANSITIONS (channel-local mirror of set_operating_mode):
+   COORD->FREE only when the channel TP is idle, else refusal;
+   FREE->COORD resync = tpSetPos(mapped joints) + cubic prime;
+   machine disable (D5) overrides all; re-enable resync exists.
+ D-MC3-4 JOG DURING OTHER CHANNEL'S AUTO: allowed by default (Fanuc);
+   iron protection = proximity display today, MC31 zones later.
+
+PHASE 2 RESULT (2026-06-11) - "it exists" ACHIEVED
+---------------------------------------------------
+Two complete STOCK userspace stacks (linuxcncsvr + milltask + AXIS GUI,
+each with its own NML buffer set / var file / tool table) run two
+independent G-code programs SIMULTANEOUSLY against ONE motion process.
+Acceptance: ~/cnc-dev/mchan-dev/drive-2ch.sh 20/20 (MDI isolation both
+directions, simultaneous program execution with exact geometry, mid-move
+abort on one channel while the other completes, NAK-free sessions).
+Single command: linuxcnc ch0-mchan.ini -> both stacks + two AXIS GUIs.
+
+CHANNEL INI SCHEMA (canonical; dev pair in ~/cnc-dev/mchan-dev/):
+ channel 0 = a plain single-machine INI + num_channels=N on motmod +
+   [MCHAN]CHANNEL_INI = <chN.ini> (repeatable) + optional [MCHAN]CHMAP.
+ channel N>0 INI differs ONLY in:
+   [EMCMOT]MOTION_CHANNEL=N (same SHMEM_KEY!), [LINUXCNC]+[EMC]NML_FILE
+   (own keys + own TCP port - linuxcncsvr serves TCP), [RS274NGC]
+   PARAMETER_FILE, [EMCIO]TOOL_TABLE, [CHANNEL]MAP="X:3 Y:4 Z:5" (sent by
+   mchan-chmap before the stack starts), own [TRAJ]COORDINATES +
+   [AXIS_*] (= the channel envelope, MC24), NO [HAL] section, distinct/
+   absent POSITION_FILE. MC28 scalars must match channel 0's.
+   Optional [MCHAN]CHANNEL_HALFILE = integrator's iocontrol.N wiring
+   (default: launcher wires sim estop/tool loopbacks).
+
+ROOT CAUSE FIXED AT BRING-UP (the big one): tp.c queueTcSpace was ONE
+static array shared by EVERY tpCreate - all planners shared segment
+storage; queues overwrote each other. Only visible with TWO populated
+queues at once, so every earlier single-queue test passed "correctly by
+accident". Now one slice per planner (slice 0 = historic = D7).
+
+PHASE-2 FACTS (operational):
+ - ch>0 power-on requires channel 0 out of hardware estop first: ch0's
+   task state machine enforces the D5 floor (Fanuc machine-power
+   semantics). Power order: ch0, then the rest.
+ - HAL component names per stack: inihal (ch0 only - secondaries skip the
+   ini.* surface entirely until MC7), iocontrol.<N>, axisui.<N>; per-stack
+   tool data region via TOOL_MMAP_FILENAME env (set by the launcher).
+ - Stock task sends JOINT_UNHOME on every state transition -> MC28 gate
+   ack+ignores it for ch>0 (refusing broke power-up; JOINT_HOME stays a
+   loud refusal). D3 rule of thumb: anything a stock task sends in normal
+   sequences must not hard-fail.
+ - kins letter spaces must be DISJOINT across channels (D2): channel 0's
+   coordinates= covers ONLY its joints; other channels' joints are
+   letterless in ch0's space (AXIS now tolerates letterless joints).
+ - mchan-chmap currently lives in ~/cnc-dev/mchan-dev/ (graduate into
+   bin/ at the next deploy milestone).
+NEW REGISTER ITEMS:
+ MC30 emcmot error ring single-reader steal -> DONE 2026-06-12: per-
+      channel error rings (mchan_error[] appended to emcmot shmem);
+      reportError() routes by mchan_active_channel (channel-scoped
+      refusals -> the channel's OWN ring/GUI); machine-level errors
+      (control loop, RTAPI prints) stay on the legacy ring = channel
+      0's console (the machine owner's panel - documented semantics).
+      Proof: 3x ch1 limit refusals -> all messages on ch1's queue while
+      ch0 polled concurrently read ERROR OK every time.            [DONE]
+ MC31 RT INTERFERENCE ZONES (the machine's collision GUARANTEE): per-
+      channel geometric zones checked in motion every servo cycle,
+      feed-hold/alarm BEFORE contact - Fanuc Tool Post Interference
+      Check / Siemens protection areas equivalent. The combined preview
+      (below) is the HUMAN aid; MC31 is the guard. Phase 3/4.        [HIGH]
+
+COMBINED MULTI-CHANNEL PREVIEW (built 2026-06-11, ~/cnc-dev/mchan-dev/)
+------------------------------------------------------------------------
+User-approved schema (file format = API; a future graphical configurator
+emits exactly these keys):
+  [CHANNEL] ORIGIN = x y z   ; channel origin in the MACHINE world frame
+            ORIENT = rx ry rz; deg, Rz*Ry*Rx (opposed heads etc.)
+            COLOR  = R,G,B   ; 8-bit preview color
+  [MCHAN]   INTERFERE = 0+1  ; declared who-may-meet intent
+            PROXIMITY_WARN = 25  ; live distance warn radius, mm
+Workspace boxes are DERIVED ([AXIS_*] limits + ORIGIN, never duplicated);
+mchan-lint computes the real overlap matrix and cross-checks INTERFERE
+(intent vs geometry, plain-language output).
+Tools: mchan-preview.py (per-channel interp canon extraction -> world
+frame JSON; numeric selftest) + mchan-preview-view.py (pure-Tk combined
+viewer: static paths per channel color, envelope boxes, computed shared
+zones in red, triads; --live mode = per-channel NML status, tool markers
+with real tool geometry, trails, auto re-extraction of loaded programs,
+live tool-to-tool distance with warn radius).
+Reference machine embodying it all: lathe-ch0/ch1.ini = 2-spindle lathe,
+2x XYZC (8 joints), ORIGIN 500, world X 200..300 = part-handover zone.
+KEY TRUTH (documented for operators): spatial path overlap is necessary
+but NOT sufficient for collision - TIME coincidence decides; the live
+view shows the now, MC31 zones give the guarantee.
+
+FINALIZATION TASKS (do at project end, before publishing)
+----------------------------------------------------------
+ F2. COMMISSIONING VERIFICATOR (user note 2026-06-12, explicitly deferred
+     to finalization): integrators need a guided tool to commission the
+     AXES and verify the GEOMETRICAL PREVIEW setup (ORIGIN/ORIENT truth
+     vs the real iron, per-channel envelope sanity, chuck/spindle axis
+     conventions). mchan-lint + mchan-preview check are the seeds; the
+     verificator wraps them into a commissioning procedure. NOT scheduled.
+ F1. RENAMING (user request 2026-06-11): replace the vendor names in ALL
+     project-owned text - this document, notes.txt, code comments, future
+     docs - as follows:  "Fanuc" -> "Fanuq",  "Siemens" -> "Siemenz".
+     Applies at FINALIZATION, not during development (grep-able then:
+     grep -rn "Fanuc\|Siemens" over repo docs + comments). Git history/
+     past commit messages are immutable and stay as-is.
+
+EFFORT ESTIMATE (honest)
+------------------------
+ D core (phases 1-5): ~2-3 months of working sessions. The A-layer: +2-4 weeks,
+ deferred until a machine actually needs a second timing domain.
+
+TRADE STUDY (why this architecture; summary)
+--------------------------------------------
+ A. N full LinuxCNC instances : independence king, but two interpolation clocks
+    -> drift/jitter, sync via bridges only, HAL keys hardcoded (patch needed),
+    one IgH master per process -> 2nd NIC. WRONG tool when sync is the goal.
+    Survives as the deferred cross-domain layer (D8).
+ B. Full native re-architecture incl. UI: the real 840D, person-months,
+    UI rewrite — UI is integrator's domain here, so B's edge is moot.
+ C. 9-axis merge (one TP, ch2=UVW): perfect sync but NO independent start/stop,
+    no per-channel letter space, no arcs for ch2. Rejected by requirements.
+ D. SELECTED: one motion process with N TPs + N stock userspace stacks.
+    Cycle-accurate sync, independent channels, one EtherCAT bus, Fanuc
+    ergonomics (each path programs its own X/Z...), ~1/3 the cost of B.
+================================================================================

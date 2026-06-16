@@ -111,6 +111,7 @@ struct PM_CARTESIAN;
 #define EMC_TRAJ_SET_SO_ENABLE_TYPE                  ((NMLTYPE) 235)
 #define EMC_TRAJ_SET_FH_ENABLE_TYPE                  ((NMLTYPE) 236)
 #define EMC_TRAJ_RIGID_TAP_TYPE                      ((NMLTYPE) 237)
+#define EMC_TRAJ_WAIT_RENDEZVOUS_TYPE                ((NMLTYPE) 239)  // MCHAN MC10/Phase4 waiting-M
 
 #define EMC_TRAJ_STAT_TYPE                           ((NMLTYPE) 299)
 
@@ -381,12 +382,18 @@ extern int emcTrajClearProbeTrippedFlag();
 extern int emcTrajProbe(const EmcPose& pos, int type, double vel,
                         double ini_maxvel, double acc, double ini_maxjerk, unsigned char probe_type);
 extern int emcTrajRigidTap(const EmcPose& pos, double vel, double ini_maxvel, double acc, double ini_maxjerk, double scale);
+extern int emcWaitRendezvous(int waitm_num, int waitm_mask);  // MCHAN MC10/Phase4
+extern int emcCancelRendezvous(void);                         // MCHAN MC10/Phase4
 
 extern int emcTrajUpdate(EMC_TRAJ_STAT * stat);
 
 extern int emcTrajSetJerk(double jerk);
 extern int emcTrajSetMaxJerk(double jerk);
 extern int emcTrajPlannerType(int type);
+extern int emcTrajSetScurvePeakScale(double scale);
+/* G64_R_PLANNER: [TRAJ]SMOOTH_PLANNER - planner a G64 R>0 request resolves to */
+extern int emcTrajSetSmoothPlanner(int type);
+extern int emcTrajGetSmoothPlanner(void);
 // implementation functions for EMC_MOTION aggregate types
 
 extern int emcMotionInit();

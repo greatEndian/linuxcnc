@@ -17,6 +17,7 @@
 #include <hal.h>		/* decls for HAL implementation */
 
 #include "../tp/tp.h"
+#include "../tp/sp_scurve.h"	/* sp_scurve_cleanup() at module exit */
 #include "motion.h"
 #include "motion_struct.h"
 #include "mot_priv.h"
@@ -56,6 +57,11 @@ RTAPI_MP_INT (num_spindles, "number of spindles");
 int motion_num_spindles;
 static int num_joints = EMCMOT_MAX_JOINTS;	/* default number of joints present */
 RTAPI_MP_INT(num_joints, "number of joints used in kinematics");
+/* MCHAN: number of motion channels (independent coordinated planners).
+ * Default 1 = exactly the historic single-channel behavior. */
+static int num_channels = 1;
+RTAPI_MP_INT(num_channels, "number of motion channels (1..EMCMOT_MAX_CHANNELS)");
+int motion_num_channels;	/* validated value, visible to motion module */
 static int num_extrajoints = 0;	/* default number of extra joints present */
 RTAPI_MP_INT(num_extrajoints, "number of extra joints (not used in kinematics)");
 
@@ -201,12 +207,21 @@ static rtapi_msg_handler_t old_handler = NULL;
 void reportError(const char *fmt, ...)
 {
     va_list args;
+    /* MCHAN MC30: an error raised while serving a SECONDARY channel's
+     * command goes to THAT channel's ring, so it appears in that
+     * channel's GUI - not stolen by whichever task polls first.
+     * Machine-level errors (control loop, mchan_active_channel == 0)
+     * keep the legacy ring = channel 0's console (D7). */
+    emcmot_error_t *ring = emcmotError;
+    if (mchan_active_channel > 0 && 0 != emcmotStruct) {
+	ring = &emcmotStruct->mchan_error[mchan_active_channel];
+    }
 
     va_start(args, fmt);
 
-    //Report trough emcmotError() so they are shown
+    //Report trough the (per-channel MC30) error ring so they are shown
     //in the gui in the configured language.
-    emcmotErrorPutfv(emcmotError, fmt, args);
+    emcmotErrorPutfv(ring, fmt, args);
 
     va_end(args);
 
@@ -292,16 +307,26 @@ static int module_intfc() {
 }
 
 static int tp_init() {
-    if (-1 == tpCreate(&emcmotInternal->coord_tp, DEFAULT_TC_QUEUE_SIZE,mot_comp_id)) {
-        rtapi_print_msg(RTAPI_MSG_ERR,
-            "MOTION: tpCreate failed\n");
-        return -1;
+    /* MCHAN: one planner per channel. chan[0] is the historic planner;
+     * secondary channels start with empty queues. With num_channels=1 the
+     * loop runs once = exactly the original behavior. */
+    /* MCHAN MC19: channel 0's TP owns the legacy emcmotStatus motion-status
+     * mirror. Set BEFORE tpCreate so the create-time tpClear performs the
+     * historic global writes (bit-identity); chan[] shmem is zeroed, so
+     * secondary TPs are non-owners by default. */
+    emcmotInternal->chan[0].coord_tp.status_owner = 1;
+    for (int ch = 0; ch < motion_num_channels; ch++) {
+	if (-1 == tpCreate(&emcmotInternal->chan[ch].coord_tp, DEFAULT_TC_QUEUE_SIZE, mot_comp_id)) {
+	    rtapi_print_msg(RTAPI_MSG_ERR,
+		"MOTION: tpCreate failed (channel %d)\n", ch);
+	    return -1;
+	}
+	// tpInit is called from tpCreate
+	tpSetCycleTime(&emcmotInternal->chan[ch].coord_tp,  emcmotConfig->trajCycleTime);
+	tpSetVmax(     &emcmotInternal->chan[ch].coord_tp,  emcmotStatus->vel, emcmotStatus->vel);
+	tpSetAmax(     &emcmotInternal->chan[ch].coord_tp,  emcmotStatus->acc);
+	tpSetPos(      &emcmotInternal->chan[ch].coord_tp, &emcmotStatus->carte_pos_cmd);
     }
-    // tpInit is called from tpCreate
-    tpSetCycleTime(&emcmotInternal->coord_tp,  emcmotConfig->trajCycleTime);
-    tpSetVmax(     &emcmotInternal->coord_tp,  emcmotStatus->vel, emcmotStatus->vel);
-    tpSetAmax(     &emcmotInternal->coord_tp,  emcmotStatus->acc);
-    tpSetPos(      &emcmotInternal->coord_tp, &emcmotStatus->carte_pos_cmd);
     return 0;
 }
 
@@ -322,6 +347,19 @@ int rtapi_app_main(void)
 	    _("MOTION: num_joints is %d, must be between 1 and %d\n"), num_joints, EMCMOT_MAX_JOINTS);
 	hal_exit(mot_comp_id);
 	return -1;
+    }
+
+    /* MCHAN: validate channel count; default 1 keeps historic behavior */
+    if (( num_channels < 1 ) || ( num_channels > EMCMOT_MAX_CHANNELS )) {
+	rtapi_print_msg(RTAPI_MSG_ERR,
+	    _("MOTION: num_channels is %d, must be between 1 and %d\n"), num_channels, EMCMOT_MAX_CHANNELS);
+	hal_exit(mot_comp_id);
+	return -1;
+    }
+    motion_num_channels = num_channels;
+    if (num_channels > 1) {
+	rtapi_print_msg(RTAPI_MSG_INFO,
+	    _("MOTION: multichannel mode, %d channels\n"), num_channels);
     }
 
     if (( num_extrajoints < 0 ) || ( num_extrajoints > num_joints )) {
@@ -470,6 +508,8 @@ void rtapi_app_exit(void)
 	rtapi_print_msg(RTAPI_MSG_ERR,
 	    _("MOTION: hal_stop_threads() failed, returned %d\n"), retval);
     }
+    /* free the S-curve planner + Ruckig pool (threads are stopped, safe) */
+    sp_scurve_cleanup();
     /* free shared memory */
     retval = rtapi_shmem_delete(emc_shmem_id, mot_comp_id);
     if (retval < 0) {
@@ -520,6 +560,7 @@ static int init_hal_io(void)
     CALL_CHECK(hal_pin_bit_newf(HAL_IN, &(emcmot_hal_data->feed_hold), mot_comp_id, "motion.feed-hold"));
     CALL_CHECK(hal_pin_bit_newf(HAL_IN, &(emcmot_hal_data->feed_inhibit), mot_comp_id, "motion.feed-inhibit"));
     CALL_CHECK(hal_pin_bit_newf(HAL_IN, &(emcmot_hal_data->homing_inhibit), mot_comp_id, "motion.homing-inhibit"));
+    CALL_CHECK(hal_pin_bit_newf(HAL_IN, &(emcmot_hal_data->mchan_homing_own_idle), mot_comp_id, "motion.mchan-homing-own-idle"));
     CALL_CHECK(hal_pin_bit_newf(HAL_IN, &(emcmot_hal_data->jog_inhibit), mot_comp_id, "motion.jog-inhibit"));
     CALL_CHECK(hal_pin_bit_newf(HAL_IN, &(emcmot_hal_data->jog_stop), mot_comp_id, "motion.jog-stop"));
     CALL_CHECK(hal_pin_bit_newf(HAL_IN, &(emcmot_hal_data->jog_stop_immediate), mot_comp_id, "motion.jog-stop-immediate"));
@@ -635,6 +676,52 @@ static int init_hal_io(void)
     // export timing related HAL pins so they can be scoped and/or connected
     CALL_CHECK(hal_pin_u32_newf(HAL_OUT, &(emcmot_hal_data->last_period), mot_comp_id, "motion.servo.last-period"));
 
+    /* MCHAN (MC1): coordinated-TP cost pins (ns per servo cycle) */
+    CALL_CHECK(hal_pin_s32_newf(HAL_OUT, &(emcmot_hal_data->tp_time_last), mot_comp_id, "motion.tp-time-last"));
+    CALL_CHECK(hal_pin_s32_newf(HAL_OUT, &(emcmot_hal_data->tp_time_max), mot_comp_id, "motion.tp-time-max"));
+
+    /* MCHAN (MC5): per-channel run-control pins, motion.N.* (one set per
+     * configured channel). At num_channels=1 only motion.0.* appear and
+     * default to no-op = stock behavior (D7). */
+    for (n = 0; n < motion_num_channels; n++) {
+	CALL_CHECK(hal_pin_bit_newf(HAL_IN, &(emcmot_hal_data->mchan[n].feed_hold), mot_comp_id, "motion.%d.feed-hold", n));
+	CALL_CHECK(hal_pin_float_newf(HAL_IN, &(emcmot_hal_data->mchan[n].feed_override), mot_comp_id, "motion.%d.feed-override", n));
+	CALL_CHECK(hal_pin_bit_newf(HAL_IN, &(emcmot_hal_data->mchan[n].feed_override_enable), mot_comp_id, "motion.%d.feed-override-enable", n));
+	CALL_CHECK(hal_pin_s32_newf(HAL_IN, &(emcmot_hal_data->mchan[n].feed_group), mot_comp_id, "motion.%d.feed-group", n));
+	CALL_CHECK(hal_pin_bit_newf(HAL_OUT, &(emcmot_hal_data->mchan[n].is_moving), mot_comp_id, "motion.%d.is-moving", n));
+	CALL_CHECK(hal_pin_float_newf(HAL_OUT, &(emcmot_hal_data->mchan[n].current_vel), mot_comp_id, "motion.%d.current-vel", n));
+	CALL_CHECK(hal_pin_bit_newf(HAL_OUT, &(emcmot_hal_data->mchan[n].waitm_waiting), mot_comp_id, "motion.%d.waitm-waiting", n));
+	CALL_CHECK(hal_pin_s32_newf(HAL_OUT, &(emcmot_hal_data->mchan[n].waitm_number), mot_comp_id, "motion.%d.waitm-number", n));
+	CALL_CHECK(hal_pin_s32_newf(HAL_OUT, &(emcmot_hal_data->mchan[n].waitm_blockers), mot_comp_id, "motion.%d.waitm-blockers", n));
+	CALL_CHECK(hal_pin_bit_newf(HAL_OUT, &(emcmot_hal_data->mchan[n].interfere_hold), mot_comp_id, "motion.%d.interfere-hold", n));
+	/* MC7: per-channel run-status feedback (motion.N.* complete for HMI) */
+	CALL_CHECK(hal_pin_bit_newf(HAL_OUT, &(emcmot_hal_data->mchan[n].in_position), mot_comp_id, "motion.%d.in-position", n));
+	CALL_CHECK(hal_pin_s32_newf(HAL_OUT, &(emcmot_hal_data->mchan[n].program_line), mot_comp_id, "motion.%d.program-line", n));
+	CALL_CHECK(hal_pin_float_newf(HAL_OUT, &(emcmot_hal_data->mchan[n].distance_to_go), mot_comp_id, "motion.%d.distance-to-go", n));
+	*(emcmot_hal_data->mchan[n].feed_hold) = 0;
+	*(emcmot_hal_data->mchan[n].feed_override) = 1.0;
+	*(emcmot_hal_data->mchan[n].feed_override_enable) = 0;
+	*(emcmot_hal_data->mchan[n].feed_group) = -1;	/* MC32: independent by default */
+	*(emcmot_hal_data->mchan[n].is_moving) = 0;
+	*(emcmot_hal_data->mchan[n].current_vel) = 0.0;
+	*(emcmot_hal_data->mchan[n].waitm_waiting) = 0;
+	*(emcmot_hal_data->mchan[n].waitm_number) = -1;
+	*(emcmot_hal_data->mchan[n].waitm_blockers) = 0;
+	*(emcmot_hal_data->mchan[n].interfere_hold) = 0;
+	*(emcmot_hal_data->mchan[n].in_position) = 1;	/* MC7: at rest at startup */
+	*(emcmot_hal_data->mchan[n].program_line) = 0;
+	*(emcmot_hal_data->mchan[n].distance_to_go) = 0.0;
+    }
+    /* MCHAN MC10/Phase4: global waiting-M deadlock timeout pin (default 30 s) */
+    CALL_CHECK(hal_pin_float_newf(HAL_IN, &(emcmot_hal_data->waitm_timeout), mot_comp_id, "motion.waitm-timeout"));
+    *(emcmot_hal_data->waitm_timeout) = 30.0;
+    /* MCHAN MC31: interference active (two+ channels co-occupying the zone) */
+    CALL_CHECK(hal_pin_bit_newf(HAL_OUT, &(emcmot_hal_data->interfere_active), mot_comp_id, "motion.interfere-active"));
+    *(emcmot_hal_data->interfere_active) = 0;
+    /* MCHAN MC31 I3: handover permit (TRUE = allow co-occupancy, no stop) */
+    CALL_CHECK(hal_pin_bit_newf(HAL_IN, &(emcmot_hal_data->interfere_allow), mot_comp_id, "motion.interfere-allow"));
+    *(emcmot_hal_data->interfere_allow) = 0;
+
     // export timing related HAL pins so they can be scoped
     CALL_CHECK(hal_pin_float_newf(HAL_OUT, &(emcmot_hal_data->tooloffset_x), mot_comp_id, "motion.tooloffset.x"));
     CALL_CHECK(hal_pin_float_newf(HAL_OUT, &(emcmot_hal_data->tooloffset_y), mot_comp_id, "motion.tooloffset.y"));
@@ -654,6 +741,7 @@ static int init_hal_io(void)
     *(emcmot_hal_data->feed_hold) = 0;
     *(emcmot_hal_data->feed_inhibit) = 0;
     *(emcmot_hal_data->homing_inhibit) = 0;
+    *(emcmot_hal_data->mchan_homing_own_idle) = 0;	/* MCHAN: default = 'all' interlock */
     *(emcmot_hal_data->jog_inhibit) = 0;
     *(emcmot_hal_data->jog_stop) = 0;
     *(emcmot_hal_data->jog_stop_immediate) = 0;
@@ -895,6 +983,10 @@ static int init_comm_buffers(void)
 
     /* init error struct */
     emcmotErrorInit(emcmotError);
+    /* MCHAN MC30: per-channel error rings */
+    for (int ech = 0; ech < EMCMOT_MAX_CHANNELS; ech++) {
+	emcmotErrorInit(&emcmotStruct->mchan_error[ech]);
+    }
 
     /*
      * DO NOT init the command struct!
@@ -912,6 +1004,60 @@ static int init_comm_buffers(void)
     emcmotStatus->commandEcho = 0;
     emcmotStatus->commandNumEcho = 0;
     emcmotStatus->commandStatus = 0;
+
+    /* MCHAN: init the secondary-channel command mailboxes */
+    for (int ch = 0; ch < EMCMOT_MAX_CHANNELS; ch++) {
+	emcmotStruct->mchan_cmd[ch].mutex = 0;
+	emcmotStruct->mchan_cmd[ch].command.command = 0;
+	emcmotStruct->mchan_cmd[ch].command.commandNum = 0;
+	emcmotStruct->mchan_cmd[ch].commandEcho = 0;
+	emcmotStruct->mchan_cmd[ch].commandNumEcho = 0;
+	emcmotStruct->mchan_cmd[ch].commandStatus = 0;
+	/* MC6: all axes unmapped until the channel's task declares its map */
+	for (int ax = 0; ax < EMCMOT_MAX_AXIS; ax++) {
+	    emcmotInternal->chan[ch].axis_to_joint[ax] = -1;
+	}
+	/* MC23: no tool offset until the channel's task applies one */
+	ZERO_EMC_POSE(emcmotInternal->chan[ch].tool_offset);
+	/* MC2b: clean per-channel status snapshot + virtual mode (DISABLED
+	 * = legacy machine-off startup; the channel's stack sets its mode) */
+	memset(&emcmotStruct->mchan_status[ch], 0, sizeof(emcmotStruct->mchan_status[ch]));
+	emcmotInternal->chan[ch].virt_state = EMCMOT_MOTION_DISABLED;
+	/* MC10/Phase4: not waiting at any rendezvous */
+	emcmotInternal->chan[ch].waitm_num = -1;
+	emcmotInternal->chan[ch].waitm_mask = 0;
+	emcmotInternal->chan[ch].waitm_released = 0;
+	emcmotInternal->chan[ch].waitm_reported = 0;
+	emcmotInternal->chan[ch].waitm_blockers = 0;
+	emcmotInternal->chan[ch].waitm_t0 = 0;
+	/* MC31: identity world frame at origin until the channel's chmap sends it */
+	emcmotInternal->chan[ch].origin[0] = 0;
+	emcmotInternal->chan[ch].origin[1] = 0;
+	emcmotInternal->chan[ch].origin[2] = 0;
+	for (int a = 0; a < 3; a++)
+	    for (int b = 0; b < 3; b++)
+		emcmotInternal->chan[ch].rot[a][b] = (a == b) ? 1.0 : 0.0;
+	emcmotInternal->chan[ch].frame_set = 0;
+	emcmotInternal->chan[ch].interfere_stop = 0;
+	/* MC27: I/O index window unrestricted until chmap sends one */
+	emcmotInternal->chan[ch].dio_base = 0;
+	emcmotInternal->chan[ch].dio_count = 0;
+	emcmotInternal->chan[ch].aio_base = 0;
+	emcmotInternal->chan[ch].aio_count = 0;
+    }
+    /* MC31: no interference zone until the master chmap sends one */
+    emcmotInternal->interfere_zone_set = 0;
+    /* MC25: channel 0 owns the shared probe input by default (= legacy) */
+    emcmotInternal->probe_owner = 0;
+    /* MC6/D6: channel 0 owns every joint by default (= legacy behavior) */
+    for (int jn = 0; jn < EMCMOT_MAX_JOINTS; jn++) {
+	emcmotInternal->joint_owner[jn] = 0;
+    }
+    /* MC26b: channel 0 owns every spindle by default; secondaries claim
+     * theirs via EMCMOT_SET_CHANNEL_SPINDLE (from [CHANNEL]SPINDLE) */
+    for (int sp = 0; sp < EMCMOT_MAX_SPINDLES; sp++) {
+	emcmotInternal->spindle_owner[sp] = 0;
+    }
 
     /* init more stuff */
     emcmotInternal->head = 0;
@@ -931,6 +1077,8 @@ static int init_comm_buffers(void)
     emcmotConfig->numSpindles = num_spindles;
     emcmotConfig->numDIO = num_dio;
     emcmotConfig->numAIO = num_aio;
+    tpSetNumChannels(motion_num_channels);	/* MC8: tell tpmod the channel count
+						   (no emcmotStruct layout change) */
     emcmotConfig->numMiscError = num_misc_error;
 
     ZERO_EMC_POSE(emcmotStatus->carte_pos_cmd);
@@ -1144,8 +1292,10 @@ static int setTrajCycleTime(double secs)
     else
         emcmotConfig->interpolationRate = 1;
 
-    /* set traj planner */
-    tpSetCycleTime(&emcmotInternal->coord_tp, secs);
+    /* set traj planners (MCHAN: all channels share the cycle time) */
+    for (int ch = 0; ch < motion_num_channels; ch++) {
+	tpSetCycleTime(&emcmotInternal->chan[ch].coord_tp, secs);
+    }
 
     /* set the free planners, cubic interpolation rate and segment time */
     for (t = 0; t < ALL_JOINTS; t++) {

@@ -18,6 +18,7 @@
 
 #ifdef SWITCHKINS_DEBUG
 #include <stdio.h>  // rtpreempt only, consolidate to stderr
+#include <stddef.h> // offsetof (MCHAN MC2b status snapshot ranges)
 #endif
 
 #include <rtapi.h>
@@ -30,6 +31,7 @@
 #include "../tp/tp.h"
 #include "simple_tp.h"
 #include "motion.h"
+#include "motion_struct.h" /* emcmot_struct_t (MCHAN MC2b mailbox/status) */
 #include "mot_priv.h"
 #include "config.h"
 #include "homing.h"
@@ -159,6 +161,16 @@ static void handle_jjogwheels(void);
 */
 static void get_pos_cmds(long period);
 
+/* MCHAN MC10/Phase4: waiting-M (M200-M229) rendezvous engine, run once per
+ * servo cycle - matches arrived channels, releases them together, and
+ * applies the error+hold deadlock timeout. */
+static void mchan_run_rendezvous(void);
+
+/* MCHAN MC31: interference guard - each servo cycle, transform each channel's
+ * controlled point to world coords and detect co-occupancy of the keep-out
+ * zone. I2 = detection + observability pins (warn-only). */
+static void mchan_run_interference(void);
+
 /* 'compute_screw_comp()' is responsible for calculating backlash and
    lead screw error compensation.  (Leadscrew error compensation is
    a more sophisticated version that includes backlash comp.)  It uses
@@ -189,6 +201,11 @@ static void output_to_hal(void);
    higher level code.
 */
 static void update_status(void);
+
+/* MCHAN (MC2b): per-channel status snapshots for secondary stacks */
+static void mchan_update_status(void);
+/* MCHAN: EmcPose axis-component setter (defined near the executor) */
+static void mchan_pose_set_axis(EmcPose *p, int ax, double v);
 
 static void handle_kinematicsSwitch(void);
 
@@ -260,10 +277,31 @@ void emcmotController(void *arg, long period)
     }
     if (   (emcmotStatus->motion_state == EMCMOT_MOTION_FREE)
         && do_homing()) {
-        switch_to_teleop_mode();
+        /* MCHAN: only CHANNEL 0's homing session may flip the GLOBAL
+         * mode on completion (legacy behavior); a secondary channel's
+         * session finishing must leave the machine state alone (it
+         * polluted the global mode to TELEOP otherwise - found in the
+         * MC4 acceptance run) */
+        if (mchan_homing_session_ch == 0) {
+            switch_to_teleop_mode();
+        }
+    }
+
+    /* PLANNER_SWITCH_DEFER (reversible): apply a latched PLANNER_TYPE switch once the
+     * coordinated queue has gone idle. No-op unless a switch is pending + motion idle. */
+    emcmotApplyPendingPlannerType();
+
+    /* MCHAN: tick the secondary channels' planners every cycle. Their queues
+     * stay empty until the per-channel command plumbing lands (MC2+), so this
+     * is a cheap no-op pass that keeps every channel's planner clock aligned
+     * with the servo thread. Loop body never runs at num_channels=1. */
+    for (int mchan_ch = 1; mchan_ch < motion_num_channels; mchan_ch++) {
+	tpRunCycle(&emcmotInternal->chan[mchan_ch].coord_tp, period);
     }
 
     get_pos_cmds(period);
+    mchan_run_rendezvous();	/* MCHAN MC10/Phase4: waiting-M match/release/timeout */
+    mchan_run_interference();	/* MCHAN MC31: interference zone co-occupancy detect */
     compute_screw_comp();
     *(emcmot_hal_data->eoffset_active) = axis_plan_external_offsets(servo_period, GET_MOTION_ENABLE_FLAG(), get_allhomed());
     output_to_hal();
@@ -273,6 +311,9 @@ void emcmotController(void *arg, long period)
     emcmotStatus->heartbeat++;
     /* set tail to head, to indicate work complete */
     emcmotStatus->tail = emcmotStatus->head;
+    /* MCHAN (MC2b): publish the secondary channels' status views from the
+     * now-complete global status + per-channel state (no-op at 1 channel) */
+    mchan_update_status();
 /* end of controller function */
 }
 
@@ -341,8 +382,40 @@ static void handle_kinematicsSwitch(void) {
     }
 #endif
     axis_apply_ext_offsets_to_carte_pos(-1, pcmd_p);
-    tpSetPos(&emcmotInternal->coord_tp, &emcmotStatus->carte_pos_cmd);
+    tpSetPos(&emcmotInternal->chan[0].coord_tp, &emcmotStatus->carte_pos_cmd);
 } //handle_kinematicsSwitch()
+
+/* MCHAN MC32: resolve a channel's EFFECTIVE per-channel feed controls,
+ * honouring sync groups (motion.N.feed-group >= 0 couples channels):
+ *   - feed-hold is OR'd across the group (any member holds -> the whole
+ *     group holds: a stop on one synchronized head stops the set)
+ *   - the feed override is taken from the group AUTHORITY = the lowest-
+ *     numbered member (Fanuc exclusive-authority: one knob governs the
+ *     group; members' own override pins are ignored while grouped).
+ * Ungrouped (feed-group < 0) = pure MC5 per-channel behaviour.
+ * Note: this couples OVERRIDE and HOLD, not the toolpaths themselves
+ * (program synchronisation is the waiting-M / phase-4 work). */
+static void mchan_feed_controls(int ch, int *hold, int *ov_enable, double *ov)
+{
+    emcmot_hal_data_t *h = emcmot_hal_data;
+    int g = *h->mchan[ch].feed_group;
+    *hold = *h->mchan[ch].feed_hold ? 1 : 0;
+    if (g < 0) {
+	*ov_enable = *h->mchan[ch].feed_override_enable ? 1 : 0;
+	*ov = *h->mchan[ch].feed_override;
+	return;
+    }
+    int auth = ch, m;
+    for (m = 0; m < motion_num_channels; m++) {
+	if (m == ch) continue;
+	if (*h->mchan[m].feed_group == g) {
+	    if (*h->mchan[m].feed_hold) *hold = 1;
+	    if (m < auth) auth = m;
+	}
+    }
+    *ov_enable = *h->mchan[auth].feed_override_enable ? 1 : 0;
+    *ov = *h->mchan[auth].feed_override;
+}
 
 static void process_inputs(void)
 {
@@ -361,64 +434,141 @@ static void process_inputs(void)
 				*emcmot_hal_data->spindle[spindle_num].spindle_is_atspeed;
     }
     /* compute net feed and spindle scale factors */
-    if ( emcmotStatus->motion_state == EMCMOT_MOTION_COORD ) {
-	/* use the enables that were queued with the current move */
-	enables = emcmotStatus->enables_queued;
-    } else {
-	/* use the enables that are in effect right now */
-	enables = emcmotStatus->enables_new;
-    }
-    /* feed scaling first:  feed_scale, adaptive_feed, and feed_hold */
-    scale = 1.0;
-    if (   (emcmotStatus->motion_state != EMCMOT_MOTION_FREE)
-        && (enables & FS_ENABLED) ) {
-        if (emcmotStatus->motionType == EMC_MOTION_TYPE_TRAVERSE) {
-            scale *= emcmotStatus->rapid_scale;
-        } else {
-            scale *= emcmotStatus->feed_scale;
-        }
-    }
-    if ( enables & AF_ENABLED ) {
-        /* read and clamp adaptive feed HAL pin */
-        double adaptive_feed_in = *emcmot_hal_data->adaptive_feed;
-        // Clip range to +/- MAX_FEED_OVERRIDE from the [DISPLAY] section of the ini file
-        if (adaptive_feed_in > emcmotConfig->maxFeedScale) {
-            adaptive_feed_in = emcmotConfig->maxFeedScale;
-        } else if (adaptive_feed_in < -emcmotConfig->maxFeedScale) {
-            adaptive_feed_in = -emcmotConfig->maxFeedScale;
-        }
-        // Handle case of negative adaptive feed
-        // Actual scale factor is always positive by default
-        double adaptive_feed_out = fabs(adaptive_feed_in);
-        // Case 1: positive to negative direction change
-        if ( adaptive_feed_in < 0.0 && emcmotInternal->coord_tp.reverse_run == TC_DIR_FORWARD) {
-            // User commands feed in reverse direction, but we're not running in reverse yet
-            if (tpSetRunDir(&emcmotInternal->coord_tp, TC_DIR_REVERSE) != TP_ERR_OK) {
-                // Need to decelerate to a stop first
-                adaptive_feed_out = 0.0;
-            }
-        } else if (adaptive_feed_in > 0.0 && emcmotInternal->coord_tp.reverse_run == TC_DIR_REVERSE ) {
-            // User commands feed in forward direction, but we're running in reverse
-            if (tpSetRunDir(&emcmotInternal->coord_tp, TC_DIR_FORWARD) != TP_ERR_OK) {
-                // Need to decelerate to a stop first
-                adaptive_feed_out = 0.0;
-            }
-        }
-        //Otherwise, if direction and sign match, we're ok
-        scale *= adaptive_feed_out;
-    }
-    if ( enables & FH_ENABLED ) {
-	/* read feed hold HAL pin */
-	if ( *emcmot_hal_data->feed_hold ) {
-	    scale = 0;
+    /* MCHAN MC22: composed PER CHANNEL into each channel TP. Channel 0 keeps
+     * the exact legacy composition (motion_state / global motionType /
+     * adaptive-feed with ch0-TP reverse-run coupling) and mirrors to the
+     * legacy emcmotStatus fields. Secondary channels are coord-only by
+     * design: their enables come from their own TP (queued while motion is
+     * in flight), rapid-vs-feed from their own executing motion type, the
+     * GLOBAL feed-hold / feed-inhibit pins still apply to them (D5 global
+     * floor), and the adaptive-feed pin is ch0-only until per-channel
+     * motion.N.* pins exist (MC7) - it couples to a single TP's reverse-run. */
+    {
+	int mchan_ch;
+	for (mchan_ch = 0; mchan_ch < motion_num_channels; mchan_ch++) {
+	    TP_STRUCT *ctp = &emcmotInternal->chan[mchan_ch].coord_tp;
+	    unsigned char ch_enables;
+	    if (mchan_ch == 0) {
+		if ( emcmotStatus->motion_state == EMCMOT_MOTION_COORD ) {
+		    /* use the enables that were queued with the current move */
+		    ch_enables = ctp->enables_queued;
+		} else {
+		    /* use the enables that are in effect right now */
+		    ch_enables = ctp->enables_new;
+		}
+	    } else {
+		/* secondary: queued enables while its queue is in flight */
+		if (!tpIsDone(ctp) || tpQueueDepth(ctp) > 0) {
+		    ch_enables = ctp->enables_queued;
+		} else {
+		    ch_enables = ctp->enables_new;
+		}
+	    }
+	    /* feed scaling first:  feed_scale, adaptive_feed, and feed_hold */
+	    scale = 1.0;
+	    if (mchan_ch == 0) {
+		if (   (emcmotStatus->motion_state != EMCMOT_MOTION_FREE)
+		    && (ch_enables & FS_ENABLED) ) {
+		    if (emcmotStatus->motionType == EMC_MOTION_TYPE_TRAVERSE) {
+			scale *= ctp->rapid_scale;
+		    } else {
+			scale *= ctp->feed_scale;
+		    }
+		}
+	    } else if (ch_enables & FS_ENABLED) {
+		/* secondary channels have no FREE state; use their own
+		 * executing motion type for the rapid-vs-feed choice */
+		if (tpGetMotionType(ctp) == EMC_MOTION_TYPE_TRAVERSE) {
+		    scale *= ctp->rapid_scale;
+		} else {
+		    scale *= ctp->feed_scale;
+		}
+	    }
+	    if ( (mchan_ch == 0) && (ch_enables & AF_ENABLED) ) {
+		/* read and clamp adaptive feed HAL pin (ch0-only, see above) */
+		double adaptive_feed_in = *emcmot_hal_data->adaptive_feed;
+		// Clip range to +/- MAX_FEED_OVERRIDE from the [DISPLAY] section of the ini file
+		if (adaptive_feed_in > emcmotConfig->maxFeedScale) {
+		    adaptive_feed_in = emcmotConfig->maxFeedScale;
+		} else if (adaptive_feed_in < -emcmotConfig->maxFeedScale) {
+		    adaptive_feed_in = -emcmotConfig->maxFeedScale;
+		}
+		// Handle case of negative adaptive feed
+		// Actual scale factor is always positive by default
+		double adaptive_feed_out = fabs(adaptive_feed_in);
+		// Case 1: positive to negative direction change
+		if ( adaptive_feed_in < 0.0 && emcmotInternal->chan[0].coord_tp.reverse_run == TC_DIR_FORWARD) {
+		    // User commands feed in reverse direction, but we're not running in reverse yet
+		    if (tpSetRunDir(&emcmotInternal->chan[0].coord_tp, TC_DIR_REVERSE) != TP_ERR_OK) {
+			// Need to decelerate to a stop first
+			adaptive_feed_out = 0.0;
+		    }
+		} else if (adaptive_feed_in > 0.0 && emcmotInternal->chan[0].coord_tp.reverse_run == TC_DIR_REVERSE ) {
+		    // User commands feed in forward direction, but we're running in reverse
+		    if (tpSetRunDir(&emcmotInternal->chan[0].coord_tp, TC_DIR_FORWARD) != TP_ERR_OK) {
+			// Need to decelerate to a stop first
+			adaptive_feed_out = 0.0;
+		    }
+		}
+		//Otherwise, if direction and sign match, we're ok
+		scale *= adaptive_feed_out;
+	    }
+	    /* MCHAN MC5/MC32: this channel's effective per-channel feed-hold +
+	     * override, resolved through any sync group it belongs to. */
+	    {
+		int mc_hold, mc_oven; double mc_ov;
+		mchan_feed_controls(mchan_ch, &mc_hold, &mc_oven, &mc_ov);
+		if ( ch_enables & FH_ENABLED ) {
+		    /* feed hold HAL pin (global pin = all channels, D5) */
+		    if ( *emcmot_hal_data->feed_hold ) {
+			scale = 0;
+		    }
+		    /* MCHAN MC5: per-channel feed-hold (motion.N.feed-hold) - a
+		     * hardware feed-hold button for THIS head only (MC32: OR'd
+		     * across its sync group); maskable like the global one so
+		     * it will not break a tap/thread. */
+		    if ( mc_hold ) {
+			scale = 0;
+		    }
+		}
+		/*non maskable (except during spinndle synch move) feed hold inhibit pin */
+		if ( ch_enables & *emcmot_hal_data->feed_inhibit ) {
+		    scale = 0;
+		}
+		/* MCHAN MC5: per-channel feed override (motion.N.feed-override),
+		 * an operator pot for THIS head (MC32: from the group authority
+		 * when grouped). Applied only when enabled (unwired = stock);
+		 * multiplies on top of the GUI/NML feed scale; clamped to
+		 * [DISPLAY]MAX_FEED_OVERRIDE. */
+		if ( mc_oven ) {
+		    double ov = mc_ov;
+		    if ( ov < 0.0 ) ov = 0.0;
+		    if ( ov > emcmotConfig->maxFeedScale ) ov = emcmotConfig->maxFeedScale;
+		    scale *= ov;
+		}
+	    }
+	    /* MCHAN MC31 I3: protective stop - a keep-out-zone co-occupant
+	     * (handover permit off) holds at zero feed until it clears or is
+	     * permitted (flag set by mchan_run_interference last cycle). */
+	    if ( emcmotInternal->chan[mchan_ch].interfere_stop ) {
+		scale = 0;
+	    }
+	    /* save the resulting combined scale factor for this channel */
+	    ctp->net_feed_scale = scale;
 	}
-    }
-    /*non maskable (except during spinndle synch move) feed hold inhibit pin */
-	if ( enables & *emcmot_hal_data->feed_inhibit ) {
-	    scale = 0;
+	/* channel 0 mirrors to the legacy status fields (GUI/status view and
+	 * the jog/free-mode consumers elsewhere in this file) */
+	emcmotStatus->net_feed_scale = emcmotInternal->chan[0].coord_tp.net_feed_scale;
+	emcmotStatus->enables_queued = emcmotInternal->chan[0].coord_tp.enables_queued;
+	/* leave 'enables' (used by the spindle-scale section below) on the
+	 * legacy ch0 semantics */
+	if ( emcmotStatus->motion_state == EMCMOT_MOTION_COORD ) {
+	    enables = emcmotInternal->chan[0].coord_tp.enables_queued;
+	} else {
+	    enables = emcmotInternal->chan[0].coord_tp.enables_new;
 	}
-    /* save the resulting combined scale factor */
-    emcmotStatus->net_feed_scale = scale;
+	scale = emcmotStatus->net_feed_scale;
+    }
 
     /* now do spindle scaling */
     for (spindle_num=0; spindle_num < emcmotConfig->numSpindles; spindle_num++){
@@ -527,7 +677,7 @@ static void process_inputs(void)
 				reportError(_("fault %d during orient in progress"),
 						emcmotStatus->spindle_status[spindle_num].orient_fault);
 				emcmotStatus->commandStatus = EMCMOT_COMMAND_INVALID_COMMAND;
-				tpAbort(&emcmotInternal->coord_tp);
+				tpAbort(&emcmotInternal->chan[0].coord_tp);
 				SET_MOTION_ERROR_FLAG(1);
 			} else if (*(emcmot_hal_data->spindle[spindle_num].spindle_is_oriented)) {
 				*(emcmot_hal_data->spindle[spindle_num].spindle_orient) = 0;
@@ -690,6 +840,10 @@ static void process_probe_inputs(void)
     /* read probe input */
     emcmotStatus->probeVal = !!*(emcmot_hal_data->probe_input);
     if (emcmotStatus->probing) {
+        /* MCHAN MC25: stop/measure the channel that actually issued the probe
+         * (mutual exclusion guarantees exactly one). num_channels==1 ->
+         * probe_owner==0 = the legacy chan[0] path. */
+        TP_STRUCT *probe_tp = &emcmotInternal->chan[emcmotInternal->probe_owner].coord_tp;
         /* check if the probe has been tripped */
         if (emcmotStatus->probeVal ^ probe_whenclears) {
             /* remember the current position */
@@ -697,9 +851,9 @@ static void process_probe_inputs(void)
             /* stop! */
             emcmotStatus->probing = 0;
             emcmotStatus->probeTripped = 1;
-            tpAbort(&emcmotInternal->coord_tp);
+            tpAbort(probe_tp);
         /* check if the probe hasn't tripped, but the move finished */
-        } else if (GET_MOTION_INPOS_FLAG() && tpQueueDepth(&emcmotInternal->coord_tp) == 0) {
+        } else if (GET_MOTION_INPOS_FLAG() && tpQueueDepth(probe_tp) == 0) {
             /* we are already stopped, but we need to remember the current
                position here, because it will still be queried */
             emcmotStatus->probedPos = emcmotStatus->carte_pos_fb;
@@ -718,10 +872,10 @@ static void process_probe_inputs(void)
         // not probing, but we have a rising edge on the probe.
         // this could be expensive if we don't stop.
 
-        if(!GET_MOTION_INPOS_FLAG() && tpQueueDepth(&emcmotInternal->coord_tp)) {
+        if(!GET_MOTION_INPOS_FLAG() && tpQueueDepth(&emcmotInternal->chan[0].coord_tp)) {
             // running an command
             if (emcmotStatus->motionType != EMC_MOTION_TYPE_PROBING) {
-                tpAbort(&emcmotInternal->coord_tp);
+                tpAbort(&emcmotInternal->chan[0].coord_tp);
                 reportError(_("Probe tripped during non-probe move."));
                 SET_MOTION_ERROR_FLAG(1);
             }
@@ -867,8 +1021,8 @@ static void set_operating_mode(void)
 
     /* check for disabling */
     if (!emcmotInternal->enabling && GET_MOTION_ENABLE_FLAG()) {
-	/* clear out the motion emcmotInternal->coord_tp and interpolators */
-	tpClear(&emcmotInternal->coord_tp);
+	/* clear out the motion emcmotInternal->chan[0].coord_tp and interpolators */
+	tpClear(&emcmotInternal->chan[0].coord_tp);
 	for (joint_num = 0; joint_num < ALL_JOINTS; joint_num++) {
 	    /* point to joint data */
 	    joint = &joints[joint_num];
@@ -889,6 +1043,13 @@ static void set_operating_mode(void)
 
     axis_jog_abort_all(1);
 
+	/* MCHAN: machine disable is the global stop floor (D5) - abort the
+	 * secondary channels' planners too (their joints just froze; their
+	 * queues must not resume on re-enable) */
+	for (int mch = 1; mch < motion_num_channels; mch++) {
+	    tpClear(&emcmotInternal->chan[mch].coord_tp);
+	}
+
 	SET_MOTION_ENABLE_FLAG(0);
 	/* don't clear the motion error flag, since that may signify why we
 	   just went into disabled state */
@@ -902,7 +1063,7 @@ static void set_operating_mode(void)
             *(emcmot_hal_data->eoffset_limited) = 0;
         }
         axis_initialize_external_offsets();
-        tpSetPos(&emcmotInternal->coord_tp, &emcmotStatus->carte_pos_cmd);
+        tpSetPos(&emcmotInternal->chan[0].coord_tp, &emcmotStatus->carte_pos_cmd);
 	for (joint_num = 0; joint_num < ALL_JOINTS; joint_num++) {
 	    /* point to joint data */
 	    joint = &joints[joint_num];
@@ -920,6 +1081,23 @@ static void set_operating_mode(void)
                 axis_sync_teleop_tp_to_carte_pos(0, pcmd_p);
             }
 	}
+	/* MCHAN: resync each secondary channel's planner to its mapped
+	 * joints' commanded positions (mirror of channel 0's tpSetPos
+	 * above) so the first move after re-enable starts where the
+	 * joints actually are */
+	for (int mch = 1; mch < motion_num_channels; mch++) {
+	    emcmot_channel_t *c = &emcmotInternal->chan[mch];
+	    EmcPose cpose;
+	    int any = 0;
+	    ZERO_EMC_POSE(cpose);
+	    for (int ax = 0; ax < EMCMOT_MAX_AXIS; ax++) {
+		int jn = c->axis_to_joint[ax];
+		if (jn < 0) continue;
+		mchan_pose_set_axis(&cpose, ax, joints[jn].pos_cmd);
+		any = 1;
+	    }
+	    if (any) tpSetPos(&c->coord_tp, &cpose);
+	}
 	SET_MOTION_ENABLE_FLAG(1);
 	/* clear any outstanding motion errors when going into enabled state */
 	SET_MOTION_ERROR_FLAG(0);
@@ -929,8 +1107,8 @@ static void set_operating_mode(void)
     if (emcmotInternal->teleoperating && !GET_MOTION_TELEOP_FLAG()) {
 	if (GET_MOTION_INPOS_FLAG()) {
 
-	    /* update coordinated emcmotInternal->coord_tp position */
-	    tpSetPos(&emcmotInternal->coord_tp, &emcmotStatus->carte_pos_cmd);
+	    /* update coordinated emcmotInternal->chan[0].coord_tp position */
+	    tpSetPos(&emcmotInternal->chan[0].coord_tp, &emcmotStatus->carte_pos_cmd);
 	    /* drain the cubics so they'll synch up */
 	    for (joint_num = 0; joint_num < EMCMOT_MAX_JOINTS; joint_num++) {
 		if (joint_num < NO_OF_KINS_JOINTS) {
@@ -938,6 +1116,10 @@ static void set_operating_mode(void)
 		    joint = &joints[joint_num];
 		    if (coord_cubic_active && *(emcmot_hal_data->eoffset_active)) {
 		        //skip
+		    } else if (emcmotInternal->joint_owner[joint_num] != 0) {
+		        /* MCHAN: never drain a secondary channel's joint -
+		         * its stream is live mid-motion (found at phase-2
+		         * bring-up: ch0 mode changes wiped ch1's joints) */
 		    } else {
 		        cubicDrain(&(joint->cubic));
 		    }
@@ -982,9 +1164,14 @@ static void set_operating_mode(void)
                 // subtract at coord mode start
                 axis_apply_ext_offsets_to_carte_pos(-1, pcmd_p);
 
-		tpSetPos(&emcmotInternal->coord_tp, &emcmotStatus->carte_pos_cmd);
+		tpSetPos(&emcmotInternal->chan[0].coord_tp, &emcmotStatus->carte_pos_cmd);
 		/* drain the cubics so they'll synch up */
 		for (joint_num = 0; joint_num < NO_OF_KINS_JOINTS; joint_num++) {
+		    /* MCHAN: a secondary channel's joints are NOT channel
+		     * 0's to drain - their streams may be live mid-motion
+		     * (found at phase-2 bring-up: every ch0 COORD entry
+		     * wiped ch1's in-flight interpolators) */
+		    if (emcmotInternal->joint_owner[joint_num] != 0) continue;
 		    /* point to joint data */
 		    joint = &joints[joint_num];
 		    cubicDrain(&(joint->cubic));
@@ -1178,6 +1365,405 @@ static void handle_jjogwheels(void)
     first_pass = 0;
 }
 
+/* MCHAN (MC3-lite): axis component (0=X..8=W) of an EmcPose */
+static double mchan_pose_axis(EmcPose const *p, int ax)
+{
+    switch (ax) {
+    case 0: return p->tran.x;
+    case 1: return p->tran.y;
+    case 2: return p->tran.z;
+    case 3: return p->a;
+    case 4: return p->b;
+    case 5: return p->c;
+    case 6: return p->u;
+    case 7: return p->v;
+    case 8: return p->w;
+    }
+    return 0.0;
+}
+
+/* MCHAN (MC2b): set axis component (0=X..8=W) of an EmcPose */
+static void mchan_pose_set_axis(EmcPose *p, int ax, double v)
+{
+    switch (ax) {
+    case 0: p->tran.x = v; break;
+    case 1: p->tran.y = v; break;
+    case 2: p->tran.z = v; break;
+    case 3: p->a = v; break;
+    case 4: p->b = v; break;
+    case 5: p->c = v; break;
+    case 6: p->u = v; break;
+    case 7: p->v = v; break;
+    case 8: p->w = v; break;
+    }
+}
+
+/* MCHAN (MC3-lite): run the secondary channels' coordinated pipelines.
+ * Each secondary channel is coord-only: its planner output drives exactly
+ * the joints it has mapped (and which it therefore owns - those joints are
+ * excluded from channel 0's free/teleop/coord handling). A channel with no
+ * mapped joints just keeps its planner clock ticking. Mirrors the channel-0
+ * COORD pattern: fill the cubic interpolators from the TP as needed, then
+ * interpolate. Loop body never runs at num_channels=1. */
+/* MCHAN MC10/Phase4: waiting-M (M200-M229) rendezvous engine.
+ *
+ * Each channel that reaches a waiting-M parks (queue drained by the queue-
+ * buster) and motion records its arrival (chan[].waitm_num). This runs every
+ * servo cycle: for each waiting channel it computes its participant set (the
+ * P-word mask, or all configured channels if none), and when EVERY
+ * participant is simultaneously arrived at the SAME number with a consistent
+ * mask it releases them all in the SAME cycle (waitm_released=1). A partner
+ * arrived at a DIFFERENT number/mask is a Fanuc-160 mismatch -> error+hold.
+ * A partner that never arrives within motion.waitm-timeout -> a ONE-SHOT
+ * "chN waiting for chM @M2xx" error, then HOLD (stay armed so a late partner
+ * still releases - the error+hold policy). estop/disable clears everything.
+ * Channel-scoped status + HAL observability pins are published at the end.
+ * No-op cost at 1 channel / when nobody is waiting (a few comparisons). */
+static void mchan_run_rendezvous(void)
+{
+    int ch, m;
+    double tmo = *(emcmot_hal_data->waitm_timeout);
+    int all_mask = (1 << motion_num_channels) - 1;
+
+    if (!GET_MOTION_ENABLE_FLAG()) {
+	/* estop / machine off: drop every pending rendezvous so a stale
+	 * arrival can't phantom-match when the machine comes back. */
+	for (ch = 0; ch < motion_num_channels; ch++) {
+	    emcmot_channel_t *c = &emcmotInternal->chan[ch];
+	    c->waitm_num = -1; c->waitm_released = 0;
+	    c->waitm_reported = 0; c->waitm_blockers = 0;
+	}
+    } else {
+	for (ch = 0; ch < motion_num_channels; ch++) {
+	    emcmot_channel_t *c = &emcmotInternal->chan[ch];
+	    if (c->waitm_num < 0 || c->waitm_released) continue;	/* not waiting */
+	    int mask = c->waitm_mask ? c->waitm_mask : all_mask;
+	    int all_arrived = 1, blockers = 0, mismatch = 0, mm_ch = -1;
+	    for (m = 0; m < motion_num_channels; m++) {
+		if (m == ch || !((mask >> m) & 1)) continue;
+		emcmot_channel_t *o = &emcmotInternal->chan[m];
+		int omask = o->waitm_mask ? o->waitm_mask : all_mask;
+		if (o->waitm_num < 0 || o->waitm_released) {
+		    all_arrived = 0; blockers |= (1 << m);	/* not (yet) here */
+		} else if (o->waitm_num != c->waitm_num || omask != mask) {
+		    mismatch = 1; mm_ch = m;			/* Fanuc-160 */
+		}
+	    }
+	    c->waitm_blockers = blockers;
+	    if (mismatch) {
+		if (!c->waitm_reported) {
+		    mchan_active_channel = ch;
+		    reportError(_("ch%d: mismatch waiting-M @M%d (ch%d at a different M-number/mask) - holding"),
+			ch, c->waitm_num, mm_ch);
+		    mchan_active_channel = 0;
+		    c->waitm_reported = 1;
+		}
+		continue;					/* error + hold */
+	    }
+	    if (all_arrived) {
+		for (m = 0; m < motion_num_channels; m++)
+		    if ((mask >> m) & 1)
+			emcmotInternal->chan[m].waitm_released = 1;	/* same cycle */
+		continue;
+	    }
+	    c->waitm_t0 += servo_period;			/* elapsed wait (s) */
+	    if (tmo > 0.0 && c->waitm_t0 > tmo && !c->waitm_reported) {
+		int b = -1;
+		for (m = 0; m < motion_num_channels; m++)
+		    if ((blockers >> m) & 1) { b = m; break; }
+		mchan_active_channel = ch;
+		reportError(_("ch%d: waiting for ch%d @M%d (timeout %.0fs) - holding"),
+		    ch, b, c->waitm_num, tmo);
+		mchan_active_channel = 0;
+		c->waitm_reported = 1;	/* one-shot; STAY armed (late partner still releases) */
+	    }
+	}
+    }
+
+    /* publish channel-scoped status + HAL observability */
+    for (ch = 0; ch < motion_num_channels; ch++) {
+	emcmot_channel_t *c = &emcmotInternal->chan[ch];
+	int waiting = (c->waitm_num >= 0 && !c->waitm_released);
+	*(emcmot_hal_data->mchan[ch].waitm_waiting)  = waiting;
+	*(emcmot_hal_data->mchan[ch].waitm_number)   = waiting ? c->waitm_num : -1;
+	*(emcmot_hal_data->mchan[ch].waitm_blockers) = c->waitm_blockers;
+	if (ch == 0) {
+	    emcmotStatus->waitm_num      = c->waitm_num;
+	    emcmotStatus->waitm_released = c->waitm_released;
+	    emcmotStatus->waitm_blockers = c->waitm_blockers;
+	}
+    }
+}
+
+/* MCHAN MC31 (I2): interference detection. Each servo cycle, transform every
+ * channel's controlled point (its coord-TP cartesian) into the shared WORLD
+ * frame (origin + rot*carte, frame from [CHANNEL]ORIGIN/ORIENT) and test it
+ * against the declared keep-out zone. If two or more channels are inside the
+ * zone at once, raise motion.interfere-active and flag each co-occupant on
+ * motion.N.interfere-hold. I2 is WARN-ONLY (no motion change); I3 will turn
+ * the flag into a protective feed-hold. No-op (all pins low) unless a zone is
+ * configured and >=2 channels exist (D7). */
+static void mchan_run_interference(void)
+{
+    int ch;
+    int inzone[EMCMOT_MAX_CHANNELS];
+    int count = 0;
+
+    if (!emcmotInternal->interfere_zone_set || motion_num_channels < 2) {
+	*(emcmot_hal_data->interfere_active) = 0;
+	for (ch = 0; ch < motion_num_channels; ch++)
+	    *(emcmot_hal_data->mchan[ch].interfere_hold) = 0;
+	return;
+    }
+
+    const double *z = emcmotInternal->interfere_zone;	/* xmin xmax ymin ymax zmin zmax */
+    for (ch = 0; ch < motion_num_channels; ch++) {
+	emcmot_channel_t *c = &emcmotInternal->chan[ch];
+	EmcPose p;
+	tpGetPos(&c->coord_tp, &p);			/* this channel's controlled point */
+	double lx = p.tran.x, ly = p.tran.y, lz = p.tran.z;
+	double wx = c->origin[0] + c->rot[0][0]*lx + c->rot[0][1]*ly + c->rot[0][2]*lz;
+	double wy = c->origin[1] + c->rot[1][0]*lx + c->rot[1][1]*ly + c->rot[1][2]*lz;
+	double wz = c->origin[2] + c->rot[2][0]*lx + c->rot[2][1]*ly + c->rot[2][2]*lz;
+	inzone[ch] = (wx >= z[0] && wx <= z[1] &&
+		      wy >= z[2] && wy <= z[3] &&
+		      wz >= z[4] && wz <= z[5]) ? 1 : 0;
+	if (inzone[ch]) count++;
+    }
+
+    int active = (count >= 2);
+    int allow = *(emcmot_hal_data->interfere_allow) ? 1 : 0;
+    static int reported = 0;	/* one-shot error latch (rising edge of a stop) */
+    *(emcmot_hal_data->interfere_active) = active;
+    for (ch = 0; ch < motion_num_channels; ch++) {
+	int hold = (active && inzone[ch]) ? 1 : 0;
+	*(emcmot_hal_data->mchan[ch].interfere_hold) = hold;
+	/* I3: protective stop unless the handover permit is on. The feed-scale
+	 * loop (process_inputs) forces this channel's net feed to 0 next cycle.
+	 * Both co-occupants stop short of contact (zone carries decel margin);
+	 * the operator jogs one out / or the handover permit is asserted. */
+	emcmotInternal->chan[ch].interfere_stop = (hold && !allow) ? 1 : 0;
+    }
+    if (active && !allow) {
+	if (!reported) {
+	    /* name the first two co-occupants */
+	    int a = -1, b = -1;
+	    for (ch = 0; ch < motion_num_channels; ch++)
+		if (inzone[ch]) { if (a < 0) a = ch; else if (b < 0) { b = ch; break; } }
+	    reportError(_("interference: ch%d and ch%d both in keep-out zone - protective stop (jog one clear, or assert motion.interfere-allow for a sanctioned handover)"),
+		a, b);
+	    reported = 1;
+	}
+    } else {
+	reported = 0;	/* re-arm the one-shot once clear / permitted */
+    }
+}
+
+static void mchan_run_secondary(long period)
+{
+    /* MCHAN D-MC4: a SECONDARY channel's homing session must progress
+     * even when the GLOBAL state is not FREE (HOMING_INTERLOCK=own lets
+     * channel 0 keep running). The legacy do_homing() call only fires in
+     * the global FREE state; this one covers the rest. Called
+     * UNCONDITIONALLY (not gated on homing-active): a freshly requested
+     * sequence is not "active" until do_homing() runs it once -
+     * chicken-and-egg found in the MC4 acceptance. Idle cost is a switch
+     * on HOME_SEQUENCE_IDLE. The permit mask limits the engine to the
+     * session's joints; the owned joints' homing moves execute through
+     * this executor's FREE branch below. */
+    if (emcmotStatus->motion_state != EMCMOT_MOTION_FREE) {
+	do_homing();
+    }
+    for (int ch = 1; ch < motion_num_channels; ch++) {
+	emcmot_channel_t *c = &emcmotInternal->chan[ch];
+	int ref_jn = -1;
+	for (int ax = 0; ax < EMCMOT_MAX_AXIS; ax++) {
+	    if (c->axis_to_joint[ax] >= 0) {
+		ref_jn = c->axis_to_joint[ax];
+		break;
+	    }
+	}
+	if (ref_jn < 0) {
+	    /* nothing mapped: keep the planner clock aligned */
+	    tpRunCycle(&c->coord_tp, period);
+	    continue;
+	}
+	/* MCHAN S1: while ANY owned joint is homing, this channel's joints
+	 * are driven by the homing FSM through free_tp - the stock homing
+	 * pattern - NOT the channel TP. A homing session requires the
+	 * channel idle (no program), so the channel TP is parked; yielding
+	 * the whole channel to the free/homing drive for the cycle is safe
+	 * and mirrors how channel 0 homes in FREE mode. Without it the COORD
+	 * cubic path below overwrote the multi-cycle index-homing move every
+	 * tick and the home-state aborted (16 -> 0) before index-enable ever
+	 * armed. Immediate homing (search=latch=0) hid the bug by completing
+	 * in a single tick. */
+	int mchan_homing_now = 0;
+	for (int ax = 0; ax < EMCMOT_MAX_AXIS; ax++) {
+	    int jn = c->axis_to_joint[ax];
+	    if (jn >= 0 && get_homing(jn)) { mchan_homing_now = 1; break; }
+	}
+	/* MC3 (D-MC3-5): the channel's OWN mode decides how its joints
+	 * are driven. FREE/TELEOP = per-joint jog planners (legacy free-
+	 * mode pattern, no cubic); COORD = the channel TP below. The
+	 * machine-disable case never reaches here (executor is enable-
+	 * gated; D5 floor holds the joints). */
+	if (mchan_homing_now ||
+	    c->virt_state == EMCMOT_MOTION_FREE ||
+	    c->virt_state == EMCMOT_MOTION_TELEOP) {
+	    for (int ax = 0; ax < EMCMOT_MAX_AXIS; ax++) {
+		int jn = c->axis_to_joint[ax];
+		if (jn < 0) continue;
+		emcmot_joint_t *j = &joints[jn];
+		j->free_tp.max_jerk = j->jerk_limit;
+		simple_tp_update(&(j->free_tp), servo_period);
+		j->jerk_cmd = j->free_tp.curr_jerk;
+		j->pos_cmd = j->free_tp.curr_pos;
+		j->vel_cmd = j->free_tp.curr_vel;
+		j->acc_cmd = 0.0;
+		j->coarse_pos = j->free_tp.curr_pos;
+		if (!j->free_tp.active) {
+		    j->kb_jjog_active = 0;
+		}
+	    }
+	    continue;
+	}
+	while (cubicNeedNextPoint(&(joints[ref_jn].cubic))) {
+	    EmcPose pos;
+	    tpRunCycle(&c->coord_tp, period);
+	    tpGetPos(&c->coord_tp, &pos);
+	    for (int ax = 0; ax < EMCMOT_MAX_AXIS; ax++) {
+		int jn = c->axis_to_joint[ax];
+		if (jn < 0) continue;
+		joints[jn].coarse_pos = mchan_pose_axis(&pos, ax);
+		cubicAddPoint(&(joints[jn].cubic), joints[jn].coarse_pos);
+	    }
+	}
+	for (int ax = 0; ax < EMCMOT_MAX_AXIS; ax++) {
+	    int jn = c->axis_to_joint[ax];
+	    if (jn < 0) continue;
+	    joints[jn].pos_cmd = cubicInterpolate(&(joints[jn].cubic), 0,
+		&(joints[jn].vel_cmd), &(joints[jn].acc_cmd), &(joints[jn].jerk_cmd));
+	}
+    }
+}
+
+/* MCHAN (MC2b): fill each secondary channel's status snapshot. Runs at the
+ * very end of the controller cycle, after the global status is complete.
+ *
+ * H7 TEAR FIX (found by the user dragging ch0's feed slider - ch0 values
+ * flashed in ch1's GUI): the snapshot is now BUILT in a motmod-PRIVATE
+ * staging buffer (global copy + channel overlays where no reader can see
+ * them) and PUBLISHED to shmem in one short head/tail-protected window.
+ * The old code overlaid in place: a reader landing between the global
+ * copy and the overlay consumed raw channel-0 values, and the legacy
+ * "head==tail inside one copy" check cannot detect a writer that starts
+ * AND finishes inside the reader's copy (proven: 3580 undetected tears /
+ * 44M reads with mc2c-tear). The reader side (usrmotintf) now does a real
+ * seqlock check to close that half. Never runs at num_channels=1 (D7). */
+static void mchan_update_status(void)
+{
+    static emcmot_status_t st;	/* staging - private to motmod */
+    for (int ch = 1; ch < motion_num_channels; ch++) {
+	emcmot_channel_t *c = &emcmotInternal->chan[ch];
+	TP_STRUCT *tp = &c->coord_tp;
+	emcmot_chan_mailbox_t *mb = &emcmotStruct->mchan_cmd[ch];
+	emcmot_status_t *cs = &emcmotStruct->mchan_status[ch];
+	const size_t off_body = offsetof(emcmot_status_t, commandEcho);
+	const size_t off_tail = offsetof(emcmot_status_t, tail);
+	const size_t off_post = offsetof(emcmot_status_t, external_offsets_applied);
+	int enabled = GET_MOTION_ENABLE_FLAG();
+	int inpos;
+	unsigned char h;
+
+	/* ---- build the channel's view in private staging ---- */
+	memcpy(&st, emcmotStatus, sizeof(emcmot_status_t));
+
+	/* command handshake: this channel's mailbox echo */
+	st.commandEcho = mb->commandEcho;
+	st.commandNumEcho = mb->commandNumEcho;
+	st.commandStatus = mb->commandStatus;
+
+	/* MC10/Phase4: this channel's waiting-M view (so its task/GUI sees
+	 * its OWN rendezvous state, not channel 0's) */
+	st.waitm_num      = c->waitm_num;
+	st.waitm_released = c->waitm_released;
+	st.waitm_blockers = c->waitm_blockers;
+
+	/* channel-scoped traj state from the channel's TP (MC19/21/22/28) */
+	st.feed_scale = tp->feed_scale;
+	st.rapid_scale = tp->rapid_scale;
+	st.net_feed_scale = tp->net_feed_scale;
+	st.enables_new = tp->enables_new;
+	st.enables_queued = tp->enables_queued;
+	st.planner_type = tp->planner_type;
+	st.scurve_peak_scale = tp->scurve_peak_scale;
+	st.distance_to_go = tp->distance_to_go;
+	st.dtg = tp->dtg;
+	st.current_vel = tp->current_vel;
+	st.requested_vel = tp->requested_vel;
+	st.current_acc = tp->current_acc;
+	st.current_jerk = tp->current_jerk;
+	st.current_dir = tp->current_dir;
+	st.spindleSync = tp->spindleSync;
+	st.tcqlen = tp->tcqlen;
+	st.tag = tp->execTag;
+	st.vel = tp->vMax;
+	st.acc = tp->aMax;
+	st.id = tpGetExecId(tp);
+	st.depth = tpQueueDepth(tp);
+	st.activeDepth = tpActiveDepth(tp);
+	st.queueFull = tcqFull(&tp->queue);
+	st.motionType = tpGetMotionType(tp);
+	st.paused = tp->pausing;
+	st.tool_offset = c->tool_offset;
+
+	/* channel pose: commanded from its TP; "actual" composed from the
+	 * mapped joints' feedback through the identity letter map */
+	tpGetPos(tp, &st.carte_pos_cmd);
+	st.carte_pos_cmd_ok = 1;
+	ZERO_EMC_POSE(st.carte_pos_fb);
+	for (int ax = 0; ax < EMCMOT_MAX_AXIS; ax++) {
+	    int jn = c->axis_to_joint[ax];
+	    if (jn >= 0)
+		mchan_pose_set_axis(&st.carte_pos_fb, ax, joints[jn].pos_fb);
+	}
+	st.carte_pos_fb_ok = 1;
+
+	/* virtual mode (recorded by the MC28 gate) + per-channel flags.
+	 * inpos = this channel's planner idle; enable/estop = global floor */
+	inpos = (!tpIsMoving(tp) && tpQueueDepth(tp) == 0);
+	st.motion_state = !enabled ? EMCMOT_MOTION_DISABLED :
+	    (c->virt_state == EMCMOT_MOTION_DISABLED) ? EMCMOT_MOTION_FREE :
+	    c->virt_state;
+	st.motionFlag = 0;
+	if (enabled)
+	    st.motionFlag |= EMCMOT_MOTION_ENABLE_BIT;
+	if (inpos)
+	    st.motionFlag |= EMCMOT_MOTION_INPOS_BIT;
+	if (c->virt_state == EMCMOT_MOTION_COORD)
+	    st.motionFlag |= EMCMOT_MOTION_COORD_BIT;
+	else if (c->virt_state == EMCMOT_MOTION_TELEOP)
+	    st.motionFlag |= EMCMOT_MOTION_TELEOP_BIT;
+
+	/* not this channel's: ch0's jog machinery and probe (MC25 day-1
+	 * refusal) must not leak into the channel's task decisions */
+	st.overrideLimitMask = 0;
+	st.jogging_active = 0;
+	st.probing = 0;
+	st.probeTripped = 0;
+
+	/* ---- publish: head -> body (tail byte skipped) -> tail ---- */
+	h = (unsigned char)(cs->head + 1);
+	cs->head = h;
+	memcpy((char *)cs + off_body, (char *)&st + off_body,
+	       off_tail - off_body);
+	memcpy((char *)cs + off_post, (char *)&st + off_post,
+	       sizeof(emcmot_status_t) - off_post);
+	cs->tail = h;
+    }
+}
+
 static void get_pos_cmds(long period)
 {
     int joint_num, result;
@@ -1203,6 +1789,14 @@ static void get_pos_cmds(long period)
 
     /* RUN MOTION CALCULATIONS: */
 
+    /* MCHAN (MC3-lite): secondary channels execute whenever the machine is
+     * enabled, independent of channel 0's motion state. When disabled, the
+     * DISABLED case below holds ALL joints (including secondary-owned ones)
+     * at feedback - the global-stop floor (D5). */
+    if (GET_MOTION_ENABLE_FLAG()) {
+	mchan_run_secondary(period);
+    }
+
     /* run traj planner code depending on the state */
     switch ( emcmotStatus->motion_state) {
     case EMCMOT_MOTION_FREE:
@@ -1218,6 +1812,9 @@ static void get_pos_cmds(long period)
             }
             // extra joint is not managed herein after homing:
             if (IS_EXTRA_JOINT(joint_num) && get_homed(joint_num)) continue;
+	    /* MCHAN: joints owned by a secondary channel are driven by that
+	     * channel's planner (mchan_run_secondary), not free-planned here */
+	    if (emcmotInternal->joint_owner[joint_num] != 0) continue;
 
 	    if(joint->acc_limit > emcmotStatus->acc)
 		joint->acc_limit = emcmotStatus->acc;
@@ -1339,13 +1936,19 @@ static void get_pos_cmds(long period)
 
 	/* check joint 0 to see if the interpolators are empty */
 	coord_cubic_active = 1;
+	{
+	/* MCHAN (MC1): accumulate this cycle's coordinated-TP cost; the loop
+	 * can iterate more than once while the interpolators fill. */
+	long long tp_ns_acc = 0;
 	while (cubicNeedNextPoint(&(joints[0].cubic))) {
 	    /* they're empty, pull next point(s) off Cartesian planner */
 	    /* run coordinated trajectory planning cycle */
 
-	    tpRunCycle(&emcmotInternal->coord_tp, period);
+	    long long tp_t0 = rtapi_get_time();
+	    tpRunCycle(&emcmotInternal->chan[0].coord_tp, period);
             /* get new commanded traj pos */
-            tpGetPos(&emcmotInternal->coord_tp, &emcmotStatus->carte_pos_cmd);
+            tpGetPos(&emcmotInternal->chan[0].coord_tp, &emcmotStatus->carte_pos_cmd);
+	    tp_ns_acc += rtapi_get_time() - tp_t0;
 
             if (axis_update_coord_with_bound(pcmd_p, servo_period)) {
                 ext_offset_coord_limit = 1;
@@ -1360,6 +1963,9 @@ static void get_pos_cmds(long period)
 	    {
 		/* copy to joint structures and spline them up */
 		for (joint_num = 0; joint_num < NO_OF_KINS_JOINTS; joint_num++) {
+		    /* MCHAN: secondary-owned joints are splined by their
+		     * channel's planner, not by channel 0's kins output */
+		    if (emcmotInternal->joint_owner[joint_num] != 0) continue;
 		    if(!isfinite(positions[joint_num]))
 		    {
                        reportError(_("kinematicsInverse gave non-finite joint location on joint %d"),
@@ -1387,9 +1993,16 @@ static void get_pos_cmds(long period)
 
 	    /* END OF OUTPUT KINS */
 	} // while
+	/* MCHAN (MC1): publish this cycle's TP cost */
+	*(emcmot_hal_data->tp_time_last) = (hal_s32_t)tp_ns_acc;
+	if ((hal_s32_t)tp_ns_acc > *(emcmot_hal_data->tp_time_max))
+	    *(emcmot_hal_data->tp_time_max) = (hal_s32_t)tp_ns_acc;
+	}
 	/* there is data in the interpolators */
 	/* run interpolation */
 	for (joint_num = 0; joint_num < NO_OF_KINS_JOINTS; joint_num++) {
+	    /* MCHAN: secondary-owned joints interpolate in mchan_run_secondary */
+	    if (emcmotInternal->joint_owner[joint_num] != 0) continue;
 	    /* point to joint struct */
 	    joint = &joints[joint_num];
 	    /* interpolate to get new position and velocity */
@@ -1411,7 +2024,7 @@ static void get_pos_cmds(long period)
 
 	/* report motion status */
 	SET_MOTION_INPOS_FLAG(0);
-	if (tpIsDone(&emcmotInternal->coord_tp)) {
+	if (tpIsDone(&emcmotInternal->chan[0].coord_tp)) {
 	    SET_MOTION_INPOS_FLAG(1);
 	}
 	break;
@@ -1441,6 +2054,9 @@ static void get_pos_cmds(long period)
 	if(result == 0)
 	{
 	    for (joint_num = 0; joint_num < NO_OF_KINS_JOINTS; joint_num++) {
+		/* MCHAN: secondary-owned joints are driven by their channel's
+		 * planner, not by channel 0's teleop kins output */
+		if (emcmotInternal->joint_owner[joint_num] != 0) continue;
 		if(!isfinite(positions[joint_num]))
 		{
 		   reportError(_("kinematicsInverse gave non-finite joint location on joint %d"),
@@ -1990,6 +2606,34 @@ static void output_to_hal(void)
         *(emcmot_hal_data->requested_vel) = 0.0;
     }
 
+    /* MCHAN MC5: per-channel motion outputs (motion.N.is-moving / .current-vel).
+     * is-moving = the channel's coord TP is running OR any joint it owns is
+     * running a free/jog/homing move (so ch0 jogs/teleop count too).
+     * current-vel = the channel coord TP velocity (0 during pure jog). */
+    {
+	int ch, j;
+	for (ch = 0; ch < motion_num_channels; ch++) {
+	    TP_STRUCT *ctp = &emcmotInternal->chan[ch].coord_tp;
+	    int mv = tpIsMoving(ctp);
+	    if (!mv) {
+		for (j = 0; j < ALL_JOINTS; j++) {
+		    if (emcmotInternal->joint_owner[j] == ch
+			&& joints[j].free_tp.active) { mv = 1; break; }
+		}
+	    }
+	    *(emcmot_hal_data->mchan[ch].is_moving) = mv;
+	    *(emcmot_hal_data->mchan[ch].current_vel) = ctp->current_vel;
+	    /* MC7: per-channel run-status feedback (mirrors the global motion.*
+	     * pins but for THIS channel's coord_tp). in-position = at rest with
+	     * nothing queued. At num_channels=1, motion.0.* matches the legacy
+	     * machine view (D7). */
+	    *(emcmot_hal_data->mchan[ch].in_position) =
+		(!mv && tpQueueDepth(ctp) == 0) ? 1 : 0;
+	    *(emcmot_hal_data->mchan[ch].program_line) = tpGetExecId(ctp);
+	    *(emcmot_hal_data->mchan[ch].distance_to_go) = ctp->distance_to_go;
+	}
+    }
+
     /* These params can be used to examine any internal variable. */
     /* Change the following lines to assign the variable you want to observe
        to one of the debug parameters.  You can also comment out these lines
@@ -2198,21 +2842,21 @@ static void update_status(void)
        don't know how much is still needed, and how much is baggage.
     */
 
-    /* motion emcmotInternal->coord_tp status */
-    emcmotStatus->depth = tpQueueDepth(&emcmotInternal->coord_tp);
-    emcmotStatus->activeDepth = tpActiveDepth(&emcmotInternal->coord_tp);
-    emcmotStatus->id = tpGetExecId(&emcmotInternal->coord_tp);
+    /* motion emcmotInternal->chan[0].coord_tp status */
+    emcmotStatus->depth = tpQueueDepth(&emcmotInternal->chan[0].coord_tp);
+    emcmotStatus->activeDepth = tpActiveDepth(&emcmotInternal->chan[0].coord_tp);
+    emcmotStatus->id = tpGetExecId(&emcmotInternal->chan[0].coord_tp);
     //KLUDGE add an API call for this
-    emcmotStatus->reverse_run = emcmotInternal->coord_tp.reverse_run;
-    emcmotStatus->tag = tpGetExecTag(&emcmotInternal->coord_tp);
-    emcmotStatus->motionType = tpGetMotionType(&emcmotInternal->coord_tp);
-    emcmotStatus->queueFull = tcqFull(&emcmotInternal->coord_tp.queue);
+    emcmotStatus->reverse_run = emcmotInternal->chan[0].coord_tp.reverse_run;
+    emcmotStatus->tag = tpGetExecTag(&emcmotInternal->chan[0].coord_tp);
+    emcmotStatus->motionType = tpGetMotionType(&emcmotInternal->chan[0].coord_tp);
+    emcmotStatus->queueFull = tcqFull(&emcmotInternal->chan[0].coord_tp.queue);
 
     /* check to see if we should pause in order to implement
        single emcmotStatus->stepping */
 
     if (emcmotStatus->stepping && emcmotInternal->idForStep != emcmotStatus->id) {
-      tpPause(&emcmotInternal->coord_tp);
+      tpPause(&emcmotInternal->chan[0].coord_tp);
       emcmotStatus->stepping = 0;
       emcmotStatus->paused = 1;
     }

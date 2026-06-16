@@ -71,6 +71,16 @@ typedef enum {
 } home_sequence_state_t;
 
 static home_sequence_state_t sequence_state;
+
+/* MCHAN (per-channel homing, D-MC4): which joints the CURRENT homing
+ * session is permitted to touch. Set by motion's command handler right
+ * before each home request: a channel's Home All passes only ITS OWN
+ * joints' bits, so one global sequencer serves N channels safely.
+ * All-ones = legacy behavior (single-channel, D7). */
+static unsigned home_permit_mask = ~0u;
+void set_home_permit_mask(unsigned mask) {
+    home_permit_mask = mask ? mask : ~0u;
+}
 static int  current_sequence = 0;
 static bool homing_active;
 
@@ -125,6 +135,11 @@ typedef struct {
 } home_local_data;
 
 static  home_local_data H[EMCMOT_MAX_JOINTS];
+
+/* MCHAN: volatile-home visibility for the channel-scoped UNHOME(-2) */
+int get_home_is_volatile(int jno) {
+    return H[jno].volatile_home;
+}
 
 // data for per-joint homing-specific hal pins:
 typedef struct {
@@ -267,6 +282,7 @@ static void do_home_one_joint(int jno)
 {
     //NOTE: if H[jno].home_sequence neg, home all joints in sequence
     int jj;
+    if (!((home_permit_mask >> jno) & 1)) return;  /* MCHAN scope */
     if (H[jno].home_sequence < 0) {  //neg: home all joints in sequence
         sequence_state = HOME_SEQUENCE_DO_ONE_SEQUENCE;
         for (jj = 0; jj < all_joints; jj++) {
@@ -343,7 +359,8 @@ static void do_homing_sequence(void)
     case HOME_SEQUENCE_DO_ONE_JOINT:
         // Expect one joint with home_state==HOME_START
         for (i=0; i < all_joints; i++) {
-            if (H[i].home_state == HOME_START) {
+            if (H[i].home_state == HOME_START
+                && ((home_permit_mask >> i) & 1)) {   /* MCHAN scope */
                H[i].joint_in_sequence = 1;
                current_sequence = ABS(H[i].home_sequence);
             } else {
@@ -373,6 +390,7 @@ static void do_homing_sequence(void)
                 H[i].joint_in_sequence = 1; //disprove
                 if  (   (H[i].home_state  != HOME_START)
                      || (current_sequence != ABS(H[i].home_sequence))
+                     || !((home_permit_mask >> i) & 1)   /* MCHAN scope */
                     ) {
                     H[i].joint_in_sequence = 0;
                 }
@@ -393,6 +411,11 @@ static void do_homing_sequence(void)
                    // docs: 'If HOME_SEQUENCE is not specified then this joint
                    //        will not be homed by the HOME ALL sequence'
                    H[i].joint_in_sequence = 0;  // per docs
+                }
+                if (!((home_permit_mask >> i) & 1)) {
+                   /* MCHAN: this joint belongs to another channel's
+                    * homing scope - not this session's to touch */
+                   H[i].joint_in_sequence = 0;
                 }
             }
             sequence_is_set  = 1;
@@ -565,7 +588,15 @@ static void base_write_homing_out_pins(int njoints)
 
 static void base_do_home_joint(int jno) {
     if (jno == -1) {
-        H[0].homed = 0; // ensure at least one unhomed
+        // ensure at least one unhomed so do_home_all() has work to do.
+        // MCHAN: unhome the first joint IN THE PERMIT MASK, not always
+        // joint 0 - else a secondary channel's home-all corrupts channel
+        // 0's joint 0 (user-found cross-channel home bug).
+        int j0 = 0;
+        for (int j = 0; j < all_joints; j++) {
+            if ((home_permit_mask >> j) & 1) { j0 = j; break; }
+        }
+        H[j0].homed = 0;
         do_home_all();
     } else {
         do_home_one_joint(jno); // apply rules if home_sequence negative
@@ -1508,6 +1539,8 @@ EXPORT_SYMBOL(homing_init);
 EXPORT_SYMBOL(do_homing);
 EXPORT_SYMBOL(get_allhomed);
 EXPORT_SYMBOL(get_homed);
+EXPORT_SYMBOL(set_home_permit_mask);
+EXPORT_SYMBOL(get_home_is_volatile);
 EXPORT_SYMBOL(get_home_is_idle);
 EXPORT_SYMBOL(get_home_is_synchronized);
 EXPORT_SYMBOL(get_home_needs_unlock_first);

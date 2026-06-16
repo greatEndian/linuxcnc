@@ -478,6 +478,18 @@ void SET_XY_ROTATION(double t) {
     canon.xy_rotation = t;
 }
 
+
+/* MCHAN MC10/Phase4: waiting-M rendezvous. Queued in program order (it is a
+ * queue-buster, so prior moves drain before it executes); task records the
+ * arrival in motion and blocks until the rendezvous releases this channel. */
+void WAIT_RENDEZVOUS(int waitm_num, int waitm_mask)
+{
+    auto msg = std::make_unique<EMC_TRAJ_WAIT_RENDEZVOUS>();
+    msg->waitm_num = waitm_num;
+    msg->waitm_mask = waitm_mask;
+    interp_list.append(std::move(msg));
+}
+
 void SET_G5X_OFFSET(int index,
                     double x, double y, double z,
                     double a, double b, double c,
@@ -1116,7 +1128,16 @@ static void flush_segments(void) {
 
     linearMoveMsg->type = EMC_MOTION_TYPE_FEED;
     linearMoveMsg->indexer_jnum = -1;
-    if ((vel && acc) || canon.spindle[canon.spindle_num].synched) {
+    /* MCHAN MC8/OP9: a feed-synchronized move (G33/G76) must be sent even with
+     * vel==0 (a pure G33 has no F-word). The synced spindle is NOT necessarily
+     * canon.spindle_num (that tracks the speed spindle, still 0 on a secondary
+     * channel) - it is whichever spindle START_SPEED_FEED_SYNCH flagged. Check
+     * ANY spindle synched so a secondary channel's thread on its own spindle is
+     * not dropped. Single channel: only spindle 0 exists -> identical (D7). */
+    bool move_synched = false;
+    for (int s = 0; s < emcStatus->motion.traj.spindles; s++)
+        if (canon.spindle[s].synched) { move_synched = true; break; }
+    if ((vel && acc) || move_synched) {
         interp_list.set_line_number(line_no);
         tag_and_send(std::move(linearMoveMsg), pos.tag);
     }
@@ -1443,7 +1464,8 @@ void STRAIGHT_PROBE(int line_number,
 
 /* Machining Attributes */
 
-void SET_MOTION_CONTROL_MODE(CANON_MOTION_MODE mode, double tolerance)
+void SET_MOTION_CONTROL_MODE(CANON_MOTION_MODE mode, double tolerance,
+                             int planner_type, double scurve_peak_scale)
 {
     auto setTermCondMsg = std::make_unique<EMC_TRAJ_SET_TERM_COND>();
 
@@ -1451,6 +1473,12 @@ void SET_MOTION_CONTROL_MODE(CANON_MOTION_MODE mode, double tolerance)
 
     canon.motionMode = mode;
     canon.motionTolerance =  FROM_PROG_LEN(tolerance);
+
+    /* G64_R_PLANNER: carry the optional planner mode (from a G64 R word) on the
+     * same queued message so it is applied at this exact point in program order.
+     * Sentinels (<0) mean "unchanged" and are ignored by task. */
+    setTermCondMsg->planner_type = planner_type;
+    setTermCondMsg->scurve_peak_scale = scurve_peak_scale;
 
     switch (mode) {
     case CANON_CONTINUOUS:
@@ -1511,7 +1539,11 @@ void START_SPEED_FEED_SYNCH(int spindle, double feed_per_revolution, bool veloci
 void STOP_SPEED_FEED_SYNCH()
 {
     START_SPEED_FEED_SYNCH(0, 0, false);
-    canon.spindle[canon.spindle_num].synched = 0;
+    /* MCHAN MC8/OP9: clear the synched flag on ALL spindles - the synced
+     * spindle is not necessarily canon.spindle_num (a secondary channel threads
+     * on its own non-0 spindle). Single channel: only spindle 0 = identical. */
+    for (int s = 0; s < emcStatus->motion.traj.spindles; s++)
+        canon.spindle[s].synched = 0;
 }
 
 /* Machining Functions */

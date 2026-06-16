@@ -1,0 +1,70 @@
+component spindle_sync """Electronic-gearing follower for sub-spindle synchronization.
+
+When *enable* is set, drives a slave spindle to follow a master spindle in both
+speed and phase, so a part can be transferred between the two spindles of a lathe
+without twisting.  This is the HAL follower (option S1) of the multi-channel
+Phase-5 spindle-to-spindle sync; it needs no motion-core changes.
+
+Typical wiring: *master-pos* <= spindle.0.revs, *slave-pos* <= spindle.1.revs,
+*master-vel* <= spindle.0.speed-out; *out* drives the slave spindle's velocity
+input (select it over spindle.1.speed-out with a mux2 keyed on *enable*).  The
+output is feed-forward (ratio * master speed) plus a proportional phase
+correction, so speed is matched immediately and any phase error decays to zero.
+
+Engaging from G-code: drive *enable* (and the mux2 select) from a motion digital
+output so the sync is turned on and off in the part program, e.g.
+
+    loadrt mux2 names=spindle_sel
+    net sub-engage motion.digital-out-00 => spindle_sync.enable spindle_sel.sel
+    net sub-normal spindle.1.speed-out   => spindle_sel.in0
+    net sub-follow spindle_sync.out      => spindle_sel.in1
+    net sub-cmd    spindle_sel.out       => <slave spindle velocity input>
+
+Then M64 P0 engages the follower and M65 P0 returns the slave to its own command.
+For a known relative chuck angle, index-reference both spindles (cycle their
+index-enable) before engaging and set *phase* to the desired offset.  Wait for
+*locked* before gripping.
+""";
+
+pin in  float master_pos  "Master spindle position feedback, revolutions (e.g. spindle.0.revs)";
+pin in  float slave_pos   "Slave spindle position feedback, revolutions (e.g. spindle.1.revs)";
+pin in  float master_vel  "Master commanded velocity, used as feed-forward; same units as *out*";
+pin in  bit   enable      "Engage the follower; when false *out* is 0 and *locked* is false";
+pin in  float ratio = 1.0 "Slave : master gear ratio";
+pin in  float phase       "Commanded phase offset (ratio*master + phase - slave), revolutions";
+
+pin out float out         "Velocity command for the slave spindle drive";
+pin out float error       "Phase error = ratio*master_pos + phase - slave_pos, revolutions";
+pin out bit   locked      "True when engaged and |error| <= *lock-tolerance*";
+
+param rw float gain = 200.0          "Proportional gain, output units per revolution of error (keep gain*servo-period < 2 for stability)";
+param rw float lock_tolerance = 0.01 "Phase-lock tolerance, revolutions";
+param rw float max_vel = 0.0         "Clamp on |out| in output units (0 = no clamp). Set to the slave spindle's max speed so a large phase error cannot command a runaway speed (real spindles, and encoder-based sims, cannot follow an unbounded command).";
+
+function _;
+license "GPL";
+;;
+
+#include <rtapi_math.h>
+
+FUNCTION(_) {
+    if (enable) {
+        double e = ratio * master_pos + phase - slave_pos;
+        error  = e;
+        /* feed-forward keeps speed matched; the P term closes the phase loop
+         * (error decays ~ exp(-gain*t), so phase locks rather than drifts) */
+        double v = ratio * master_vel + gain * e;
+        /* clamp so a large phase error cannot demand a runaway speed the slave
+         * cannot physically follow (which would only grow the error) */
+        if (max_vel > 0.0) {
+            if (v >  max_vel) v =  max_vel;
+            if (v < -max_vel) v = -max_vel;
+        }
+        out    = v;
+        locked = (fabs(e) <= lock_tolerance);
+    } else {
+        error  = 0.0;
+        out    = 0.0;
+        locked = false;
+    }
+}

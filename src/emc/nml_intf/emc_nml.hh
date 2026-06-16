@@ -787,7 +787,9 @@ class EMC_TRAJ_SET_TERM_COND:public EMC_TRAJ_CMD_MSG {
     EMC_TRAJ_SET_TERM_COND()
       : EMC_TRAJ_CMD_MSG(EMC_TRAJ_SET_TERM_COND_TYPE, sizeof(EMC_TRAJ_SET_TERM_COND)),
         cond(false),
-        tolerance(0.0)
+        tolerance(0.0),
+        planner_type(-1),       /* G64_R_PLANNER: -1 = unchanged */
+        scurve_peak_scale(-1.0) /* G64_R_PLANNER: <0 = unchanged */
     {};
 
     // For internal NML/CMS use only.
@@ -798,6 +800,13 @@ class EMC_TRAJ_SET_TERM_COND:public EMC_TRAJ_CMD_MSG {
     int cond;
     double tolerance; // used to set the precision/tolerance of path deviation
 		      // during CONTINUOUS motion mode.
+    /* G64_R_PLANNER (fork extension): the optional G64 R word folds the planner
+     * request into the same control-mode message G64 already emits. -1 / <0
+     * means "not specified, leave unchanged". Applied in program order by task.
+     * planner_type carries INTENT, not an implementation: task resolves a
+     * smooth request (1) to the machine's [TRAJ]SMOOTH_PLANNER. */
+    int planner_type;        // 0 = trapezoidal, 1 = smooth (jerk-limited), -1 = unchanged
+    double scurve_peak_scale; // 0.1..1.0 cornering peak scale, <0 = unchanged
 };
 
 class EMC_TRAJ_SET_SPINDLESYNC:public EMC_TRAJ_CMD_MSG {
@@ -816,6 +825,23 @@ class EMC_TRAJ_SET_SPINDLESYNC:public EMC_TRAJ_CMD_MSG {
     int spindle;
     double feed_per_revolution;
     bool velocity_mode;
+};
+
+// MCHAN MC10/Phase4: waiting-M (M200-M229) rendezvous arrival
+class EMC_TRAJ_WAIT_RENDEZVOUS:public EMC_TRAJ_CMD_MSG {
+  public:
+    EMC_TRAJ_WAIT_RENDEZVOUS()
+      : EMC_TRAJ_CMD_MSG(EMC_TRAJ_WAIT_RENDEZVOUS_TYPE, sizeof(EMC_TRAJ_WAIT_RENDEZVOUS)),
+        waitm_num(-1),
+        waitm_mask(0)
+    {};
+
+    // Sub-class update() calls base-class update()
+    // cppcheck-suppress duplInheritedMember
+    void update(CMS * cms);
+
+    int waitm_num;	// the M-number (200-229)
+    int waitm_mask;	// participant channel bitmask (0 = all configured)
 };
 
 class EMC_TRAJ_SET_OFFSET:public EMC_TRAJ_CMD_MSG {
@@ -1016,6 +1042,10 @@ class EMC_TRAJ_STAT:public EMC_TRAJ_STAT_MSG {
     //bool spindle_override_enabled; moved to SPINDLE_STAT
     bool adaptive_feed_enabled;
     bool feed_hold_enabled;
+    // MCHAN MC10/Phase4: this channel's waiting-M state (for task poll + GUI)
+    int waitm_num;		// M-number this channel is parked at, -1 = none
+    int waitm_released;		// 1 = rendezvous matched, cleared to continue
+    int waitm_blockers;		// bitmask of channels not yet arrived
     StateTag tag;
 };
 

@@ -15,6 +15,19 @@
 #include <rtapi_mutex.h>
 
 
+/* MCHAN: command mailbox of a secondary motion channel (ch >= 1). Each
+ * channel's task stack writes commands into its own mailbox and polls its
+ * own echo, mirroring the legacy command/echo handshake exactly. Channel 0
+ * keeps using the historic command/status fields, so single-channel layout
+ * and behavior are untouched. */
+    typedef struct emcmot_chan_mailbox_t {
+	rtapi_mutex_t mutex;	/* protects `command` (task-side write lock) */
+	struct emcmot_command_t command;
+	cmd_code_t commandEcho;		/* echo of input command */
+	int commandNumEcho;		/* echo of input command number */
+	cmd_status_t commandStatus;	/* result of most recent command */
+    } emcmot_chan_mailbox_t;
+
 /* big comm structure, for upper memory */
     typedef struct emcmot_struct_t {
         rtapi_mutex_t command_mutex;  // Used to protect access to `command`.
@@ -25,6 +38,26 @@
 	struct emcmot_error_t error;	/* ring buffer for error messages */
 	struct emcmot_internal_t internal;	/* Struct used to store RT status and debug
 				   data - 2nd largest block */
+	/* MCHAN: secondary-channel command mailboxes, appended at the end so
+	 * all historic member offsets are unchanged. [0] is unused (channel 0
+	 * uses the legacy command/echo fields above). */
+	emcmot_chan_mailbox_t mchan_cmd[EMCMOT_MAX_CHANNELS];
+	/* MCHAN MC2b: per-channel status snapshots, one full status struct
+	 * per secondary channel, filled by motion at the end of every servo
+	 * cycle (global snapshot + channel-field overlay) using the same
+	 * head/tail split-read protocol as the legacy status. A secondary
+	 * stack's usrmotReadEmcmotStatus() reads its channel's block here;
+	 * channel 0 keeps the legacy `status` field above. [0] unused. */
+	struct emcmot_status_t mchan_status[EMCMOT_MAX_CHANNELS];
+	/* MCHAN MC30: per-channel ERROR rings. The single legacy ring is a
+	 * one-reader queue: with N milltasks polling it, whichever task
+	 * reads first STEALS the message - the user saw channel 1's limit
+	 * refusals popping up in channel 0's GUI. Channel-scoped errors
+	 * (reportError during that channel's command handling) now go to
+	 * the channel's own ring; machine-level errors (control loop,
+	 * RTAPI error prints) stay on the legacy ring = channel 0's
+	 * console, the machine owner's panel. [0] unused. */
+	struct emcmot_error_t mchan_error[EMCMOT_MAX_CHANNELS];
     } emcmot_struct_t;
 
 

@@ -139,6 +139,12 @@ static int emctask_shutdown(void);
 extern void backtrace(int signo);
 int _task = 1; // control preview behaviour when remapping
 static int joints = 0;
+/* MCHAN: which motion channel this task stack drives ([EMCMOT]
+ * MOTION_CHANNEL, default 0 = the historic single stack). A channel>0
+ * stack skips the inihal surface (the machine-global INI pins are channel
+ * 0's; per-channel ini pins = MC7) and suffixes its iocontrol component
+ * name. Defined in taskclass.cc (rs274/sai links that without this file). */
+extern int emc_task_motion_channel;
 uint64_t task_beat = 0;  // Task's main loop heartbeat counter
 
 // for operator display on iocontrol signalling a toolchanger fault if io.fault is set
@@ -417,6 +423,7 @@ static EMC_TASK_PLAN_SET_BLOCK_DELETE *bd_msg;
 static EMC_AUX_INPUT_WAIT *emcAuxInputWaitMsg;
 static int emcAuxInputWaitType = 0;
 static int emcAuxInputWaitIndex = -1;
+static int taskWaitmActive = 0;	/* MCHAN MC10/Phase4: blocked at a waiting-M */
 
 // commands we compose here
 static EMC_TASK_PLAN_RUN taskPlanRunCmd;	// 16-Aug-1999 FMP
@@ -820,6 +827,7 @@ static int emcTaskPlan(void)
 	    case EMC_TRAJ_CLEAR_PROBE_TRIPPED_FLAG_TYPE:
 	    case EMC_TRAJ_PROBE_TYPE:
 	    case EMC_AUX_INPUT_WAIT_TYPE:
+	    case EMC_TRAJ_WAIT_RENDEZVOUS_TYPE:
 	    case EMC_MOTION_SET_DOUT_TYPE:
 	    case EMC_MOTION_ADAPTIVE_TYPE:
 	    case EMC_MOTION_SET_AOUT_TYPE:
@@ -947,6 +955,7 @@ static int emcTaskPlan(void)
 	    case EMC_TRAJ_CLEAR_PROBE_TRIPPED_FLAG_TYPE:
 	    case EMC_TRAJ_PROBE_TYPE:
 	    case EMC_AUX_INPUT_WAIT_TYPE:
+	    case EMC_TRAJ_WAIT_RENDEZVOUS_TYPE:
 	    case EMC_MOTION_SET_DOUT_TYPE:
 	    case EMC_MOTION_SET_AOUT_TYPE:
 	    case EMC_MOTION_ADAPTIVE_TYPE:
@@ -1070,6 +1079,7 @@ static int emcTaskPlan(void)
 		case EMC_TRAJ_CLEAR_PROBE_TRIPPED_FLAG_TYPE:
 		case EMC_TRAJ_PROBE_TYPE:
 		case EMC_AUX_INPUT_WAIT_TYPE:
+		case EMC_TRAJ_WAIT_RENDEZVOUS_TYPE:
 		case EMC_TRAJ_RIGID_TAP_TYPE:
 		case EMC_SET_DEBUG_TYPE:
 		    retval = emcTaskIssueCommand(emcCommand);
@@ -1165,6 +1175,7 @@ static int emcTaskPlan(void)
 		case EMC_TRAJ_CLEAR_PROBE_TRIPPED_FLAG_TYPE:
 		case EMC_TRAJ_PROBE_TYPE:
 		case EMC_AUX_INPUT_WAIT_TYPE:
+		case EMC_TRAJ_WAIT_RENDEZVOUS_TYPE:
 		case EMC_TRAJ_RIGID_TAP_TYPE:
 		case EMC_SET_DEBUG_TYPE:
                 case EMC_COOLANT_MIST_ON_TYPE:
@@ -1246,6 +1257,7 @@ static int emcTaskPlan(void)
 		case EMC_TRAJ_CLEAR_PROBE_TRIPPED_FLAG_TYPE:
 		case EMC_TRAJ_PROBE_TYPE:
 		case EMC_AUX_INPUT_WAIT_TYPE:
+		case EMC_TRAJ_WAIT_RENDEZVOUS_TYPE:
 		case EMC_TRAJ_RIGID_TAP_TYPE:
 		case EMC_SET_DEBUG_TYPE:
 		    retval = emcTaskIssueCommand(emcCommand);
@@ -1318,6 +1330,7 @@ static int emcTaskPlan(void)
 		case EMC_TRAJ_CLEAR_PROBE_TRIPPED_FLAG_TYPE:
 		case EMC_TRAJ_PROBE_TYPE:
 		case EMC_AUX_INPUT_WAIT_TYPE:
+		case EMC_TRAJ_WAIT_RENDEZVOUS_TYPE:
 	        case EMC_TRAJ_RIGID_TAP_TYPE:
 		case EMC_SET_DEBUG_TYPE:
                 case EMC_COOLANT_MIST_ON_TYPE:
@@ -1408,6 +1421,7 @@ static int emcTaskPlan(void)
 	    case EMC_TRAJ_CLEAR_PROBE_TRIPPED_FLAG_TYPE:
 	    case EMC_TRAJ_PROBE_TYPE:
 	    case EMC_AUX_INPUT_WAIT_TYPE:
+	    case EMC_TRAJ_WAIT_RENDEZVOUS_TYPE:
 	    case EMC_MOTION_SET_DOUT_TYPE:
 	    case EMC_MOTION_SET_AOUT_TYPE:
 	    case EMC_MOTION_ADAPTIVE_TYPE:
@@ -1514,6 +1528,7 @@ static EMC_TASK_EXEC emcTaskCheckPreconditions(NMLmsg * cmd)
     case EMC_TRAJ_RIGID_TAP_TYPE: //and this
     case EMC_TRAJ_CLEAR_PROBE_TRIPPED_FLAG_TYPE:	// and this
     case EMC_AUX_INPUT_WAIT_TYPE:
+    case EMC_TRAJ_WAIT_RENDEZVOUS_TYPE:
     case EMC_SPINDLE_WAIT_ORIENT_COMPLETE_TYPE:
 	return EMC_TASK_EXEC::WAITING_FOR_MOTION_AND_IO;
 	break;
@@ -1862,6 +1877,27 @@ static int emcTaskIssueCommand(NMLmsg * cmd)
     case EMC_TRAJ_SET_TERM_COND_TYPE:
 	emcTrajSetTermCondMsg = reinterpret_cast<EMC_TRAJ_SET_TERM_COND *>(cmd);
 	retval = emcTrajSetTermCond(emcTrajSetTermCondMsg->cond, emcTrajSetTermCondMsg->tolerance);
+	/* G64_R_PLANNER: a G64 R word piggybacks the planner request here so it
+	 * is applied in program order. Sentinels (<0) mean "leave unchanged".
+	 * The message carries INTENT only: 0 = trapezoidal, >=1 = "the smooth
+	 * (jerk-limited) planner". Which smooth planner that is comes from
+	 * [TRAJ]SMOOTH_PLANNER, so part programs never name an implementation
+	 * and stay valid when the machine's planner changes. The motion side
+	 * applies the switch via the defer-until-idle guard. */
+	if (retval == 0 && emcTrajSetTermCondMsg->planner_type >= 0) {
+	    if (emcTrajSetTermCondMsg->planner_type == 0) {
+	        emcTrajPlannerType(0);
+	    } else {
+	        int smooth = emcTrajGetSmoothPlanner();
+	        if (smooth < 1) {
+	            emcOperatorError(_("G64 R>0: no smooth planner available on this machine - set [TRAJ]MAX_LINEAR_JERK / [TRAJ]SMOOTH_PLANNER"));
+	        } else {
+	            emcTrajPlannerType(smooth);
+	        }
+	    }
+	}
+	if (retval == 0 && emcTrajSetTermCondMsg->scurve_peak_scale >= 0.0)
+	    emcTrajSetScurvePeakScale(emcTrajSetTermCondMsg->scurve_peak_scale);
 	break;
 
     case EMC_TRAJ_SET_SPINDLESYNC_TYPE:
@@ -1920,6 +1956,21 @@ static int emcTaskIssueCommand(NMLmsg * cmd)
 	    taskExecDelayTimeout = etime() + emcAuxInputWaitMsg->timeout;
 	}
 	break;
+
+    case EMC_TRAJ_WAIT_RENDEZVOUS_TYPE: {
+	// MCHAN MC10/Phase4: register this channel's arrival at a waiting-M.
+	// Prior motion has drained (queue-buster + WAITING_FOR_MOTION
+	// precondition), so the channel is in-position. The motion-side engine
+	// matches participants and releases; we poll traj.waitm_released in the
+	// WAITING_FOR_DELAY exec state. The deadlock timeout (error+hold) is
+	// motion-side, so there is no task-side timeout here.
+	EMC_TRAJ_WAIT_RENDEZVOUS *wm = reinterpret_cast<EMC_TRAJ_WAIT_RENDEZVOUS *>(cmd);
+	retval = emcWaitRendezvous(wm->waitm_num, wm->waitm_mask);
+	taskWaitmActive = 1;
+	emcAuxInputWaitIndex = -1;
+	taskExecDelayTimeout = 0.0;
+	break;
+    }
 
     case EMC_SPINDLE_WAIT_ORIENT_COMPLETE_TYPE:
 	wait_spindle_orient_complete_msg = reinterpret_cast<EMC_SPINDLE_WAIT_ORIENT_COMPLETE *>(cmd);
@@ -2078,6 +2129,10 @@ static int emcTaskIssueCommand(NMLmsg * cmd)
     case EMC_TASK_ABORT_TYPE:
 	// abort everything
 	emcTaskAbort();
+	// MCHAN MC10/Phase4: drop any pending waiting-M so a partner does not
+	// phantom-match this channel's stale arrival (motion also clears on
+	// estop; this covers operator/program abort without estop).
+	if (taskWaitmActive) { taskWaitmActive = 0; emcCancelRendezvous(); }
 	// KLUDGE call motion abort before state restore to make absolutely sure no
 	// stray restore commands make it down to motion
 	emcMotionAbort();
@@ -2508,6 +2563,7 @@ static EMC_TASK_EXEC emcTaskCheckPostconditions(NMLmsg * cmd)
 
     case EMC_TRAJ_DELAY_TYPE:
     case EMC_AUX_INPUT_WAIT_TYPE:
+    case EMC_TRAJ_WAIT_RENDEZVOUS_TYPE:	// MCHAN MC10/Phase4
 	return EMC_TASK_EXEC::WAITING_FOR_DELAY;
 	break;
 
@@ -2739,6 +2795,18 @@ static int emcTaskExecute(void)
 
     case EMC_TASK_EXEC::WAITING_FOR_DELAY:
 	STEPPING_CHECK();
+	// MCHAN MC10/Phase4: waiting-M rendezvous - block until motion releases
+	// this channel. The deadlock timeout (error+hold) is motion-side, so we
+	// just wait; an operator abort clears taskWaitmActive (see abort path).
+	if (taskWaitmActive) {
+	    if (emcStatus->motion.traj.waitm_released) {
+		taskWaitmActive = 0;
+		emcCancelRendezvous();   // clear our arrival -> clean re-arm
+		emcStatus->task.execState = EMC_TASK_EXEC::DONE;
+		emcTaskEager = 1;
+	    }
+	    break;
+	}
 	// check if delay has passed
 	emcStatus->task.delayLeft = taskExecDelayTimeout - etime();
 	if (etime() >= taskExecDelayTimeout) {
@@ -2984,7 +3052,10 @@ static int emctask_startup()
         return -1;
     }
 
-    if (ini_hal_init(joints)) {
+    /* MCHAN: inihal (ini.* pins) is the MACHINE's INI surface = channel
+     * 0's; a second instance would collide on pin names. Per-channel ini
+     * pins are MC7 work. */
+    if (emc_task_motion_channel == 0 && ini_hal_init(joints)) {
         rcs_print_error("%s: ini_hal_init failed\n", __PRETTY_FUNCTION__);
         return -1;
     }
@@ -3009,7 +3080,7 @@ static int emctask_startup()
 	return -1;
     }
 
-	if (ini_hal_init_pins(joints)) {
+	if (emc_task_motion_channel == 0 && ini_hal_init_pins(joints)) {
         rcs_print_error("%s: ini_hal_init_pins failed\n", __PRETTY_FUNCTION__);
         return -1;
     }
@@ -3104,6 +3175,10 @@ static int iniLoad(const char *filename)
 
     // FIXME: range limit [KINS]JOINTS
     joints = inifile.findSIntV("JOINTS", "KINS", 0);
+
+    /* MCHAN: this stack's motion channel (0 = legacy default) */
+    emc_task_motion_channel = inifile.findSIntV("MOTION_CHANNEL", "EMCMOT", 0);
+    if (emc_task_motion_channel < 0) emc_task_motion_channel = 0;
 
     // EMC debugging flags
     emc_debug = inifile.findUIntV("DEBUG", "EMC", 0);
@@ -3298,7 +3373,8 @@ int main(int argc, char *argv[])
         static int prev_traj_enabled = 0;
         task_beat++;  // Task's heartbeat
 
-        check_ini_hal_items(emcStatus->motion.traj.joints);
+        if (emc_task_motion_channel == 0)
+            check_ini_hal_items(emcStatus->motion.traj.joints);
 	// read command
 	if (0 != emcCommandBuffer->read()) {
 	    // got a new command, so clear out errors

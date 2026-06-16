@@ -62,11 +62,26 @@ emcmot_config_t *emcmotConfig;
 emcmot_command_t *emcmotCommand;
 emcmot_hal_data_t *emcmot_hal_data;
 
+/* MCHAN MC8: motmod tells tpmod the channel count at init (via tpSetNumChannels,
+ * below) so the spindle at-speed wait can be per-channel in multichannel
+ * without growing emcmotStruct. Defaults to 1 = stock all-spindles wait (D7). */
+static int tp_num_channels = 1;
+
+/* MCHAN MC21: planner type is PER TP (tp->planner_type), not global, so one
+ * channel's G64 R cannot flip another channel's planner. Helpers deep in the
+ * call tree (e.g. tcUpdateDistFromAccel) have no tp pointer, so the public
+ * entry points (tpRunCycle / tpAddLine / tpAddCircle / tpAddRigidTap) latch
+ * the active TP's type here. The servo thread services TPs strictly
+ * sequentially (same single-threaded-context pattern as the per-channel
+ * command mailboxes), so a module static is race-free. */
+static int tp_active_planner_type = 0;
+/* defined in sp_scurve.c (its reader; also linked standalone by motion-logger);
+ * 0.0 -> faithful 0.5 fallback */
+extern double tp_active_scurve_peak_scale;
+#define TP_LATCH_PLANNER(tp) (tp_active_planner_type = (tp)->planner_type, \
+                              tp_active_scurve_peak_scale = (tp)->scurve_peak_scale)
 #ifndef GET_TRAJ_PLANNER_TYPE
-#define GET_TRAJ_PLANNER_TYPE() (emcmotStatus->planner_type)
-
-#define SET_TRAK_PLANNER_TYPE(tp) (emcmotStatus->planner_type = tp)
-
+#define GET_TRAJ_PLANNER_TYPE() (tp_active_planner_type)
 #endif
 
 #define GET_TRAJ_HOME_USE_TP() (emcmotStatus->home_use_tp)
@@ -195,26 +210,26 @@ STATIC double tpGetTangentKinkRatio(void) {
     return fmax(fmin(emcmotConfig->arcBlendTangentKinkRatio,max_ratio),min_ratio);
 }
 
-STATIC int tpGetMachineAccelBounds(PmCartesian  * const acc_bound) {
+/* MCHAN MC24: bounds are PER CHANNEL now (tp->xyz_*_bound, maintained by the
+ * SET_AXIS_VEL/ACC_LIMIT handlers; ch0's values track the legacy axis module
+ * exactly). The _axis_get_* function pointers remain registered for ABI
+ * stability but are no longer consulted here. */
+STATIC int tpGetMachineAccelBounds(TP_STRUCT const * const tp, PmCartesian  * const acc_bound) {
     if (!acc_bound) {
         return TP_ERR_FAIL;
     }
 
-    acc_bound->x = _axis_get_acc_limit(0); //0==>x
-    acc_bound->y = _axis_get_acc_limit(1); //1==>y
-    acc_bound->z = _axis_get_acc_limit(2); //2==>z
+    *acc_bound = tp->xyz_acc_bound;
     return TP_ERR_OK;
 }
 
 
-STATIC int tpGetMachineVelBounds(PmCartesian  * const vel_bound) {
+STATIC int tpGetMachineVelBounds(TP_STRUCT const * const tp, PmCartesian  * const vel_bound) {
     if (!vel_bound) {
         return TP_ERR_FAIL;
     }
 
-    vel_bound->x = _axis_get_vel_limit(0); //0==>x
-    vel_bound->y = _axis_get_vel_limit(1); //1==>y
-    vel_bound->z = _axis_get_vel_limit(2); //2==>z
+    *vel_bound = tp->xyz_vel_bound;
     return TP_ERR_OK;
 }
 
@@ -262,9 +277,9 @@ STATIC double tpGetFeedScale(TP_STRUCT const * const tp,
         return 1.0;
     } else if (tc->is_blending) {
         //KLUDGE: Don't allow feed override to keep blending from overruning max velocity
-        return fmin(emcmotStatus->net_feed_scale, 1.0);
+        return fmin(tp->net_feed_scale, 1.0);    /* MCHAN MC22: per-channel */
     } else {
-        return emcmotStatus->net_feed_scale;
+        return tp->net_feed_scale;               /* MCHAN MC22: per-channel */
     }
 }
 
@@ -375,7 +390,15 @@ STATIC inline double tpGetSignedSpindlePosition(spindle_status_t *status) {
 
 /* space for trajectory planner queues, plus 10 more for safety */
 /*! \todo FIXME-- default is used; dynamic is not honored */
-	TC_STRUCT queueTcSpace[DEFAULT_TC_QUEUE_SIZE + 10];
+/* MCHAN ROOT-CAUSE FIX (found at phase-2 bring-up, first time TWO queues
+ * were populated SIMULTANEOUSLY): this used to be ONE array handed to
+ * EVERY tpCreate caller - all channel TPs shared the same segment storage
+ * and overwrote each other's queued moves (single-channel use never
+ * noticed; the old single-TP code was correct by accident). Now one slice
+ * per planner, handed out in tpCreate order: motion creates chan[0]'s TP
+ * first, so slice 0 keeps the historic address = D7 bit-identical. */
+	TC_STRUCT queueTcSpace[EMCMOT_MAX_CHANNELS][DEFAULT_TC_QUEUE_SIZE + 10];
+	static int queueTcSlot = 0;
 
 /**
  * Create the trajectory planner structure with an empty queue.
@@ -428,7 +451,15 @@ int tpCreate(TP_STRUCT * const tp, int _queueSize,int id)
     } else {
         tp->queueSize = _queueSize;
     }
-    TC_STRUCT * const tcSpace = queueTcSpace;
+    /* MCHAN: every planner gets its OWN segment storage (see queueTcSpace
+     * above). Refuse loudly if more planners than slices are requested. */
+    if (queueTcSlot >= EMCMOT_MAX_CHANNELS) {
+        rtapi_print_msg(RTAPI_MSG_ERR,
+            "tpCreate: out of TC queue storage slices (%d planners max)\n",
+            EMCMOT_MAX_CHANNELS);
+        return TP_ERR_FAIL;
+    }
+    TC_STRUCT * const tcSpace = queueTcSpace[queueTcSlot++];
 
     /* create the queue */
     if (-1 == tcqCreate(&tp->queue, tp->queueSize, tcSpace)) {
@@ -493,13 +524,20 @@ int tpClear(TP_STRUCT * const tp)
     tp->reverse_run = 0;
     tp->synchronized = 0;
     tp->uu_per_rev = 0.0;
-    emcmotStatus->current_vel = 0.0;
-    emcmotStatus->requested_vel = 0.0;
-    emcmotStatus->distance_to_go = 0.0;
-    ZERO_EMC_POSE(emcmotStatus->dtg);
+    tp->current_vel = 0.0;
+    tp->requested_vel = 0.0;
+    tp->distance_to_go = 0.0;
+    ZERO_EMC_POSE(tp->dtg);
+    tp->spindleSync = 0;
+    if (tp->status_owner) {    /* MCHAN MC19: ch0 mirrors the legacy view */
+        emcmotStatus->current_vel = 0.0;
+        emcmotStatus->requested_vel = 0.0;
+        emcmotStatus->distance_to_go = 0.0;
+        ZERO_EMC_POSE(emcmotStatus->dtg);
 
-    // equivalent to: SET_MOTION_INPOS_FLAG(1):
-    emcmotStatus->motionFlag |= EMCMOT_MOTION_INPOS_BIT;
+        // equivalent to: SET_MOTION_INPOS_FLAG(1):
+        emcmotStatus->motionFlag |= EMCMOT_MOTION_INPOS_BIT;
+    }
 
     return tpClearDIOs(tp);
 }
@@ -512,6 +550,17 @@ int tpClear(TP_STRUCT * const tp)
 int tpInit(TP_STRUCT * const tp)
 {
     tp->cycleTime = 0.0;
+    tp->planner_type = 0;   /* MCHAN MC21: trapezoidal until commanded (matches
+                               legacy startup; [TRAJ]PLANNER_TYPE arrives per
+                               channel via EMCMOT_SET_PLANNER_TYPE) */
+    /* MCHAN MC22: per-channel override state - defaults identical to the
+     * legacy emcmotStatus init in motion.c (init_comm_buffers) */
+    tp->feed_scale = 1.0;
+    tp->rapid_scale = 1.0;
+    tp->net_feed_scale = 1.0;
+    tp->enables_new = FS_ENABLED | SS_ENABLED | FH_ENABLED;
+    tp->enables_queued = tp->enables_new;
+    tp->scurve_peak_scale = 0.0;    /* unset -> sp_scurve faithful default */
     //Velocity limits
     tp->vLimit = 0.0;
     tp->ini_maxvel = 0.0;
@@ -524,7 +573,7 @@ int tpInit(TP_STRUCT * const tp)
        rtapi_print("!!!tpInit: NULL emcmotStatus, bye\n\n");
        return -1;
     }
-    tpGetMachineAccelBounds(&acc_bound);
+    tpGetMachineAccelBounds(tp, &acc_bound);
     tpGetMachineActiveLimit(&tp->aMax, &acc_bound);
     //Angular limits
     tp->wMax = 0.0;
@@ -542,7 +591,7 @@ int tpInit(TP_STRUCT * const tp)
     ZERO_EMC_POSE(tp->currentPos);
 
     PmCartesian vel_bound;
-    tpGetMachineVelBounds(&vel_bound);
+    tpGetMachineVelBounds(tp, &vel_bound);
     tpGetMachineActiveLimit(&tp->vMax, &vel_bound);
 
     return tpClear(tp);
@@ -1019,8 +1068,8 @@ tp_err_t tpCreateLineArcBlend(TP_STRUCT * const tp, TC_STRUCT * const prev_tc, T
     PmCartesian acc_bound, vel_bound;
 
     //Get machine limits
-    tpGetMachineAccelBounds(&acc_bound);
-    tpGetMachineVelBounds(&vel_bound);
+    tpGetMachineAccelBounds(tp, &acc_bound);
+    tpGetMachineVelBounds(tp, &vel_bound);
 
     //Populate blend geometry struct
     BlendGeom3 geom;
@@ -1178,8 +1227,8 @@ tp_err_t tpCreateArcLineBlend(TP_STRUCT * const tp, TC_STRUCT * const prev_tc, T
     PmCartesian acc_bound, vel_bound;
 
     //Get machine limits
-    tpGetMachineAccelBounds(&acc_bound);
-    tpGetMachineVelBounds(&vel_bound);
+    tpGetMachineAccelBounds(tp, &acc_bound);
+    tpGetMachineVelBounds(tp, &vel_bound);
 
     //Populate blend geometry struct
     BlendGeom3 geom;
@@ -1329,8 +1378,8 @@ tp_err_t tpCreateArcArcBlend(TP_STRUCT * const tp, TC_STRUCT * const prev_tc, TC
     PmCartesian acc_bound, vel_bound;
 
     //Get machine limits
-    tpGetMachineAccelBounds(&acc_bound);
-    tpGetMachineVelBounds(&vel_bound);
+    tpGetMachineAccelBounds(tp, &acc_bound);
+    tpGetMachineVelBounds(tp, &vel_bound);
 
     //Populate blend geometry struct
     BlendGeom3 geom;
@@ -1491,8 +1540,8 @@ tp_err_t tpCreateLineLineBlend(TP_STRUCT * const tp, TC_STRUCT * const prev_tc,
     PmCartesian acc_bound, vel_bound;
 
     //Get machine limits
-    tpGetMachineAccelBounds(&acc_bound);
-    tpGetMachineVelBounds(&vel_bound);
+    tpGetMachineAccelBounds(tp, &acc_bound);
+    tpGetMachineVelBounds(tp, &vel_bound);
 
     // Setup blend data structures
     BlendGeom3 geom;
@@ -1642,6 +1691,7 @@ int tpAddRigidTap(TP_STRUCT * const tp,
         double scale,
         struct state_tag_t tag) {
 
+    TP_LATCH_PLANNER(tp);   /* MCHAN MC21 */
     if (tpErrorCheck(tp)) {
         return TP_ERR_FAIL;
     }
@@ -2007,7 +2057,7 @@ STATIC int tpSetupTangent(TP_STRUCT const * const tp,
 
     //TODO store this in TP struct instead?
     PmCartesian acc_bound;
-    tpGetMachineAccelBounds(&acc_bound);
+    tpGetMachineAccelBounds(tp, &acc_bound);
 
     PmCartesian acc_scale;
     findAccelScale(&acc_diff,&acc_bound,&acc_scale);
@@ -2152,6 +2202,7 @@ int tpAddLine(TP_STRUCT * const tp, EmcPose end, int canon_motion_type,
             double vel, double ini_maxvel, double acc, double ini_maxjerk, unsigned char enables,
             char atspeed, int indexer_jnum, struct state_tag_t tag)
 {
+    TP_LATCH_PLANNER(tp);   /* MCHAN MC21 */
     if (tpErrorCheck(tp) < 0) {
         return TP_ERR_FAIL;
     }
@@ -2236,6 +2287,7 @@ int tpAddCircle(TP_STRUCT * const tp,
         char atspeed,
         struct state_tag_t tag)
 {
+    TP_LATCH_PLANNER(tp);   /* MCHAN MC21 */
     if (tpErrorCheck(tp)<0) {
         return TP_ERR_FAIL;
     }
@@ -2809,7 +2861,18 @@ int tpCalculateSCurveAccel(TP_STRUCT const * const tp, TC_STRUCT * const tc, TC_
     double maxjerk = fmin(tc->maxjerk, emcmotStatus->jerk);
     if(maxjerk <= 1){
         maxjerk = 1;
-        rtapi_print_msg(RTAPI_MSG_ERR, "ERROR!!! maxjerk Is less than 1\n");
+        /* This fires EVERY CYCLE for segments with no usable jerk limit (e.g. a
+         * rotary-only move when [AXIS_A/B/C]MAX_JERK is unset, found via G43.4
+         * TCP testing on a stock sim). The fallback below is graceful
+         * (trapezoidal for the segment), so warn ONCE instead of storming the
+         * log at servo rate. */
+        static int scurve_jerk_warned = 0;
+        if (!scurve_jerk_warned) {
+            scurve_jerk_warned = 1;
+            rtapi_print_msg(RTAPI_MSG_ERR,
+                "S-curve: segment max jerk < 1 (unset [AXIS_*]MAX_JERK or [TRAJ]MAX_LINEAR_JERK?) - "
+                "trapezoidal fallback used for such segments (reported once)\n");
+        }
         return TP_SCURVE_ACCEL_ERROR;
     }
 
@@ -2835,7 +2898,7 @@ int tpCalculateSCurveAccel(TP_STRUCT const * const tp, TC_STRUCT * const tc, TC_
 
     // Check if feed_override = 0 (not pause/abort, but velocity limited to 0)
     bool use_velocity_control = (is_pausing || is_aborting ||
-                                   emcmotStatus->net_feed_scale <= TP_VEL_EPSILON);
+                                   tp->net_feed_scale <= TP_VEL_EPSILON);
     // Normal operation parameters
     double effective_max_vel = tc_target_vel;
     double effective_target_vel = tc_finalvel;
@@ -2844,8 +2907,8 @@ int tpCalculateSCurveAccel(TP_STRUCT const * const tp, TC_STRUCT * const tc, TC_
 
     // Check if planner needs to be created or replanned
     if (!tc->ruckig_planner) {
-        // Create Ruckig planner
-        tc->ruckig_planner = ruckig_create(tc->cycle_time);
+        // Borrow a Ruckig planner from the preallocated pool (no RT-cycle alloc)
+        tc->ruckig_planner = ruckig_pool_acquire(tc->cycle_time);
         if (!tc->ruckig_planner) {
             rtapi_print_msg(RTAPI_MSG_ERR, "tpCalculateSCurveAccel: failed to create Ruckig planner\n");
             return TP_SCURVE_ACCEL_ERROR;
@@ -2920,7 +2983,7 @@ int tpCalculateSCurveAccel(TP_STRUCT const * const tp, TC_STRUCT * const tc, TC_
                 tc->ruckig_last_target_pos = 0.0;
                 tc->ruckig_last_use_velocity_control = 1;
                 tc->ruckig_last_req_pos = 0.0;
-                tc->ruckig_last_feed_override = emcmotStatus->net_feed_scale;
+                tc->ruckig_last_feed_override = tp->net_feed_scale;
             }
         }
     } else {
@@ -2983,7 +3046,7 @@ int tpCalculateSCurveAccel(TP_STRUCT const * const tp, TC_STRUCT * const tc, TC_
                         "  cvel: %.6f, tvel: %.6f\n"
                         "  cacc: %.6f\n"
                         "  maxa: %.6f, maxj: %.6f\n",
-                        emcmotStatus->net_feed_scale,
+                        tp->net_feed_scale,
                         effective_max_vel,
                         replan_pos, target_pos, dx,
                         replan_vel, effective_target_vel,
@@ -3003,7 +3066,7 @@ int tpCalculateSCurveAccel(TP_STRUCT const * const tp, TC_STRUCT * const tc, TC_
                 tc->ruckig_last_target_pos = target_pos;
                 tc->ruckig_last_use_velocity_control = 0;
                 tc->ruckig_last_req_pos = 0.0;
-                tc->ruckig_last_feed_override = emcmotStatus->net_feed_scale;
+                tc->ruckig_last_feed_override = tp->net_feed_scale;
             }
         } else {
             rtapi_print_msg(RTAPI_MSG_DBG, "tpCalculateSCurveAccel: no replan needed, using existing trajectory\n");
@@ -3187,20 +3250,33 @@ STATIC int tpUpdateMovementStatus(TP_STRUCT * const tp, TC_STRUCT const * const 
 
     if (!tc) {
         // Assume that we have no active segment, so we should clear out the status fields
-        emcmotStatus->distance_to_go = 0;
-        emcmotStatus->enables_queued = emcmotStatus->enables_new;
-        emcmotStatus->requested_vel = 0;
-        emcmotStatus->current_vel = 0;
-        emcmotStatus->spindleSync = 0;
+        /* MCHAN MC19: per-channel status; owner mirrors the legacy view */
+        tp->distance_to_go = 0;
+        tp->enables_queued = tp->enables_new;    /* MCHAN MC22: per-channel */
+        tp->requested_vel = 0;
+        tp->current_vel = 0;
+        tp->spindleSync = 0;
+        tp->current_acc = 0;
+        tp->current_jerk = 0;
+        tp->current_dir.x = 0;
+        tp->current_dir.y = 0;
+        tp->current_dir.z = 0;
+        emcPoseZero(&tp->dtg);
+        if (tp->status_owner) {
+            emcmotStatus->distance_to_go = 0;
+            emcmotStatus->requested_vel = 0;
+            emcmotStatus->current_vel = 0;
+            emcmotStatus->spindleSync = 0;
 
-        // Clear S-curve motion state
-        emcmotStatus->current_acc = 0;
-        emcmotStatus->current_jerk = 0;
-        emcmotStatus->current_dir.x = 0;
-        emcmotStatus->current_dir.y = 0;
-        emcmotStatus->current_dir.z = 0;
+            // Clear S-curve motion state
+            emcmotStatus->current_acc = 0;
+            emcmotStatus->current_jerk = 0;
+            emcmotStatus->current_dir.x = 0;
+            emcmotStatus->current_dir.y = 0;
+            emcmotStatus->current_dir.z = 0;
 
-        emcPoseZero(&emcmotStatus->dtg);
+            emcPoseZero(&emcmotStatus->dtg);
+        }
 
         tp->motionType = 0;
         tp->activeDepth = 0;
@@ -3214,29 +3290,38 @@ STATIC int tpUpdateMovementStatus(TP_STRUCT * const tp, TC_STRUCT const * const 
             tc->id, tc->canon_motion_type, tc->motion_type);
     tp->motionType = tc->canon_motion_type;
     tp->activeDepth = tc->active_depth;
-    emcmotStatus->distance_to_go = tc->target - tc->progress;
-    emcmotStatus->enables_queued = tc->enables;
+    tp->distance_to_go = tc->target - tc->progress;    /* MCHAN MC19 */
+    tp->enables_queued = tc->enables;            /* MCHAN MC22: per-channel */
     // report our line number to the guis
     tp->execId = tc->id;
-    emcmotStatus->requested_vel = tc->reqvel;
-    emcmotStatus->current_vel = tc->currentvel;
+    tp->requested_vel = tc->reqvel;
+    tp->current_vel = tc->currentvel;
 
     // Output accurate S-curve motion state (for accurate jerk calculation)
-    emcmotStatus->current_acc = tc->currentacc;
-    emcmotStatus->current_jerk = tc->currentjerk;
+    tp->current_acc = tc->currentacc;                  /* MCHAN MC19 */
+    tp->current_jerk = tc->currentjerk;
 
     // Get current motion direction unit vector (precise tangent at current progress)
     PmCartesian dir;
     if (tcGetCurrentTangentUnitVector(tc, &dir) == 0) {
-        emcmotStatus->current_dir = dir;
+        tp->current_dir = dir;
     } else {
         // If direction unavailable, use zero vector
-        emcmotStatus->current_dir.x = 0;
-        emcmotStatus->current_dir.y = 0;
-        emcmotStatus->current_dir.z = 0;
+        tp->current_dir.x = 0;
+        tp->current_dir.y = 0;
+        tp->current_dir.z = 0;
     }
 
-    emcPoseSub(&tc_pos, &tp->currentPos, &emcmotStatus->dtg);
+    emcPoseSub(&tc_pos, &tp->currentPos, &tp->dtg);
+    if (tp->status_owner) {    /* MCHAN MC19: ch0 mirrors the legacy view */
+        emcmotStatus->distance_to_go = tp->distance_to_go;
+        emcmotStatus->requested_vel = tp->requested_vel;
+        emcmotStatus->current_vel = tp->current_vel;
+        emcmotStatus->current_acc = tp->current_acc;
+        emcmotStatus->current_jerk = tp->current_jerk;
+        emcmotStatus->current_dir = tp->current_dir;
+        emcmotStatus->dtg = tp->dtg;
+    }
     return TP_ERR_OK;
 }
 
@@ -3437,10 +3522,20 @@ STATIC tp_err_t tpCheckAtSpeed(TP_STRUCT * const tp, TC_STRUCT * const tc)
     }
 
     if (MOTION_ID_VALID(tp->spindle.waiting_for_atspeed)) {
-        for (s = 0; s < emcmotConfig->numSpindles; s++){
-            if(!emcmotStatus->spindle_status[s].at_speed) {
-                // spindle is still not at the right speed, so wait another cycle
+        /* MCHAN MC8: in multichannel, wait only for the spindle THIS
+         * channel's move uses (tp->spindle.spindle_num) - otherwise one
+         * channel's threading/at-speed move blocks on another channel's
+         * independent spindle that is not at speed. Single channel keeps the
+         * stock all-spindles wait (D7). */
+        if (tp_num_channels > 1) {
+            if (!emcmotStatus->spindle_status[tp->spindle.spindle_num].at_speed)
                 return TP_ERR_WAITING;
+        } else {
+            for (s = 0; s < emcmotConfig->numSpindles; s++){
+                if(!emcmotStatus->spindle_status[s].at_speed) {
+                    // spindle is still not at the right speed, so wait another cycle
+                    return TP_ERR_WAITING;
+                }
             }
         }
         // not waiting any more
@@ -3454,7 +3549,8 @@ STATIC tp_err_t tpCheckAtSpeed(TP_STRUCT * const tp, TC_STRUCT * const tc)
         } else {
             rtapi_print_msg(RTAPI_MSG_DBG, "Index seen on spindle %d\n", tp->spindle.spindle_num);
             /* passed index, start the move */
-            emcmotStatus->spindleSync = 1;
+            tp->spindleSync = 1;    /* MCHAN MC19: per-channel sync state */
+            if (tp->status_owner) emcmotStatus->spindleSync = 1;
             tp->spindle.waiting_for_index = MOTION_INVALID_ID;
             tc->sync_accel = 1;
             tp->spindle.revs = 0;
@@ -3509,14 +3605,22 @@ STATIC tp_err_t tpActivateSegment(TP_STRUCT * const tp, TC_STRUCT * const tc) {
 
     // Do at speed checks that only happen once
     int needs_atspeed = tc->atspeed ||
-        (tc->synchronized == TC_SYNC_POSITION && !(emcmotStatus->spindleSync));
+        (tc->synchronized == TC_SYNC_POSITION && !(tp->spindleSync));    /* MC19 */
 
     if (needs_atspeed){
-        int s;
-        for (s = 0; s < emcmotConfig->numSpindles; s++){
-            if (!emcmotStatus->spindle_status[s].at_speed) {
+        /* MCHAN MC8: see above - per-channel spindle wait in multichannel. */
+        if (tp_num_channels > 1) {
+            if (!emcmotStatus->spindle_status[tp->spindle.spindle_num].at_speed) {
                 tp->spindle.waiting_for_atspeed = tc->id;
                 return TP_ERR_WAITING;
+            }
+        } else {
+            int s;
+            for (s = 0; s < emcmotConfig->numSpindles; s++){
+                if (!emcmotStatus->spindle_status[s].at_speed) {
+                    tp->spindle.waiting_for_atspeed = tc->id;
+                    return TP_ERR_WAITING;
+                }
             }
         }
     }
@@ -3545,7 +3649,7 @@ STATIC tp_err_t tpActivateSegment(TP_STRUCT * const tp, TC_STRUCT * const tc) {
     tc->blending_next = 0;
     tc->on_final_decel = 0;
 
-    if (TC_SYNC_POSITION == tc->synchronized && !(emcmotStatus->spindleSync)) {
+    if (TC_SYNC_POSITION == tc->synchronized && !(tp->spindleSync)) {    /* MC19 */
         tp_debug_print("Setting up position sync\n");
         // if we aren't already synced, wait
         tp->spindle.waiting_for_index = tc->id;
@@ -3681,7 +3785,8 @@ STATIC int tpDoParabolicBlending(TP_STRUCT * const tp, TC_STRUCT * const tc,
 #endif
 
     //Update velocity status based on both tc and nexttc
-    emcmotStatus->current_vel = tc->currentvel + nexttc->currentvel;
+    tp->current_vel = tc->currentvel + nexttc->currentvel;    /* MCHAN MC19 */
+    if (tp->status_owner) emcmotStatus->current_vel = tp->current_vel;
 
     return TP_ERR_OK;
 }
@@ -3801,13 +3906,19 @@ STATIC int tpUpdateCycle(TP_STRUCT * const tp,
 /**
  * Send default values to status structure.
  */
-STATIC int tpUpdateInitialStatus(TP_STRUCT const * const tp) {
+STATIC int tpUpdateInitialStatus(TP_STRUCT * const tp) {
+    /* MCHAN MC19: per-channel status; owner mirrors the legacy view */
     // Update queue length
-    emcmotStatus->tcqlen = tcqLen(&tp->queue);
+    tp->tcqlen = tcqLen(&tp->queue);
     // Set default value for requested speed
-    emcmotStatus->requested_vel = 0.0;
+    tp->requested_vel = 0.0;
     //FIXME test if we can do this safely
-    emcmotStatus->current_vel = 0.0;
+    tp->current_vel = 0.0;
+    if (tp->status_owner) {
+        emcmotStatus->tcqlen = tp->tcqlen;
+        emcmotStatus->requested_vel = 0.0;
+        emcmotStatus->current_vel = 0.0;
+    }
     return TP_ERR_OK;
 }
 
@@ -4094,6 +4205,7 @@ STATIC int tpHandleRegularCycle(TP_STRUCT * const tp,
 int tpRunCycle(TP_STRUCT * const tp, long period)
 {
     (void)period;
+    TP_LATCH_PLANNER(tp);   /* MCHAN MC21 */
     //Pointers to current and next trajectory component
     TC_STRUCT *tc;
     TC_STRUCT *nexttc;
@@ -4154,7 +4266,8 @@ int tpRunCycle(TP_STRUCT * const tp, long period)
      * spindle motion.*/
     switch (tc->synchronized) {
         case TC_SYNC_NONE:
-            emcmotStatus->spindleSync = 0;
+            tp->spindleSync = 0;    /* MCHAN MC19 */
+            if (tp->status_owner) emcmotStatus->spindleSync = 0;
             break;
         case TC_SYNC_VELOCITY:
             tp_debug_print("sync velocity\n");
@@ -4220,6 +4333,15 @@ int tpSetSpindleSync(TP_STRUCT * const tp, int spindle, double sync, int mode) {
         tp->synchronized = 0;
 
     return TP_ERR_OK;
+}
+
+/* MCHAN MC8: motmod calls this once at init so tpmod knows the channel count.
+ * In multichannel (>1) a synced/at-speed move waits only for the spindle it
+ * uses (tp->spindle.spindle_num), not every spindle - otherwise one channel's
+ * threading blocks on another channel's independent spindle. Single channel
+ * keeps the stock all-spindles wait (D7). Avoids growing emcmotStruct. */
+void tpSetNumChannels(int n) {
+    tp_num_channels = (n > 0) ? n : 1;
 }
 
 int tpPause(TP_STRUCT * const tp)
@@ -4346,8 +4468,9 @@ int tpIsMoving(TP_STRUCT const * const tp)
 {
 
     //TODO may be better to explicitly check velocities on the first 2 segments, but this is messy
-    if (emcmotStatus->current_vel >= TP_VEL_EPSILON ) {
-        tp_debug_print("TP moving, current_vel = %.16g\n", emcmotStatus->current_vel);
+    /* MCHAN MC19: this TP's own velocity, not the global (= ch0's) view */
+    if (tp->current_vel >= TP_VEL_EPSILON ) {
+        tp_debug_print("TP moving, current_vel = %.16g\n", tp->current_vel);
         return true;
     } else if (tp->spindle.waiting_for_index != MOTION_INVALID_ID || tp->spindle.waiting_for_atspeed != MOTION_INVALID_ID) {
         tp_debug_print("TP moving, waiting for index or atspeed\n");
@@ -4372,6 +4495,7 @@ EXPORT_SYMBOL(tpGetExecTag);
 EXPORT_SYMBOL(tpGetMotionType);
 EXPORT_SYMBOL(tpGetPos);
 EXPORT_SYMBOL(tpIsDone);
+EXPORT_SYMBOL(tpIsMoving);	/* MCHAN MC2b: channel-idle test for status snapshots */
 EXPORT_SYMBOL(tpPause);
 EXPORT_SYMBOL(tpQueueDepth);
 EXPORT_SYMBOL(tpResume);
@@ -4384,6 +4508,7 @@ EXPORT_SYMBOL(tpSetId);
 EXPORT_SYMBOL(tpSetPos);
 EXPORT_SYMBOL(tpSetRunDir);
 EXPORT_SYMBOL(tpSetSpindleSync);
+EXPORT_SYMBOL(tpSetNumChannels);
 EXPORT_SYMBOL(tpSetTermCond);
 EXPORT_SYMBOL(tpSetVlimit);
 EXPORT_SYMBOL(tpSetVmax);

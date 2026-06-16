@@ -113,6 +113,11 @@ void SET_XY_ROTATION(double t) {
   ECHO_WITH_ARGS("%.4f", t);
 }
 
+
+void WAIT_RENDEZVOUS(int waitm_num, int waitm_mask) {
+    ECHO_WITH_ARGS("");
+}
+
 void SET_G5X_OFFSET(int index,
                     double x, double y, double z,
                     double a, double b, double c,
@@ -253,8 +258,12 @@ void SET_FEED_REFERENCE(CANON_FEED_REFERENCE reference)
          (reference == CANON_WORKPIECE) ? "CANON_WORKPIECE" : "CANON_XYZ");
 }
 
-extern void SET_MOTION_CONTROL_MODE(CANON_MOTION_MODE mode, double tolerance)
+extern void SET_MOTION_CONTROL_MODE(CANON_MOTION_MODE mode, double tolerance,
+                                    int planner_type, double scurve_peak_scale)
 {
+  /* G64_R_PLANNER: standalone-interp echo of the optional planner mode */
+  if (planner_type >= 0 || scurve_peak_scale >= 0.0)
+    PRINT("SET_PLANNER_MODE(type=%d, peak_scale=%f)\n", planner_type, scurve_peak_scale);
   _sai.motion_tolerance = 0;
   if (mode == CANON_EXACT_STOP)
     {

@@ -136,6 +136,55 @@ typedef struct {
 
     syncdio_t syncdio; //record tpSetDout's here
 
+    int planner_type;       /* MCHAN MC21: 0=trapezoidal 1=S-curve, PER TP so
+                               one channel's G64 R cannot switch another
+                               channel's planner; mirrored to the global
+                               emcmotStatus->planner_type for channel 0 only */
+
+    /* MCHAN MC22: feed/rapid override and enables are PER CHANNEL so one
+     * channel's override knob / feed-hold cannot scale another channel's
+     * motion. Commanded state is written by the (mailbox-routed) command
+     * handlers; net_feed_scale is composed each servo cycle by motion's
+     * process_inputs() from this state + the HAL hold pins. Channel 0
+     * mirrors to the legacy emcmotStatus fields. */
+    double feed_scale;          /* commanded feed override for this channel */
+    double rapid_scale;         /* commanded rapid override for this channel */
+    double net_feed_scale;      /* composed result, read by the TP run/queue code */
+    unsigned char enables_new;  /* commanded FS/SS/AF/FH enable bits */
+    unsigned char enables_queued; /* enables in effect for the executing segment */
+
+    double scurve_peak_scale;   /* MCHAN MC21 (completion): per-channel G64 R
+                                   cornering scale; 0.0 = unset -> sp_scurve
+                                   falls back to the faithful 0.5 exactly like
+                                   the legacy zeroed-shmem window */
+
+    /* MCHAN MC19: per-channel motion status. This TP's own view of the
+     * values that were historically scribbled into the global emcmotStatus
+     * by every TP each cycle. Only the status OWNER (channel 0's TP, flag
+     * set by motion at init; chan[] shmem is zero-initialized so secondary
+     * TPs default to 0) mirrors them into emcmotStatus for the legacy
+     * GUI/HAL view; per-channel status export to the channel stacks is
+     * phase-2 work. spindleSync also FIXES a real cross-channel bug: the
+     * sync decision used to read the other channel's global flag. */
+    int status_owner;
+    double distance_to_go;
+    EmcPose dtg;
+    double requested_vel;
+    double current_vel;
+    double current_acc;
+    double current_jerk;
+    PmCartesian current_dir;
+    int spindleSync;
+    int tcqlen;
+
+    /* MCHAN MC24: this channel's XYZ planning bounds (blend-arc geometry
+     * used to read the GLOBAL axis module's vel/acc limits - wrong envelope
+     * for any channel but 0). Written by the SET_AXIS_VEL/ACC_LIMIT command
+     * handlers: channel 0's mirror the legacy axis module values, secondary
+     * channels get their own. Zero until configured (= legacy startup). */
+    PmCartesian xyz_vel_bound;
+    PmCartesian xyz_acc_bound;
+
 } TP_STRUCT;
 
 

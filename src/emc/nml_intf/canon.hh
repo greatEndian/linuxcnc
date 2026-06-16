@@ -243,6 +243,11 @@ extern void SET_G92_OFFSET(double x, double y, double z,
 
 extern void SET_XY_ROTATION(double t);
 
+/* MCHAN MC10/Phase4: waiting-M (M200-M229) rendezvous. This channel parks
+ * at the M-number and continues only when all participants (waitm_mask, or
+ * all configured channels if 0) have also arrived. Queue-buster. */
+extern void WAIT_RENDEZVOUS(int waitm_num, int waitm_mask);
+
 /* Offset the origin to the point with absolute coordinates x, y, z,
 a, b, c, u, v, and w. Values of x, y, z, a, b, c, u, v, and w are real 
 numbers. The units are whatever length units are being used at the time 
@@ -399,7 +404,11 @@ extern void SET_FEED_MODE(int spindle, int mode);
  * inches per revolution (G20 in effect) or mm per minute (G21 in effect)
  * The spindle number indicates which spindle the movement is synchronised to */
 
-extern void SET_MOTION_CONTROL_MODE(CANON_MOTION_MODE mode, double tolerance);
+/* G64_R_PLANNER: two optional trailing args fold the planner mode (G64 R word)
+ * into the existing control-mode call. Defaults -1/-1.0 = "leave unchanged",
+ * so existing callers (G61, G61.1, cutter-comp save/restore) are unaffected. */
+extern void SET_MOTION_CONTROL_MODE(CANON_MOTION_MODE mode, double tolerance,
+                                    int planner_type = -1, double scurve_peak_scale = -1.0);
 
 extern void SET_NAIVECAM_TOLERANCE(double tolerance);
 

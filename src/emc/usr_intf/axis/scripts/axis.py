@@ -118,6 +118,24 @@ if sys.argv[1] != "-ini":
 
 inifile = linuxcnc.ini(sys.argv[2])
 
+# MCHAN: a SECONDARY channel's GUI speaks ITS OWN axis-letter space; the
+# truth for letter -> GLOBAL joint number is [CHANNEL]MAP (e.g.
+# "X:4 Y:5 Z:6 C:7"), NOT the machine kins coordinates string (that
+# string describes channel 0's letters). Without this, jogging X in a
+# secondary channel's GUI asked motion for joint 0 - another channel's
+# joint - and was (correctly) refused by the ownership check.
+mchan_map = {}    # letter -> global joint
+mchan_rmap = {}   # global joint -> letter
+_mchan_m = inifile.find("CHANNEL", "MAP")
+if _mchan_m:
+    for _tok in _mchan_m.split():
+        try:
+            _L, _j = _tok.split(":")
+            mchan_map[_L.upper()] = int(_j)
+            mchan_rmap[int(_j)] = _L.upper()
+        except ValueError:
+            print("MCHAN: bad [CHANNEL]MAP token %r ignored" % _tok)
+
 ap = AxisPreferences()
 
 # Handle repeated key press events
@@ -445,6 +463,10 @@ class MyOpengl(GlCanonDraw, Opengl):
         self.realize()
         self.init_glcanondraw(trajcoordinates=trajcoordinates,
                               kinsmodule=kinsmodule)
+        # MCHAN: feed the channel letter->global-joint map to glcanon so
+        # home/limit DRO icons track THIS channel's joints (mchan_map is
+        # built from [CHANNEL]MAP at startup; empty for channel 0).
+        self.mchan_jmap = dict(mchan_map)
     def getRotateMode(self):
         return vars.rotate_mode.get()
 
@@ -1956,7 +1978,11 @@ def ja_from_rbutton():
     # handle joint jogging for known identity kins
     if jjogmode:
         # joint jogging
-        if lathe_historical_config():
+        if mchan_rmap and isinstance(ja, str) and ja.upper() in mchan_map:
+            # MCHAN: this GUI is a channel window - its letters map to
+            # the channel's GLOBAL joints via [CHANNEL]MAP
+            a = mchan_map[ja.upper()]
+        elif lathe_historical_config():
             a = "xyzabcuvw".index(ja)
         elif kins_is_trivkins and s.kinematics_type == linuxcnc.KINEMATICS_IDENTITY:
             # note: if duplicate_coord_letters,
@@ -3682,14 +3708,24 @@ def lathe_historical_config():
     return False
 
 def aletter_for_jnum(jnum):
+    # MCHAN: a multichannel machine has joints with NO letter in THIS
+    # stack's kins coordinates (they belong to another channel). Report
+    # None instead of crashing; callers skip such joints. A channel
+    # window translates through its OWN [CHANNEL]MAP first.
+    if mchan_rmap:
+        return mchan_rmap.get(jnum)
     if lathe_historical_config():
         if jnum == 1: return "Y"
         if jnum == 2: return "Z"
     if kins_is_trivkins:
+        if jnum >= len(trivkinscoords):
+            return None
         return trivkinscoords.upper()[jnum]
     if s.kinematics_type != linuxcnc.KINEMATICS_IDENTITY:
         raise SystemExit("aletter_for_jnum: Must be KINEMATICS_IDENTITY")
     else:
+        if jnum >= len(trajcoordinates):
+            return None
         guess = trajcoordinates.upper()[jnum]
         print("aletter_for_jnum guessing %d --> %s"%(jnum,guess))
         return guess
@@ -3700,6 +3736,8 @@ for jnum in range(num_joints):
     if s.kinematics_type == linuxcnc.KINEMATICS_IDENTITY:
         ja_name = _("Axis ")
         ja_id = aletter_for_jnum(jnum)
+        if ja_id is None:
+            continue # MCHAN: another channel's joint - no menu item here
         if ja_id.lower() in duplicate_coord_letters:
             if ja_id not in gave_individual_homing_message:
                 print(_("\nNote:\nIndividual axis homing is not currently supported for"))
@@ -3947,7 +3985,11 @@ t.bind("<Button-5>", scroll_down)
 t.configure(state="disabled")
 
 if hal_present == 1 :
-    comp = hal.component("axisui")
+    # MCHAN: one axisui component per channel stack - channel 0 keeps the
+    # historic "axisui" name, a secondary channel's GUI gets "axisui.<N>"
+    # so N AXIS instances coexist in one HAL session.
+    _mchan_ch = int(inifile.find("EMCMOT", "MOTION_CHANNEL") or 0)
+    comp = hal.component("axisui" if _mchan_ch == 0 else "axisui.%d" % _mchan_ch)
     comp.newpin("jog.x", hal.HAL_BIT, hal.HAL_OUT)
     comp.newpin("jog.y", hal.HAL_BIT, hal.HAL_OUT)
     comp.newpin("jog.z", hal.HAL_BIT, hal.HAL_OUT)

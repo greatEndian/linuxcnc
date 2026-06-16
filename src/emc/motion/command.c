@@ -80,6 +80,72 @@ extern int motion_num_spindles;
 
 static int rehomeAll;
 
+/* MCHAN: channel currently being serviced by the command handler. The
+ * handler body routes all coordinated-TP accesses through
+ * chan[mchan_active_channel].coord_tp, and echoes through the pointer trio
+ * below; both are selected per mailbox by emcmotCommandHandler(). Outside a
+ * handler pass these always hold the channel-0 (legacy) view. */
+int mchan_active_channel = 0;	/* exported: reportError routes by it (MC30) */
+
+/* MCHAN: a SECONDARY channel's command failure must NEVER set the GLOBAL
+ * motion error flag - channel 0's task reads that flag as RCS ERROR and
+ * ABORTS ITS RUNNING PROGRAM (user-found at the lathe bring-up: a ch1
+ * limit refusal killed ch0's cut). The refusal still reaches the failing
+ * channel through its own mailbox echo status + reportError; its own TP
+ * is aborted where the legacy code did so. Channel 0 keeps the historic
+ * global flag behavior (D7). */
+#define SET_MOTION_ERROR_FLAG_SCOPED(v) do { \
+	if (mchan_active_channel == 0) SET_MOTION_ERROR_FLAG(v); \
+    } while (0)
+static cmd_code_t   *mchan_echo_cmd;
+static int          *mchan_echo_num;
+static cmd_status_t *mchan_echo_status;
+
+/* ===== BEGIN PLANNER_SWITCH_DEFER (reversible) =====================================
+ * Deferred PLANNER_TYPE switching. Switching 0<->1 mid-motion causes an acceleration
+ * discontinuity (the very thing the S-curve planner exists to avoid), so a switch
+ * requested while the coordinated TP queue is busy is LATCHED here and applied later,
+ * once motion is idle, by emcmotApplyPendingPlannerType() (called once per servo cycle
+ * from emcmotController()). It never aborts motion. When idle, the switch is instant.
+ * To revert this feature entirely: delete the three PLANNER_SWITCH_DEFER blocks in
+ * command.c, the declaration in mot_priv.h, and the call in control.c; then restore
+ * the original EMCMOT_SET_PLANNER_TYPE handler body (see ORIGINAL note in that block). */
+/* MCHAN MC21: one latch PER CHANNEL - a deferred switch on one channel must not
+ * block or leak into another. The applied state lives in the channel TP itself
+ * (tp->planner_type); emcmotStatus->planner_type stays as channel 0's mirror
+ * for the legacy GUI/status view. */
+static int planner_type_switch_pending[EMCMOT_MAX_CHANNELS];  /* 1 = deferred switch queued */
+static int planner_type_pending_value[EMCMOT_MAX_CHANNELS];   /* requested type (0/1) */
+
+/* True when CHANNEL ch's coordinated trajectory queue is idle. */
+static int planner_switch_channel_idle(int ch)
+{
+    return tpIsDone(&emcmotInternal->chan[ch].coord_tp)
+        && (tpQueueDepth(&emcmotInternal->chan[ch].coord_tp) == 0);
+}
+
+/* Apply latched planner-type switches for any channel whose queue has gone idle.
+ * Called every servo cycle from emcmotController(). */
+void emcmotApplyPendingPlannerType(void)
+{
+    int ch;
+    for (ch = 0; ch < motion_num_channels; ch++) {
+        if (!planner_type_switch_pending[ch]) {
+            continue;
+        }
+        if (planner_switch_channel_idle(ch)) {
+            emcmotInternal->chan[ch].coord_tp.planner_type = planner_type_pending_value[ch];
+            if (ch == 0) {
+                emcmotStatus->planner_type = planner_type_pending_value[ch];
+            }
+            planner_type_switch_pending[ch] = 0;
+            rtapi_print_msg(RTAPI_MSG_INFO,
+                "ch%d: planner switch applied (type %d)", ch, planner_type_pending_value[ch]);
+        }
+    }
+}
+/* ===== END PLANNER_SWITCH_DEFER ==================================================== */
+
 /* limits_ok() returns 1 if none of the hard limits are set,
    0 if any are set. Called on a linear and circular move. */
 STATIC int limits_ok(void)
@@ -198,6 +264,47 @@ STATIC int inRange(EmcPose pos, int id, char *move_type)
     int failing_axes[EMCMOT_MAX_AXIS];
     double targets[EMCMOT_MAX_AXIS];
     const char axis_letters[] = "XYZABCUVW";
+
+    /* ===== MCHAN MC24: secondary channels validate against THEIR OWN axis
+     * envelope and their MAPPED joints. The pose is in the channel's local
+     * letter space (identity-mapped joint subsets, see D2/MC6); the global
+     * axis module and the global kinematics belong to channel 0. */
+    if (mchan_active_channel != 0) {
+        const emcmot_channel_t *chn = &emcmotInternal->chan[mchan_active_channel];
+        double tgt[EMCMOT_MAX_AXIS];
+        int ax;
+        tgt[0] = pos.tran.x; tgt[1] = pos.tran.y; tgt[2] = pos.tran.z;
+        tgt[3] = pos.a; tgt[4] = pos.b; tgt[5] = pos.c;
+        tgt[6] = pos.u; tgt[7] = pos.v; tgt[8] = pos.w;
+        for (ax = 0; ax < EMCMOT_MAX_AXIS; ax++) {
+            int jn = chn->axis_to_joint[ax];
+            if (jn < 0) {
+                continue;   /* letter not mapped on this channel */
+            }
+            if (tgt[ax] > chn->axis_lim[ax].max_pos_limit) {
+                reportError(_("ch%d: %s move on line %d would exceed %c's %s limit"),
+                    mchan_active_channel, move_type, id, axis_letters[ax], _("positive"));
+                in_range = 0;
+            }
+            if (tgt[ax] < chn->axis_lim[ax].min_pos_limit) {
+                reportError(_("ch%d: %s move on line %d would exceed %c's %s limit"),
+                    mchan_active_channel, move_type, id, axis_letters[ax], _("negative"));
+                in_range = 0;
+            }
+            /* mapped joint envelope (identity mapping: local value = joint) */
+            joint = &joints[jn];
+            if (GET_JOINT_ACTIVE_FLAG(joint)) {
+                if (tgt[ax] > joint->max_pos_limit ||
+                    tgt[ax] < joint->min_pos_limit) {
+                    reportError(_("ch%d: %s move on line %d exceeds joint %d's limits"),
+                        mchan_active_channel, move_type, id, jn);
+                    in_range = 0;
+                }
+            }
+        }
+        return in_range;
+    }
+    /* ===== END MCHAN MC24 (channel 0 = legacy path below) ============== */
 
     if (EMCMOT_MAX_AXIS != 9) {
         rtapi_print_msg(RTAPI_MSG_ERR, "BUG: %s(): invalid number of axes defined", __func__);
@@ -385,6 +492,163 @@ STATIC int is_feed_type(int motion_type)
 
   This function runs with the emcmotCommand struct locked.
   */
+/* MCHAN D-MC4: per-channel homing helpers. One global homing engine,
+ * scoped per session by the permit mask; sessions are exclusive
+ * machine-wide (get_homing_is_active gate). */
+static int mchan_chan_idle(int ch)
+{
+    if (ch == 0)
+	return (emcmotStatus->depth == 0) && GET_MOTION_INPOS_FLAG();
+    return !tpIsMoving(&emcmotInternal->chan[ch].coord_tp)
+	&& tpQueueDepth(&emcmotInternal->chan[ch].coord_tp) == 0;
+}
+
+/* HOMING_INTERLOCK (user-approved d2): pin motion.mchan-homing-own-idle
+ * FALSE = 'all' (default, safe), TRUE = 'own' (re-home one head while
+ * the other cuts - shared zone guarded only by the operator/proximity
+ * display until MC31 zones exist). */
+static int mchan_homing_interlock_ok(int req_ch)
+{
+    if (*(emcmot_hal_data->mchan_homing_own_idle)) {
+	if (!mchan_chan_idle(req_ch)) {
+	    reportError(_("ch%d: cannot home - this channel is not idle"), req_ch);
+	    return 0;
+	}
+	return 1;
+    }
+    for (int c = 0; c < motion_num_channels; c++) {
+	if (!mchan_chan_idle(c)) {
+	    reportError(_("ch%d: cannot home - channel %d is not idle (HOMING_INTERLOCK=all)"),
+		req_ch, c);
+	    return 0;
+	}
+    }
+    return 1;
+}
+
+/* MCHAN: which channel owns the current homing session (sessions are
+ * exclusive). Channel-scoped sessions must NOT flip the GLOBAL mode on
+ * completion - that is channel 0's legacy behavior only. */
+int mchan_homing_session_ch = 0;
+
+static unsigned mchan_home_mask(int ch)
+{
+    unsigned m = 0;
+    for (int j = 0; j < ALL_JOINTS; j++) {
+	if (emcmotInternal->joint_owner[j] == ch) m |= 1u << j;
+    }
+    return m;
+}
+
+/* MCHAN MC3: jog a SECONDARY channel's owned joint with its own free
+ * planner, independent of channel 0's machine mode (Fanuc 2-path
+ * standard: jog one path while the other runs AUTO - D-MC3-4). The jog
+ * is joint-space through the channel's letter map (D-MC3-2; identity
+ * mapping makes it equal to world jog on these machines). Limits =
+ * intersection of the channel envelope (MC24) and the global joint
+ * limits. No axis_jog_abort_all() here - that is channel 0's jog
+ * machinery and must not be disturbed. */
+static void mchan_jog(int code)
+{
+    emcmot_channel_t *c = &emcmotInternal->chan[mchan_active_channel];
+    emcmot_joint_t *joint;
+    int ax = -1, jn = -1, i;
+    double lo, hi, vmax, amax, tmp;
+
+    if (emcmotCommand->joint >= 0) {
+	/* joint-flavored jog (GUI joint tab uses GLOBAL joint numbers) */
+	jn = emcmotCommand->joint;
+	if (jn >= ALL_JOINTS ||
+	    emcmotInternal->joint_owner[jn] != mchan_active_channel) {
+	    reportError(_("ch%d: joint %d is not this channel's (jog refused)"),
+		mchan_active_channel, jn);
+	    (*mchan_echo_status) = EMCMOT_COMMAND_INVALID_PARAMS;
+	    return;
+	}
+	for (i = 0; i < EMCMOT_MAX_AXIS; i++) {
+	    if (c->axis_to_joint[i] == jn) { ax = i; break; }
+	}
+    } else {
+	/* axis-flavored jog: the channel's OWN letter space */
+	ax = emcmotCommand->axis;
+	if (ax < 0 || ax >= EMCMOT_MAX_AXIS || c->axis_to_joint[ax] < 0) {
+	    reportError(_("ch%d: axis %d is not mapped on this channel (jog refused)"),
+		mchan_active_channel, ax);
+	    (*mchan_echo_status) = EMCMOT_COMMAND_INVALID_PARAMS;
+	    return;
+	}
+	jn = c->axis_to_joint[ax];
+    }
+    joint = &joints[jn];
+
+    if (!GET_MOTION_ENABLE_FLAG()) {
+	reportError(_("ch%d: can't jog when machine is not enabled"), mchan_active_channel);
+	(*mchan_echo_status) = EMCMOT_COMMAND_INVALID_COMMAND;
+	return;
+    }
+    if (*(emcmot_hal_data->jog_inhibit)) {
+	reportError(_("ch%d: cannot jog while jog-inhibit is active"), mchan_active_channel);
+	(*mchan_echo_status) = EMCMOT_COMMAND_INVALID_COMMAND;
+	return;
+    }
+    if (get_homing_is_active()) {
+	reportError(_("ch%d: can't jog while homing (homing is machine-global)"), mchan_active_channel);
+	(*mchan_echo_status) = EMCMOT_COMMAND_INVALID_COMMAND;
+	return;
+    }
+    if (c->virt_state == EMCMOT_MOTION_COORD &&
+	(tpQueueDepth(&c->coord_tp) || tpIsMoving(&c->coord_tp))) {
+	reportError(_("ch%d: running in auto/mdi - switch this channel to manual to jog"),
+	    mchan_active_channel);
+	(*mchan_echo_status) = EMCMOT_COMMAND_INVALID_COMMAND;
+	return;
+    }
+
+    /* effective travel = channel envelope intersect joint limits (D-MC3) */
+    lo = c->axis_lim[ax].min_pos_limit;
+    hi = c->axis_lim[ax].max_pos_limit;
+    if (joint->min_pos_limit > lo) lo = joint->min_pos_limit;
+    if (joint->max_pos_limit < hi) hi = joint->max_pos_limit;
+    vmax = fabs(emcmotCommand->vel);
+    if (vmax > joint->vel_limit) vmax = joint->vel_limit;
+    if (c->axis_lim[ax].vel_limit > 0 && vmax > c->axis_lim[ax].vel_limit)
+	vmax = c->axis_lim[ax].vel_limit;
+    amax = joint->acc_limit;
+    if (c->axis_lim[ax].acc_limit > 0 && amax > c->axis_lim[ax].acc_limit)
+	amax = c->axis_lim[ax].acc_limit;
+
+    switch (code) {
+    case EMCMOT_JOG_CONT:
+	joint->free_tp.pos_cmd = (emcmotCommand->vel > 0.0) ? hi : lo;
+	break;
+    case EMCMOT_JOG_INCR:
+	if (emcmotCommand->vel > 0.0)
+	    tmp = joint->free_tp.pos_cmd + emcmotCommand->offset;
+	else
+	    tmp = joint->free_tp.pos_cmd - emcmotCommand->offset;
+	if (tmp > hi || tmp < lo) return;	/* silently stop at limit (legacy) */
+	joint->free_tp.pos_cmd = tmp;
+	break;
+    default:	/* EMCMOT_JOG_ABS */
+	tmp = emcmotCommand->offset;
+	if (tmp > hi) tmp = hi;
+	if (tmp < lo) tmp = lo;
+	joint->free_tp.pos_cmd = tmp;
+	break;
+    }
+    joint->free_tp.status = 0;
+    joint->free_tp.max_vel = vmax;
+    joint->free_tp.max_acc = amax;
+    joint->kb_jjog_active = 1;
+    joint->free_tp.enable = 1;
+    SET_JOINT_ERROR_FLAG(joint, 0);
+    /* jogging implies manual mode for this channel (a GUI in joint tab
+     * may jog before its task sent FREE) */
+    if (c->virt_state != EMCMOT_MOTION_FREE &&
+	c->virt_state != EMCMOT_MOTION_TELEOP)
+	c->virt_state = EMCMOT_MOTION_FREE;
+}
+
 void emcmotCommandHandler_locked(void *arg, long servo_period)
 {
     (void)arg;
@@ -397,17 +661,283 @@ void emcmotCommandHandler_locked(void *arg, long servo_period)
     int abort = 0;
     char* emsg = "";
 
-    if (emcmotCommand->commandNum != emcmotStatus->commandNumEcho) {
+    if (emcmotCommand->commandNum != (*mchan_echo_num)) {
 	/* increment head count-- we'll be modifying emcmotStatus */
 	emcmotStatus->head++;
 	emcmotInternal->head++;
 
 	/* got a new command-- echo command and number... */
-	emcmotStatus->commandEcho = emcmotCommand->command;
-	emcmotStatus->commandNumEcho = emcmotCommand->commandNum;
+	(*mchan_echo_cmd) = emcmotCommand->command;
+	(*mchan_echo_num) = emcmotCommand->commandNum;
 
 	/* clear status value by default */
-	emcmotStatus->commandStatus = EMCMOT_COMMAND_OK;
+	(*mchan_echo_status) = EMCMOT_COMMAND_OK;
+
+	/* ===== MCHAN MC28: command scope gate (Siemens $MN/$MC split) =======
+	 * Machine-GLOBAL configuration and machine modes are owned by channel
+	 * 0's stack. Secondary stacks run the same stock milltask, so they DO
+	 * send the full init sequence; global-scope commands from ch>0 are
+	 * acknowledged-and-ignored here, with a LOUD divergence error when the
+	 * ignored value disagrees with the machine value (a misconfigured
+	 * channel INI must never be silent), and a LOUD refusal for commands
+	 * that are dangerous to no-op (probe, homing, TCP kins switch).
+	 * Channel-scoped commands fall through to the normal switch. */
+	if (mchan_active_channel != 0) {
+	    switch (emcmotCommand->command) {
+	    /* -- machine config scalars: ignore, ERROR on divergence -- */
+	    case EMCMOT_SET_NUM_JOINTS:
+		if (emcmotCommand->joint != ALL_JOINTS) {
+		    reportError(_("ch%d: [KINS]JOINTS=%d disagrees with the machine value %d - channel INIs must match channel 0 (machine config owner)"),
+			mchan_active_channel, emcmotCommand->joint, ALL_JOINTS);
+		    (*mchan_echo_status) = EMCMOT_COMMAND_INVALID_PARAMS;
+		}
+		return;
+	    case EMCMOT_SET_NUM_SPINDLES:
+		if (emcmotCommand->spindle != emcmotConfig->numSpindles) {
+		    reportError(_("ch%d: [TRAJ]SPINDLES=%d disagrees with the machine value %d - channel INIs must match channel 0 (machine config owner)"),
+			mchan_active_channel, emcmotCommand->spindle, emcmotConfig->numSpindles);
+		    (*mchan_echo_status) = EMCMOT_COMMAND_INVALID_PARAMS;
+		}
+		return;
+	    case EMCMOT_SET_JERK:
+		if (fabs(emcmotCommand->jerk - emcmotStatus->jerk) > 1e-9) {
+		    reportError(_("ch%d: [TRAJ]MAX_LINEAR_JERK=%.3f disagrees with the machine value %.3f - channel INIs must match channel 0 (machine config owner)"),
+			mchan_active_channel, emcmotCommand->jerk, emcmotStatus->jerk);
+		    (*mchan_echo_status) = EMCMOT_COMMAND_INVALID_PARAMS;
+		}
+		return;
+	    case EMCMOT_SET_MAX_FEED_OVERRIDE:
+		if (fabs(emcmotCommand->maxFeedScale - emcmotConfig->maxFeedScale) > 1e-9) {
+		    reportError(_("ch%d: [DISPLAY]MAX_FEED_OVERRIDE=%.3f disagrees with the machine value %.3f - channel INIs must match channel 0 (machine config owner)"),
+			mchan_active_channel, emcmotCommand->maxFeedScale, emcmotConfig->maxFeedScale);
+		    (*mchan_echo_status) = EMCMOT_COMMAND_INVALID_PARAMS;
+		}
+		return;
+
+	    /* -- machine config / machine modes: acknowledge + ignore --
+	     * (joint/axis config uses the GLOBAL joint/axis namespace, which a
+	     * channel INI cannot meaningfully address; FREE/COORD/TELEOP and
+	     * jogs are channel-0 machine modes until MC3's per-channel state
+	     * machines; secondary channels are coord-only by design.) */
+	    case EMCMOT_SET_WORLD_HOME:
+	    case EMCMOT_SET_DEBUG:
+	    case EMCMOT_SETUP_ARC_BLENDS:
+	    case EMCMOT_SET_PROBE_ERR_INHIBIT:
+	    case EMCMOT_ENABLE_WATCHDOG:
+	    case EMCMOT_DISABLE_WATCHDOG:
+	    case EMCMOT_SET_JOINT_POSITION_LIMITS:
+	    case EMCMOT_SET_JOINT_BACKLASH:
+	    case EMCMOT_SET_JOINT_MIN_FERROR:
+	    case EMCMOT_SET_JOINT_MAX_FERROR:
+	    case EMCMOT_SET_JOINT_VEL_LIMIT:
+	    case EMCMOT_SET_JOINT_ACC_LIMIT:
+	    case EMCMOT_SET_JOINT_HOMING_PARAMS:
+	    case EMCMOT_UPDATE_JOINT_HOMING_PARAMS:
+	    case EMCMOT_SET_JOINT_JERK_LIMIT:
+	    case EMCMOT_SET_JOINT_MOTOR_OFFSET:
+	    case EMCMOT_SET_JOINT_COMP:
+	    /* (MC24: SET_AXIS position/vel/acc/jerk limits are now CHANNEL-
+	     * scoped and fall through; only the locking-joint config - jog/
+	     * indexer machinery, MC3 - stays channel-0-owned.) */
+	    case EMCMOT_SET_AXIS_LOCKING_JOINT:
+	    case EMCMOT_SET_SPINDLE_PARAMS:
+	    case EMCMOT_OVERRIDE_LIMITS:
+	    case EMCMOT_JOINT_ACTIVATE:
+	    case EMCMOT_JOINT_DEACTIVATE:
+	    case EMCMOT_FREE:
+	    case EMCMOT_TELEOP: {
+		/* MC3 (D-MC3-1/3): the channel's OWN mode machine, Fanuc-
+		 * independent. Leaving COORD is only legal when this
+		 * channel's planner is idle; the owned joints are then
+		 * handed to the per-joint jog planners at their current
+		 * commanded positions and their interpolators drained
+		 * (channel-local mirror of set_operating_mode). */
+		emcmot_channel_t *c3 = &emcmotInternal->chan[mchan_active_channel];
+		if (c3->virt_state == EMCMOT_MOTION_COORD &&
+		    (tpQueueDepth(&c3->coord_tp) || tpIsMoving(&c3->coord_tp))) {
+		    reportError(_("ch%d: cannot leave coord mode while running"),
+			mchan_active_channel);
+		    (*mchan_echo_status) = EMCMOT_COMMAND_INVALID_COMMAND;
+		    return;
+		}
+		if (c3->virt_state == EMCMOT_MOTION_COORD) {
+		    for (int a3 = 0; a3 < EMCMOT_MAX_AXIS; a3++) {
+			int j3 = c3->axis_to_joint[a3];
+			if (j3 < 0) continue;
+			joints[j3].free_tp.curr_pos = joints[j3].pos_cmd;
+			joints[j3].free_tp.enable = 0;
+			cubicDrain(&(joints[j3].cubic));
+		    }
+		}
+		c3->virt_state = (emcmotCommand->command == EMCMOT_FREE) ?
+		    EMCMOT_MOTION_FREE : EMCMOT_MOTION_TELEOP;
+		return;
+	    }
+	    case EMCMOT_COORD: {
+		/* MC3: FREE->COORD resync = the channel TP starts exactly
+		 * where its joints are (zero-jump rule, pattern proven at
+		 * enable-resync and first light) */
+		emcmot_channel_t *c3 = &emcmotInternal->chan[mchan_active_channel];
+		if (c3->virt_state != EMCMOT_MOTION_COORD) {
+		    EmcPose p3;
+		    ZERO_EMC_POSE(p3);
+		    int any3 = 0;
+		    for (int a3 = 0; a3 < EMCMOT_MAX_AXIS; a3++) {
+			int j3 = c3->axis_to_joint[a3];
+			if (j3 < 0) continue;
+			switch (a3) {
+			case 0: p3.tran.x = joints[j3].pos_cmd; break;
+			case 1: p3.tran.y = joints[j3].pos_cmd; break;
+			case 2: p3.tran.z = joints[j3].pos_cmd; break;
+			case 3: p3.a = joints[j3].pos_cmd; break;
+			case 4: p3.b = joints[j3].pos_cmd; break;
+			case 5: p3.c = joints[j3].pos_cmd; break;
+			case 6: p3.u = joints[j3].pos_cmd; break;
+			case 7: p3.v = joints[j3].pos_cmd; break;
+			default: p3.w = joints[j3].pos_cmd; break;
+			}
+			joints[j3].free_tp.enable = 0;
+			cubicDrain(&(joints[j3].cubic));
+			any3 = 1;
+		    }
+		    if (any3) tpSetPos(&c3->coord_tp, &p3);
+		}
+		c3->virt_state = EMCMOT_MOTION_COORD;
+		return;
+	    }
+	    case EMCMOT_JOG_CONT:
+	    case EMCMOT_JOG_INCR:
+	    case EMCMOT_JOG_ABS:
+		/* MC3: per-channel jog (D-MC3-2/4) */
+		mchan_jog(emcmotCommand->command);
+		return;
+	    case EMCMOT_JOG_ABORT: {
+		/* stop THIS channel's jogs only */
+		emcmot_channel_t *c3 = &emcmotInternal->chan[mchan_active_channel];
+		for (int a3 = 0; a3 < EMCMOT_MAX_AXIS; a3++) {
+		    int j3 = c3->axis_to_joint[a3];
+		    if (j3 >= 0) joints[j3].free_tp.enable = 0;
+		}
+		return;
+	    }
+	    case EMCMOT_SET_TELEOP_VECTOR:
+	    case EMCMOT_CLEAR_PROBE_FLAGS:
+		rtapi_print_msg(RTAPI_MSG_DBG,
+		    "ch%d: global-scope command %d acknowledged and ignored (channel 0 owns machine config/modes)",
+		    mchan_active_channel, emcmotCommand->command);
+		return;
+
+	    /* MC25: EMCMOT_PROBE is NOT refused here any more - a secondary
+	     * channel may use the shared probe input, gated by the day-1
+	     * mutual-exclusion check in the real handler below (the probe move
+	     * is already routed to the channel's own coord_tp). Falls through. */
+	    case EMCMOT_JOINT_UNHOME: {
+		/* MC4/d1 + G28.3: REAL but CHANNEL-SCOPED unhome.
+		 * -1 = all of this channel's joints, -2 = its VOLATILE
+		 * joints (stock task sends -2 on state transitions - now
+		 * correctly scoped instead of ignored), >=0 = one owned
+		 * joint. set_unhomed() keeps its own moving/homing guards. */
+		int ujn = emcmotCommand->joint;
+		if (ujn >= 0) {
+		    if (emcmotInternal->joint_owner[ujn] != mchan_active_channel) {
+			reportError(_("ch%d: joint %d is not this channel's (unhome refused)"),
+			    mchan_active_channel, ujn);
+			(*mchan_echo_status) = EMCMOT_COMMAND_INVALID_PARAMS;
+			return;
+		    }
+		    set_unhomed(ujn, emcmotStatus->motion_state);
+		    return;
+		}
+		for (int j4 = 0; j4 < ALL_JOINTS; j4++) {
+		    if (emcmotInternal->joint_owner[j4] != mchan_active_channel)
+			continue;
+		    if (ujn == -1 || get_home_is_volatile(j4))
+			set_unhomed(j4, emcmotStatus->motion_state);
+		}
+		return;
+	    }
+	    case EMCMOT_JOINT_HOME: {
+		/* MC4/d1: PER-CHANNEL homing - this channel's GUI homes
+		 * THIS channel's joints only (one global engine, scoped
+		 * by the permit mask; sessions exclusive machine-wide) */
+		emcmot_channel_t *c4 = &emcmotInternal->chan[mchan_active_channel];
+		int hjn = emcmotCommand->joint;
+		if (!GET_MOTION_ENABLE_FLAG()) {
+		    reportError(_("ch%d: can't home when machine is not enabled"), mchan_active_channel);
+		    (*mchan_echo_status) = EMCMOT_COMMAND_INVALID_COMMAND;
+		    return;
+		}
+		if (*(emcmot_hal_data->homing_inhibit)) {
+		    reportError(_("ch%d: homing denied by motion.homing-inhibit"), mchan_active_channel);
+		    (*mchan_echo_status) = EMCMOT_COMMAND_INVALID_COMMAND;
+		    return;
+		}
+		if (get_homing_is_active()) {
+		    reportError(_("ch%d: another homing session is running - homing sessions are exclusive"), mchan_active_channel);
+		    (*mchan_echo_status) = EMCMOT_COMMAND_INVALID_COMMAND;
+		    return;
+		}
+		if (c4->virt_state == EMCMOT_MOTION_COORD &&
+		    (tpQueueDepth(&c4->coord_tp) || tpIsMoving(&c4->coord_tp))) {
+		    reportError(_("ch%d: running - switch this channel to manual to home"), mchan_active_channel);
+		    (*mchan_echo_status) = EMCMOT_COMMAND_INVALID_COMMAND;
+		    return;
+		}
+		if (!mchan_homing_interlock_ok(mchan_active_channel)) {
+		    (*mchan_echo_status) = EMCMOT_COMMAND_INVALID_COMMAND;
+		    return;
+		}
+		if (hjn >= 0 &&
+		    emcmotInternal->joint_owner[hjn] != mchan_active_channel) {
+		    reportError(_("ch%d: joint %d is not this channel's (home refused)"),
+			mchan_active_channel, hjn);
+		    (*mchan_echo_status) = EMCMOT_COMMAND_INVALID_PARAMS;
+		    return;
+		}
+		set_home_permit_mask(mchan_home_mask(mchan_active_channel));
+		mchan_homing_session_ch = mchan_active_channel;
+		do_home_joint(hjn);
+		return;
+	    }
+	    default:
+		break;	/* channel-scoped: process normally below */
+	    }
+	}
+	/* ===== END MCHAN MC28 =============================================== */
+
+	/* MCHAN MC26b: spindle ownership - a channel may only START / move /
+	 * sync a spindle it owns, so one head cannot spin up or speed-change
+	 * another head's spindle (the routing half is the interp's per-channel
+	 * default spindle, MC26). Stops/brakes/overrides are deliberately NOT
+	 * gated: estop aborts every spindle from every channel, and stopping a
+	 * spindle is not the hazard - gating them would spam on estop. With one
+	 * channel ch0 owns all spindles, so nothing is ever refused (D7). */
+	switch (emcmotCommand->command) {
+	case EMCMOT_SPINDLE_ON:
+	case EMCMOT_SPINDLE_ORIENT:
+	case EMCMOT_SPINDLE_INCREASE:
+	case EMCMOT_SPINDLE_DECREASE:
+	case EMCMOT_SET_SPINDLESYNC: {
+	    int sp = emcmotCommand->spindle;
+	    /* MC8: turning sync OFF (spindlesync==0) only clears the requesting
+	     * channel's OWN coord_tp sync flag - it is harmless regardless of the
+	     * spindle named (STOP_SPEED_FEED_SYNCH historically hardcodes spindle
+	     * 0), so do not ownership-gate it, just like spindle stops/overrides
+	     * are not gated (MC26b). Engaging sync (!=0) stays guarded. */
+	    if (emcmotCommand->command == EMCMOT_SET_SPINDLESYNC
+		&& emcmotCommand->spindlesync == 0.0)
+		break;
+	    if (sp >= 0 && sp < emcmotConfig->numSpindles
+		&& emcmotInternal->spindle_owner[sp] != mchan_active_channel) {
+		reportError(_("ch%d: spindle %d belongs to channel %d - command refused"),
+		    mchan_active_channel, sp, emcmotInternal->spindle_owner[sp]);
+		(*mchan_echo_status) = EMCMOT_COMMAND_INVALID_PARAMS;
+		return;
+	    }
+	    break;
+	}
+	default: break;
+	}
 
 	/* ...and process command */
 
@@ -513,7 +1043,7 @@ void emcmotCommandHandler_locked(void *arg, long servo_period)
 		   never released after a spindle stop almost always means
 		   spindle.N.at-speed is not wired, or does not go true once the
 		   spindle has actually stopped. */
-		if (MOTION_ID_VALID(emcmotInternal->coord_tp.spindle.waiting_for_atspeed)) {
+		if (MOTION_ID_VALID(emcmotInternal->chan[mchan_active_channel].coord_tp.spindle.waiting_for_atspeed)) {
 			for (spindle_num = 0; spindle_num < emcmotConfig->numSpindles; spindle_num++) {
 				if (emcmotStatus->spindle_status[spindle_num].state == 0 && !emcmotStatus->spindle_status[spindle_num].at_speed) {
 					reportError(_("Aborted while waiting for spindle %d at-speed after a spindle stop. "
@@ -523,7 +1053,7 @@ void emcmotCommandHandler_locked(void *arg, long servo_period)
 				}
 			}
 		}
-		tpAbort(&emcmotInternal->coord_tp);
+		tpAbort(&emcmotInternal->chan[mchan_active_channel].coord_tp);
 	    } else {
 		for (joint_num = 0; joint_num < ALL_JOINTS; joint_num++) {
 		    /* point to joint struct */
@@ -1014,35 +1544,37 @@ void emcmotCommandHandler_locked(void *arg, long servo_period)
             break;
 
 	case EMCMOT_SET_TERM_COND:
-	    /* sets termination condition for motion emcmotInternal->coord_tp */
+	    /* sets termination condition for motion emcmotInternal->chan[mchan_active_channel].coord_tp */
 	    rtapi_print_msg(RTAPI_MSG_DBG, "SET_TERM_COND");
-	    tpSetTermCond(&emcmotInternal->coord_tp, emcmotCommand->termCond, emcmotCommand->tolerance);
+	    tpSetTermCond(&emcmotInternal->chan[mchan_active_channel].coord_tp, emcmotCommand->termCond, emcmotCommand->tolerance);
 	    break;
 
 	case EMCMOT_SET_SPINDLESYNC:
-		tpSetSpindleSync(&emcmotInternal->coord_tp, emcmotCommand->spindle, emcmotCommand->spindlesync, emcmotCommand->flags);
+		tpSetSpindleSync(&emcmotInternal->chan[mchan_active_channel].coord_tp, emcmotCommand->spindle, emcmotCommand->spindlesync, emcmotCommand->flags);
 		break;
 
 	case EMCMOT_SET_LINE:
-	    /* emcmotInternal->coord_tp up a linear move */
+	    /* emcmotInternal->chan[mchan_active_channel].coord_tp up a linear move */
 	    /* requires motion enabled, coordinated mode, not on limits */
+	    /* MCHAN (MC3-lite): secondary channels are coord-only by design,
+	     * so only the global enable gate applies to them (D5 floor). */
 	    rtapi_print_msg(RTAPI_MSG_DBG, "SET_LINE");
-	    if (!GET_MOTION_COORD_FLAG() || !GET_MOTION_ENABLE_FLAG()) {
+	    if ((mchan_active_channel == 0 && !GET_MOTION_COORD_FLAG()) || !GET_MOTION_ENABLE_FLAG()) {
 		reportError(_("need to be enabled, in coord mode for linear move"));
-		emcmotStatus->commandStatus = EMCMOT_COMMAND_INVALID_COMMAND;
-		SET_MOTION_ERROR_FLAG(1);
+		(*mchan_echo_status) = EMCMOT_COMMAND_INVALID_COMMAND;
+		SET_MOTION_ERROR_FLAG_SCOPED(1);
 		break;
 	    } else if (!inRange(emcmotCommand->pos, emcmotCommand->id, "Linear")) {
 		reportError(_("invalid params in linear command"));
-		emcmotStatus->commandStatus = EMCMOT_COMMAND_INVALID_PARAMS;
-		tpAbort(&emcmotInternal->coord_tp);
-		SET_MOTION_ERROR_FLAG(1);
+		(*mchan_echo_status) = EMCMOT_COMMAND_INVALID_PARAMS;
+		tpAbort(&emcmotInternal->chan[mchan_active_channel].coord_tp);
+		SET_MOTION_ERROR_FLAG_SCOPED(1);
 		break;
 	    } else if (!limits_ok()) {
 		reportError(_("can't do linear move with limits exceeded"));
-		emcmotStatus->commandStatus = EMCMOT_COMMAND_INVALID_PARAMS;
-		tpAbort(&emcmotInternal->coord_tp);
-		SET_MOTION_ERROR_FLAG(1);
+		(*mchan_echo_status) = EMCMOT_COMMAND_INVALID_PARAMS;
+		tpAbort(&emcmotInternal->chan[mchan_active_channel].coord_tp);
+		SET_MOTION_ERROR_FLAG_SCOPED(1);
 		break;
 	    }
 
@@ -1055,16 +1587,16 @@ void emcmotCommandHandler_locked(void *arg, long servo_period)
 			emcmotStatus->atspeed_next_feed = 1;
 		}
 
-	    /* append it to the emcmotInternal->coord_tp */
-	    tpSetId(&emcmotInternal->coord_tp, emcmotCommand->id);
-	    int res_addline = tpAddLine(&emcmotInternal->coord_tp,
+	    /* append it to the emcmotInternal->chan[mchan_active_channel].coord_tp */
+	    tpSetId(&emcmotInternal->chan[mchan_active_channel].coord_tp, emcmotCommand->id);
+	    int res_addline = tpAddLine(&emcmotInternal->chan[mchan_active_channel].coord_tp,
 					emcmotCommand->pos,
 					emcmotCommand->motion_type,
 					emcmotCommand->vel,
 					emcmotCommand->ini_maxvel,
 					emcmotCommand->acc,
 					emcmotCommand->ini_maxjerk, 
-					emcmotStatus->enables_new,
+					emcmotInternal->chan[mchan_active_channel].coord_tp.enables_new, /* MCHAN MC22/MC20 */
 					issue_atspeed,
 					emcmotCommand->turn,
 					emcmotCommand->tag);
@@ -1072,9 +1604,9 @@ void emcmotCommandHandler_locked(void *arg, long servo_period)
         if (res_addline < 0) {
             reportError(_("can't add linear move at line %d, error code %d"),
                     emcmotCommand->id, res_addline);
-            emcmotStatus->commandStatus = EMCMOT_COMMAND_BAD_EXEC;
-            tpAbort(&emcmotInternal->coord_tp);
-            SET_MOTION_ERROR_FLAG(1);
+            (*mchan_echo_status) = EMCMOT_COMMAND_BAD_EXEC;
+            tpAbort(&emcmotInternal->chan[mchan_active_channel].coord_tp);
+            SET_MOTION_ERROR_FLAG_SCOPED(1);
             break;
         } else if (res_addline != 0) {
             //TODO make this hand-shake more explicit
@@ -1093,44 +1625,45 @@ void emcmotCommandHandler_locked(void *arg, long servo_period)
 	    break;
 
 	case EMCMOT_SET_CIRCLE:
-	    /* emcmotInternal->coord_tp up a circular move */
+	    /* emcmotInternal->chan[mchan_active_channel].coord_tp up a circular move */
 	    /* requires coordinated mode, enable on, not on limits */
+	    /* MCHAN (MC3-lite): secondary channels are coord-only (see SET_LINE) */
 	    rtapi_print_msg(RTAPI_MSG_DBG, "SET_CIRCLE");
-	    if (!GET_MOTION_COORD_FLAG() || !GET_MOTION_ENABLE_FLAG()) {
+	    if ((mchan_active_channel == 0 && !GET_MOTION_COORD_FLAG()) || !GET_MOTION_ENABLE_FLAG()) {
 		reportError(_("need to be enabled, in coord mode for circular move"));
-		emcmotStatus->commandStatus = EMCMOT_COMMAND_INVALID_COMMAND;
-		SET_MOTION_ERROR_FLAG(1);
+		(*mchan_echo_status) = EMCMOT_COMMAND_INVALID_COMMAND;
+		SET_MOTION_ERROR_FLAG_SCOPED(1);
 		break;
 	    } else if (!inRange(emcmotCommand->pos, emcmotCommand->id, "Circular")) {
-		emcmotStatus->commandStatus = EMCMOT_COMMAND_INVALID_PARAMS;
-		tpAbort(&emcmotInternal->coord_tp);
-		SET_MOTION_ERROR_FLAG(1);
+		(*mchan_echo_status) = EMCMOT_COMMAND_INVALID_PARAMS;
+		tpAbort(&emcmotInternal->chan[mchan_active_channel].coord_tp);
+		SET_MOTION_ERROR_FLAG_SCOPED(1);
 		break;
 	    } else if (!limits_ok()) {
 		reportError(_("can't do circular move with limits exceeded"));
-		emcmotStatus->commandStatus = EMCMOT_COMMAND_INVALID_PARAMS;
-		tpAbort(&emcmotInternal->coord_tp);
-		SET_MOTION_ERROR_FLAG(1);
+		(*mchan_echo_status) = EMCMOT_COMMAND_INVALID_PARAMS;
+		tpAbort(&emcmotInternal->chan[mchan_active_channel].coord_tp);
+		SET_MOTION_ERROR_FLAG_SCOPED(1);
 		break;
 	    }
             if(emcmotStatus->atspeed_next_feed) {
                 issue_atspeed = 1;
                 emcmotStatus->atspeed_next_feed = 0;
             }
-	    /* append it to the emcmotInternal->coord_tp */
-	    tpSetId(&emcmotInternal->coord_tp, emcmotCommand->id);
-	    int res_addcircle = tpAddCircle(&emcmotInternal->coord_tp, emcmotCommand->pos,
+	    /* append it to the emcmotInternal->chan[mchan_active_channel].coord_tp */
+	    tpSetId(&emcmotInternal->chan[mchan_active_channel].coord_tp, emcmotCommand->id);
+	    int res_addcircle = tpAddCircle(&emcmotInternal->chan[mchan_active_channel].coord_tp, emcmotCommand->pos,
                             emcmotCommand->center, emcmotCommand->normal,
                             emcmotCommand->turn, emcmotCommand->motion_type,
                             emcmotCommand->vel, emcmotCommand->ini_maxvel,
-                            emcmotCommand->acc, emcmotCommand->ini_maxjerk, emcmotStatus->enables_new,
+                            emcmotCommand->acc, emcmotCommand->ini_maxjerk, emcmotInternal->chan[mchan_active_channel].coord_tp.enables_new, /* MCHAN MC22/MC20 */
 			    issue_atspeed, emcmotCommand->tag);
         if (res_addcircle < 0) {
             reportError(_("can't add circular move at line %d, error code %d"),
                     emcmotCommand->id, res_addcircle);
-		emcmotStatus->commandStatus = EMCMOT_COMMAND_BAD_EXEC;
-		tpAbort(&emcmotInternal->coord_tp);
-		SET_MOTION_ERROR_FLAG(1);
+		(*mchan_echo_status) = EMCMOT_COMMAND_BAD_EXEC;
+		tpAbort(&emcmotInternal->chan[mchan_active_channel].coord_tp);
+		SET_MOTION_ERROR_FLAG_SCOPED(1);
 		break;
         } else if (res_addcircle != 0) {
             //FIXME! This is a band-aid for a single issue, but there may be
@@ -1153,8 +1686,12 @@ void emcmotCommandHandler_locked(void *arg, long servo_period)
 	    /* set the velocity for subsequent moves */
 	    /* can do it at any time */
 	    rtapi_print_msg(RTAPI_MSG_DBG, "SET_VEL");
-	    emcmotStatus->vel = emcmotCommand->vel;
-	    tpSetVmax(&emcmotInternal->coord_tp, emcmotStatus->vel, emcmotCommand->ini_maxvel);
+	    /* MC2b: the global status echo is channel 0's; a secondary
+	     * channel's value lives in its TP (vMax) and is overlaid into
+	     * its own status snapshot */
+	    if (mchan_active_channel == 0)
+		emcmotStatus->vel = emcmotCommand->vel;
+	    tpSetVmax(&emcmotInternal->chan[mchan_active_channel].coord_tp, emcmotCommand->vel, emcmotCommand->ini_maxvel);
 	    break;
 
 	case EMCMOT_SET_VEL_LIMIT:
@@ -1163,7 +1700,7 @@ void emcmotCommandHandler_locked(void *arg, long servo_period)
 	    /* set the absolute max velocity for all subsequent moves */
 	    /* can do it at any time */
 	    emcmotConfig->limitVel = emcmotCommand->vel;
-	    tpSetVlimit(&emcmotInternal->coord_tp, emcmotConfig->limitVel);
+	    tpSetVlimit(&emcmotInternal->chan[mchan_active_channel].coord_tp, emcmotConfig->limitVel);
 	    break;
 
 	case EMCMOT_SET_JOINT_VEL_LIMIT:
@@ -1208,8 +1745,10 @@ void emcmotCommandHandler_locked(void *arg, long servo_period)
 	    /* set the max acceleration */
 	    /* can do it at any time */
 	    rtapi_print_msg(RTAPI_MSG_DBG, "SET_ACCEL");
-	    emcmotStatus->acc = emcmotCommand->acc;
-	    tpSetAmax(&emcmotInternal->coord_tp, emcmotStatus->acc);
+	    /* MC2b: global echo = channel 0's (see SET_VEL) */
+	    if (mchan_active_channel == 0)
+		emcmotStatus->acc = emcmotCommand->acc;
+	    tpSetAmax(&emcmotInternal->chan[mchan_active_channel].coord_tp, emcmotCommand->acc);
 	    break;
  
 	case EMCMOT_SET_JERK:
@@ -1221,21 +1760,246 @@ void emcmotCommandHandler_locked(void *arg, long servo_period)
 
 	case EMCMOT_SET_PLANNER_TYPE:
 		/* set the type of planner: 0 = trapezoidal, 1 = S-curve */
-		/* can do it at any time */
+		/* ===== BEGIN PLANNER_SWITCH_DEFER (reversible) =====================
+		 * Apply instantly ONLY when motion is idle. During motion, latch the
+		 * request and let emcmotApplyPendingPlannerType() apply it at queue-idle
+		 * (never aborts). A one-shot WARN tells the operator it is pending.
+		 * ORIGINAL behaviour (applied immediately, "can do it at any time"):
+		 *     if (emcmotCommand->planner_type != 0 && emcmotCommand->planner_type != 1)
+		 *         emcmotStatus->planner_type = 0;
+		 *     else
+		 *         emcmotStatus->planner_type = emcmotCommand->planner_type;
+		 */
 		rtapi_print_msg(RTAPI_MSG_DBG, "SET_PLANNER_TYPE, type(%d)", emcmotCommand->planner_type);
-		// Only 0 and 1 are supported, set to 0 if invalid
-		if (emcmotCommand->planner_type != 0 && emcmotCommand->planner_type != 1) {
-			emcmotStatus->planner_type = 0;
-		} else {
-			emcmotStatus->planner_type = emcmotCommand->planner_type;
+		{
+			/* MCHAN MC21: the switch is scoped to the REQUESTING channel -
+			 * state lives in that channel's TP; ch0 mirrors to the legacy
+			 * emcmotStatus->planner_type status field. */
+			int ch = mchan_active_channel;
+			TP_STRUCT *ptp = &emcmotInternal->chan[ch].coord_tp;
+			/* Only 0 and 1 are supported; coerce anything else to 0. */
+			int req = (emcmotCommand->planner_type == 1) ? 1 : 0;
+			/* G64_R_PLANNER guard (parity with initraj/inihal, which force
+			 * type 0 when jerk is unset): refuse an S-curve request when no
+			 * valid TRAJ-level max jerk is configured, instead of entering a
+			 * degraded per-segment-fallback state. */
+			if (req == 1 && emcmotStatus->jerk < 1.0) {
+				reportError(_("S-curve planner refused: no usable jerk limit - set [TRAJ]MAX_LINEAR_JERK and per-axis [AXIS_*]MAX_JERK"));
+				break;
+			}
+			if (planner_switch_channel_idle(ch)) {
+				/* idle: instant switch, drop any stale pending request */
+				ptp->planner_type = req;
+				if (ch == 0) {
+					emcmotStatus->planner_type = req;
+				}
+				planner_type_switch_pending[ch] = 0;
+			} else if (req != ptp->planner_type) {
+				/* moving: defer until the queue drains (never abort) */
+				planner_type_pending_value[ch] = req;
+				if (!planner_type_switch_pending[ch]) {
+					planner_type_switch_pending[ch] = 1;
+					/* operator-facing: reportError() surfaces in the GUI (unlike
+					 * rtapi_print_msg, which only hits the RTAPI log/terminal). */
+					reportError(_("planner switch deferred until queued motion completes (requested type %d)"), req);
+				}
+			} else {
+				/* request already equals current type: cancel any pending switch */
+				planner_type_switch_pending[ch] = 0;
+			}
+		}
+		/* ===== END PLANNER_SWITCH_DEFER ==================================== */
+		break;
+
+	case EMCMOT_SET_CHANNEL_AXIS_MAP:
+		/* MCHAN (MC6): map this channel's axis letter (.axis, 0=X..8=W in
+		 * the channel's own letter space) onto a global joint (.joint;
+		 * -1 unmaps). Sent by the channel's task at config time through
+		 * its own mailbox. Ownership (D6): a secondary channel claims the
+		 * joint; claiming one owned by another secondary channel is
+		 * rejected (MC9 pattern - clean GUI error, never silent). */
+		rtapi_print_msg(RTAPI_MSG_DBG, "SET_CHANNEL_AXIS_MAP ch=%d axis=%d joint=%d",
+			mchan_active_channel, emcmotCommand->axis, emcmotCommand->joint);
+		{
+			int map_ax = emcmotCommand->axis;
+			int map_jn = emcmotCommand->joint;
+			if (map_ax < 0 || map_ax >= EMCMOT_MAX_AXIS) {
+				reportError(_("channel %d: axis index %d out of range (0..%d)"),
+					mchan_active_channel, map_ax, EMCMOT_MAX_AXIS - 1);
+				(*mchan_echo_status) = EMCMOT_COMMAND_INVALID_PARAMS;
+				break;
+			}
+			if (map_jn >= ALL_JOINTS) {
+				reportError(_("channel %d: joint %d out of range (machine has %d joints)"),
+					mchan_active_channel, map_jn, ALL_JOINTS);
+				(*mchan_echo_status) = EMCMOT_COMMAND_INVALID_PARAMS;
+				break;
+			}
+			if (map_jn < 0) {
+				/* unmap; release ownership back to channel 0 if this
+				 * channel held the joint and no other of its axes maps it */
+				int old_jn = emcmotInternal->chan[mchan_active_channel].axis_to_joint[map_ax];
+				emcmotInternal->chan[mchan_active_channel].axis_to_joint[map_ax] = -1;
+				if (old_jn >= 0 && mchan_active_channel != 0
+				    && emcmotInternal->joint_owner[old_jn] == mchan_active_channel) {
+					int still_used = 0;
+					for (int ax2 = 0; ax2 < EMCMOT_MAX_AXIS; ax2++) {
+						if (emcmotInternal->chan[mchan_active_channel].axis_to_joint[ax2] == old_jn) {
+							still_used = 1;
+							break;
+						}
+					}
+					if (!still_used) {
+						emcmotInternal->joint_owner[old_jn] = 0;
+					}
+				}
+				break;
+			}
+			if (mchan_active_channel != 0) {
+				int owner = emcmotInternal->joint_owner[map_jn];
+				if (owner != 0 && owner != mchan_active_channel) {
+					reportError(_("channel %d: joint %d is already owned by channel %d"),
+						mchan_active_channel, map_jn, owner);
+					(*mchan_echo_status) = EMCMOT_COMMAND_INVALID_PARAMS;
+					break;
+				}
+				emcmotInternal->joint_owner[map_jn] = mchan_active_channel;
+				/* prime the joint's interpolator so the channel's
+				 * executor starts feeding it (mirrors the FREE->COORD
+				 * transition priming on channel 0) */
+				cubicDrain(&(joints[map_jn].cubic));
+			}
+			emcmotInternal->chan[mchan_active_channel].axis_to_joint[map_ax] = map_jn;
 		}
 		break;
-				
+
+	case EMCMOT_SET_CHANNEL_SPINDLE:
+		/* MCHAN (MC26b): claim a spindle for this channel. Sent by
+		 * mchan-chmap from [CHANNEL]SPINDLE at config time. Ownership
+		 * conflict (another secondary already owns it) is rejected;
+		 * channel 0 owns every spindle it is not given away (default). */
+		rtapi_print_msg(RTAPI_MSG_DBG, "SET_CHANNEL_SPINDLE ch=%d spindle=%d",
+			mchan_active_channel, emcmotCommand->spindle);
+		{
+			int sp = emcmotCommand->spindle;
+			if (sp < 0 || sp >= emcmotConfig->numSpindles) {
+				reportError(_("channel %d: spindle %d out of range (machine has %d)"),
+					mchan_active_channel, sp, emcmotConfig->numSpindles);
+				(*mchan_echo_status) = EMCMOT_COMMAND_INVALID_PARAMS;
+				break;
+			}
+			if (mchan_active_channel != 0) {
+				int owner = emcmotInternal->spindle_owner[sp];
+				if (owner != 0 && owner != mchan_active_channel) {
+					reportError(_("channel %d: spindle %d is already owned by channel %d"),
+						mchan_active_channel, sp, owner);
+					(*mchan_echo_status) = EMCMOT_COMMAND_INVALID_PARAMS;
+					break;
+				}
+				emcmotInternal->spindle_owner[sp] = mchan_active_channel;
+			}
+		}
+		break;
+
+	case EMCMOT_WAIT_RENDEZVOUS: {
+		/* MCHAN MC10/Phase4: this channel has reached a waiting-M
+		 * (M200-M229) and its queue has drained (the M-code is a
+		 * queue-buster, so task only sends this once the channel is
+		 * in-position). Record arrival; the rendezvous engine in
+		 * control.c matches participants and releases all in one cycle. */
+		emcmot_channel_t *wc = &emcmotInternal->chan[mchan_active_channel];
+		wc->waitm_num = emcmotCommand->waitm_num;
+		wc->waitm_mask = emcmotCommand->waitm_mask;	/* 0 = all configured */
+		wc->waitm_released = 0;
+		wc->waitm_reported = 0;
+		wc->waitm_blockers = 0;
+		wc->waitm_t0 = 0.0;				/* elapsed-wait accumulator */
+		rtapi_print_msg(RTAPI_MSG_DBG, "WAIT_RENDEZVOUS ch=%d M%d mask=0x%x",
+			mchan_active_channel, wc->waitm_num, wc->waitm_mask);
+		break;
+	}
+	case EMCMOT_CANCEL_RENDEZVOUS: {
+		/* MCHAN MC10/Phase4: clear this channel's pending waiting-M
+		 * (task sends this on abort/reset so a partner doesn't phantom-
+		 * match a stale arrival). */
+		emcmot_channel_t *wc = &emcmotInternal->chan[mchan_active_channel];
+		wc->waitm_num = -1;
+		wc->waitm_released = 0;
+		wc->waitm_reported = 0;
+		wc->waitm_blockers = 0;
+		break;
+	}
+
+	case EMCMOT_SET_CHANNEL_FRAME: {
+		/* MCHAN MC31: this channel's world ORIGIN+ORIENT (from
+		 * [CHANNEL]ORIGIN/ORIENT via chmap). Precompute the rotation
+		 * Rz*Ry*Rx (same convention as the preview) so the per-cycle
+		 * guard just does origin + rot*carte. */
+		emcmot_channel_t *fc = &emcmotInternal->chan[mchan_active_channel];
+		double rx = emcmotCommand->frame_orient[0] * (M_PI / 180.0);
+		double ry = emcmotCommand->frame_orient[1] * (M_PI / 180.0);
+		double rz = emcmotCommand->frame_orient[2] * (M_PI / 180.0);
+		double cx = cos(rx), sx = sin(rx), cy = cos(ry), sy = sin(ry), cz = cos(rz), sz = sin(rz);
+		fc->origin[0] = emcmotCommand->frame_origin[0];
+		fc->origin[1] = emcmotCommand->frame_origin[1];
+		fc->origin[2] = emcmotCommand->frame_origin[2];
+		fc->rot[0][0] = cz*cy; fc->rot[0][1] = cz*sy*sx - sz*cx; fc->rot[0][2] = cz*sy*cx + sz*sx;
+		fc->rot[1][0] = sz*cy; fc->rot[1][1] = sz*sy*sx + cz*cx; fc->rot[1][2] = sz*sy*cx - cz*sx;
+		fc->rot[2][0] = -sy;   fc->rot[2][1] = cy*sx;            fc->rot[2][2] = cy*cx;
+		fc->frame_set = 1;
+		rtapi_print_msg(RTAPI_MSG_DBG, "SET_CHANNEL_FRAME ch=%d O=(%.1f,%.1f,%.1f)",
+			mchan_active_channel, fc->origin[0], fc->origin[1], fc->origin[2]);
+		break;
+	}
+	case EMCMOT_SET_INTERFERE_ZONE:
+		/* MCHAN MC31: world keep-out box {xmin,xmax,ymin,ymax,zmin,zmax}
+		 * (from [MCHAN]INTERFERE_ZONE, sent by the master chmap). */
+		for (int z = 0; z < 6; z++)
+			emcmotInternal->interfere_zone[z] = emcmotCommand->zone[z];
+		emcmotInternal->interfere_zone_set = 1;
+		rtapi_print_msg(RTAPI_MSG_DBG, "SET_INTERFERE_ZONE x[%.0f,%.0f] y[%.0f,%.0f] z[%.0f,%.0f]",
+			emcmotInternal->interfere_zone[0], emcmotInternal->interfere_zone[1],
+			emcmotInternal->interfere_zone[2], emcmotInternal->interfere_zone[3],
+			emcmotInternal->interfere_zone[4], emcmotInternal->interfere_zone[5]);
+		break;
+
+	case EMCMOT_SET_CHANNEL_IO_RANGE: {
+		/* MCHAN MC27: this channel's digital/analog I/O index window
+		 * (from [CHANNEL]DIO_RANGE/AIO_RANGE via chmap). count==0 leaves
+		 * the channel unrestricted (legacy). */
+		emcmot_channel_t *ioc = &emcmotInternal->chan[mchan_active_channel];
+		ioc->dio_base  = emcmotCommand->io_dio_base;
+		ioc->dio_count = emcmotCommand->io_dio_count;
+		ioc->aio_base  = emcmotCommand->io_aio_base;
+		ioc->aio_count = emcmotCommand->io_aio_count;
+		rtapi_print_msg(RTAPI_MSG_DBG, "SET_CHANNEL_IO_RANGE ch=%d dio[%d,+%d) aio[%d,+%d)",
+			mchan_active_channel, ioc->dio_base, ioc->dio_count, ioc->aio_base, ioc->aio_count);
+		break;
+	}
+
+	case EMCMOT_SET_SCURVE_PEAK_SCALE:
+		/* S-curve rest-to-rest peak velocity scale: 0.5 = faithful (original
+		 * behaviour), 1.0 = physically-correct (full jerk-feasible cornering).
+		 * Runtime-tunable; clamp to a sane range.
+		 * MCHAN MC21 (completion): PER CHANNEL - one channel's G64 R must
+		 * not change another channel's cornering. ch0 mirrors to status. */
+		rtapi_print_msg(RTAPI_MSG_DBG, "SET_SCURVE_PEAK_SCALE, scale(%f)", emcmotCommand->scurve_peak_scale);
+		{
+			double ps = emcmotCommand->scurve_peak_scale;
+			if (ps < 0.1) ps = 0.1;
+			else if (ps > 1.0) ps = 1.0;
+			emcmotInternal->chan[mchan_active_channel].coord_tp.scurve_peak_scale = ps;
+			if (mchan_active_channel == 0) {
+				emcmotStatus->scurve_peak_scale = ps;
+			}
+		}
+		break;
+
 	case EMCMOT_PAUSE:
 	    /* pause the motion */
 	    /* can happen at any time */
 	    rtapi_print_msg(RTAPI_MSG_DBG, "PAUSE");
-	    tpPause(&emcmotInternal->coord_tp);
+	    tpPause(&emcmotInternal->chan[mchan_active_channel].coord_tp);
 	    emcmotStatus->paused = 1;
 	    break;
 
@@ -1243,14 +2007,14 @@ void emcmotCommandHandler_locked(void *arg, long servo_period)
 	    /* run motion in reverse*/
 	    /* only allowed during a pause */
 	    rtapi_print_msg(RTAPI_MSG_DBG, "REVERSE");
-	    tpSetRunDir(&emcmotInternal->coord_tp, TC_DIR_REVERSE);
+	    tpSetRunDir(&emcmotInternal->chan[mchan_active_channel].coord_tp, TC_DIR_REVERSE);
 	    break;
 
 	case EMCMOT_FORWARD:
 	    /* run motion in reverse*/
 	    /* only allowed during a pause */
 	    rtapi_print_msg(RTAPI_MSG_DBG, "FORWARD");
-	    tpSetRunDir(&emcmotInternal->coord_tp, TC_DIR_FORWARD);
+	    tpSetRunDir(&emcmotInternal->chan[mchan_active_channel].coord_tp, TC_DIR_FORWARD);
 	    break;
 
 	case EMCMOT_RESUME:
@@ -1258,7 +2022,7 @@ void emcmotCommandHandler_locked(void *arg, long servo_period)
 	    /* can happen at any time */
 	    rtapi_print_msg(RTAPI_MSG_DBG, "RESUME");
 	    emcmotStatus->stepping = 0;
-	    tpResume(&emcmotInternal->coord_tp);
+	    tpResume(&emcmotInternal->chan[mchan_active_channel].coord_tp);
 	    emcmotStatus->paused = 0;
 	    break;
 
@@ -1269,7 +2033,7 @@ void emcmotCommandHandler_locked(void *arg, long servo_period)
             if(emcmotStatus->paused) {
                 emcmotInternal->idForStep = emcmotStatus->id;
                 emcmotStatus->stepping = 1;
-                tpResume(&emcmotInternal->coord_tp);
+                tpResume(&emcmotInternal->chan[mchan_active_channel].coord_tp);
                 emcmotStatus->paused = 1;
             } else {
 		reportError(_("MOTION: can't STEP while already executing"));
@@ -1279,11 +2043,16 @@ void emcmotCommandHandler_locked(void *arg, long servo_period)
 	case EMCMOT_FEED_SCALE:
 	    /* override speed */
 	    /* can happen at any time */
+	    /* MCHAN MC22: scoped to the requesting channel; ch0 mirrors to the
+	     * legacy status field for the GUI/status view. */
 	    rtapi_print_msg(RTAPI_MSG_DBG, "FEED SCALE");
 	    if (emcmotCommand->scale < 0.0) {
 		emcmotCommand->scale = 0.0;	/* clamp it */
 	    }
-	    emcmotStatus->feed_scale = emcmotCommand->scale;
+	    emcmotInternal->chan[mchan_active_channel].coord_tp.feed_scale = emcmotCommand->scale;
+	    if (mchan_active_channel == 0) {
+		emcmotStatus->feed_scale = emcmotCommand->scale;
+	    }
 	    break;
 
 	case EMCMOT_RAPID_SCALE:
@@ -1293,7 +2062,10 @@ void emcmotCommandHandler_locked(void *arg, long servo_period)
 	    if (emcmotCommand->scale < 0.0) {
 		emcmotCommand->scale = 0.0;	/* clamp it */
 	    }
-	    emcmotStatus->rapid_scale = emcmotCommand->scale;
+	    emcmotInternal->chan[mchan_active_channel].coord_tp.rapid_scale = emcmotCommand->scale;
+	    if (mchan_active_channel == 0) {
+		emcmotStatus->rapid_scale = emcmotCommand->scale;
+	    }
 	    break;
 
 	case EMCMOT_FS_ENABLE:
@@ -1301,10 +2073,13 @@ void emcmotCommandHandler_locked(void *arg, long servo_period)
 	    /* can happen at any time */
 	    if ( emcmotCommand->mode != 0 ) {
 		rtapi_print_msg(RTAPI_MSG_DBG, "FEED SCALE: ON");
-		emcmotStatus->enables_new |= FS_ENABLED;
+		emcmotInternal->chan[mchan_active_channel].coord_tp.enables_new |= FS_ENABLED;
             } else {
 		rtapi_print_msg(RTAPI_MSG_DBG, "FEED SCALE: OFF");
-		emcmotStatus->enables_new &= ~FS_ENABLED;
+		emcmotInternal->chan[mchan_active_channel].coord_tp.enables_new &= ~FS_ENABLED;
+	    }
+	    if (mchan_active_channel == 0) {
+		emcmotStatus->enables_new = emcmotInternal->chan[0].coord_tp.enables_new;
 	    }
 	    break;
 
@@ -1313,10 +2088,13 @@ void emcmotCommandHandler_locked(void *arg, long servo_period)
 	    /* can happen at any time */
 	    if ( emcmotCommand->mode != 0 ) {
 		rtapi_print_msg(RTAPI_MSG_DBG, "FEED HOLD: ENABLED");
-		emcmotStatus->enables_new |= FH_ENABLED;
+		emcmotInternal->chan[mchan_active_channel].coord_tp.enables_new |= FH_ENABLED;
             } else {
 		rtapi_print_msg(RTAPI_MSG_DBG, "FEED HOLD: DISABLED");
-		emcmotStatus->enables_new &= ~FH_ENABLED;
+		emcmotInternal->chan[mchan_active_channel].coord_tp.enables_new &= ~FH_ENABLED;
+	    }
+	    if (mchan_active_channel == 0) {
+		emcmotStatus->enables_new = emcmotInternal->chan[0].coord_tp.enables_new;
 	    }
 	    break;
 
@@ -1335,22 +2113,32 @@ void emcmotCommandHandler_locked(void *arg, long servo_period)
 	    /* can happen at any time */
 	    if ( emcmotCommand->mode != 0 ) {
 		rtapi_print_msg(RTAPI_MSG_DBG, "SPINDLE SCALE: ON");
-		emcmotStatus->enables_new |= SS_ENABLED;
+		emcmotInternal->chan[mchan_active_channel].coord_tp.enables_new |= SS_ENABLED;
             } else {
 		rtapi_print_msg(RTAPI_MSG_DBG, "SPINDLE SCALE: OFF");
-		emcmotStatus->enables_new &= ~SS_ENABLED;
+		emcmotInternal->chan[mchan_active_channel].coord_tp.enables_new &= ~SS_ENABLED;
+	    }
+	    if (mchan_active_channel == 0) {
+		emcmotStatus->enables_new = emcmotInternal->chan[0].coord_tp.enables_new;
 	    }
 	    break;
 
 	case EMCMOT_AF_ENABLE:
 	    /* enable/disable adaptive feedrate override from HAL pin */
 	    /* can happen at any time */
+	    /* MCHAN MC22 residual: the adaptive-feed HAL pin itself is single/
+	     * global and couples to ch0's TP reverse-run - until motion.N.*
+	     * pins (MC7) exist, AF only takes effect on channel 0 (see
+	     * process_inputs). The enable bit is still tracked per channel. */
 	    if ( emcmotCommand->flags != 0 ) {
 		rtapi_print_msg(RTAPI_MSG_DBG, "ADAPTIVE FEED: ON");
-		emcmotStatus->enables_new |= AF_ENABLED;
+		emcmotInternal->chan[mchan_active_channel].coord_tp.enables_new |= AF_ENABLED;
             } else {
 		rtapi_print_msg(RTAPI_MSG_DBG, "ADAPTIVE FEED: OFF");
-		emcmotStatus->enables_new &= ~AF_ENABLED;
+		emcmotInternal->chan[mchan_active_channel].coord_tp.enables_new &= ~AF_ENABLED;
+	    }
+	    if (mchan_active_channel == 0) {
+		emcmotStatus->enables_new = emcmotInternal->chan[0].coord_tp.enables_new;
 	    }
 	    break;
 
@@ -1434,6 +2222,23 @@ void emcmotCommandHandler_locked(void *arg, long servo_period)
 		break;
 	    }
 
+	    /* MCHAN d1: channel 0's Home All is SYMMETRIC - it homes only
+	     * the joints channel 0 owns (= everything unclaimed). With one
+	     * channel that is ALL joints = legacy bit-identical (D7). */
+	    if (motion_num_channels > 1) {
+		if (joint_num >= 0 && emcmotInternal->joint_owner[joint_num] != 0) {
+		    reportError(_("joint %d belongs to channel %d - home it from that channel"),
+			joint_num, emcmotInternal->joint_owner[joint_num]);
+		    return;
+		}
+		if (!mchan_homing_interlock_ok(0)) {
+		    return;
+		}
+		set_home_permit_mask(mchan_home_mask(0));
+	    } else {
+		set_home_permit_mask(~0u);
+	    }
+	    mchan_homing_session_ch = 0;
 	    // Negative joint_num specifies homeall
 	    do_home_joint(joint_num);
 	    break;
@@ -1442,6 +2247,31 @@ void emcmotCommandHandler_locked(void *arg, long servo_period)
             /* unhome the specified joint, or all joints if -1, or volatile joints if -2 */
             rtapi_print_msg(RTAPI_MSG_DBG, "JOINT_UNHOME");
             rtapi_print_msg(RTAPI_MSG_DBG, " %d", joint_num);
+
+            /* MCHAN: channel 0's unhome must touch ONLY channel 0's joints
+             * (joint_num<0 = all/volatile of THIS channel) and, like
+             * homing, use the channel-idle gate instead of requiring the
+             * whole machine in free mode - else G28.3 from MDI is blocked
+             * and menu-unhome wipes other channels (both user-found).
+             * Single channel = legacy (D7). */
+            if (motion_num_channels > 1) {
+                if (joint_num >= 0 &&
+                    emcmotInternal->joint_owner[joint_num] != 0) {
+                    reportError(_("joint %d belongs to channel %d - unhome it from that channel"),
+                        joint_num, emcmotInternal->joint_owner[joint_num]);
+                    return;
+                }
+                if (joint_num >= 0) {
+                    set_unhomed(joint_num, emcmotStatus->motion_state);
+                } else {
+                    for (int j0 = 0; j0 < ALL_JOINTS; j0++) {
+                        if (emcmotInternal->joint_owner[j0] != 0) continue;
+                        if (joint_num == -1 || get_home_is_volatile(j0))
+                            set_unhomed(j0, emcmotStatus->motion_state);
+                    }
+                }
+                break;
+            }
 
             if (   (emcmotStatus->motion_state != EMCMOT_MOTION_FREE)
                 && (emcmotStatus->motion_state != EMCMOT_MOTION_DISABLED)) {
@@ -1475,24 +2305,35 @@ void emcmotCommandHandler_locked(void *arg, long servo_period)
 
 	case EMCMOT_PROBE:
 	    /* most of this is taken from EMCMOT_SET_LINE */
-	    /* emcmotInternal->coord_tp up a linear move */
+	    /* emcmotInternal->chan[mchan_active_channel].coord_tp up a linear move */
 	    /* requires coordinated mode, enable off, not on limits */
 	    rtapi_print_msg(RTAPI_MSG_DBG, "PROBE");
+	    /* MCHAN MC25 day-1: ONE shared probe input + global trip logic, so
+	     * only one channel may probe at a time. Mutual exclusion: refuse if
+	     * another channel already holds an active probe. (num_channels==1:
+	     * probe_owner only ever this channel -> never fires, D7.) */
+	    if (emcmotStatus->probing &&
+		emcmotInternal->probe_owner != mchan_active_channel) {
+		reportError(_("ch%d: probe busy (channel %d) - G38 refused"),
+		    mchan_active_channel, emcmotInternal->probe_owner);
+		(*mchan_echo_status) = EMCMOT_COMMAND_INVALID_PARAMS;
+		break;
+	    }
 	    if (!GET_MOTION_COORD_FLAG() || !GET_MOTION_ENABLE_FLAG()) {
 		reportError(_("need to be enabled, in coord mode for probe move"));
-		emcmotStatus->commandStatus = EMCMOT_COMMAND_INVALID_COMMAND;
-		SET_MOTION_ERROR_FLAG(1);
+		(*mchan_echo_status) = EMCMOT_COMMAND_INVALID_COMMAND;
+		SET_MOTION_ERROR_FLAG_SCOPED(1);
 		break;
 	    } else if (!inRange(emcmotCommand->pos, emcmotCommand->id, "Probe")) {
-		emcmotStatus->commandStatus = EMCMOT_COMMAND_INVALID_PARAMS;
-		tpAbort(&emcmotInternal->coord_tp);
-		SET_MOTION_ERROR_FLAG(1);
+		(*mchan_echo_status) = EMCMOT_COMMAND_INVALID_PARAMS;
+		tpAbort(&emcmotInternal->chan[mchan_active_channel].coord_tp);
+		SET_MOTION_ERROR_FLAG_SCOPED(1);
 		break;
 	    } else if (!limits_ok()) {
 		reportError(_("can't do probe move with limits exceeded"));
-		emcmotStatus->commandStatus = EMCMOT_COMMAND_INVALID_PARAMS;
-		tpAbort(&emcmotInternal->coord_tp);
-		SET_MOTION_ERROR_FLAG(1);
+		(*mchan_echo_status) = EMCMOT_COMMAND_INVALID_PARAMS;
+		tpAbort(&emcmotInternal->chan[mchan_active_channel].coord_tp);
+		SET_MOTION_ERROR_FLAG_SCOPED(1);
 		break;
 	    } else if (!(emcmotCommand->probe_type & 1)) {
                 // if suppress errors = off...
@@ -1507,9 +2348,9 @@ void emcmotCommandHandler_locked(void *arg, long servo_period)
                     else
                         reportError(_("Probe is already tripped when starting G38.2 or G38.3 move"));
 
-                    emcmotStatus->commandStatus = EMCMOT_COMMAND_BAD_EXEC;
-                    tpAbort(&emcmotInternal->coord_tp);
-                    SET_MOTION_ERROR_FLAG(1);
+                    (*mchan_echo_status) = EMCMOT_COMMAND_BAD_EXEC;
+                    tpAbort(&emcmotInternal->chan[mchan_active_channel].coord_tp);
+                    SET_MOTION_ERROR_FLAG_SCOPED(1);
                     break;
                 }
             }
@@ -1522,27 +2363,28 @@ void emcmotCommandHandler_locked(void *arg, long servo_period)
 		emcmotStatus->atspeed_next_feed = 0;
 	    }
 
-	    /* append it to the emcmotInternal->coord_tp */
-	    tpSetId(&emcmotInternal->coord_tp, emcmotCommand->id);
-	    if (-1 == tpAddLine(&emcmotInternal->coord_tp,
+	    /* append it to the channel's coord_tp */
+	    tpSetId(&emcmotInternal->chan[mchan_active_channel].coord_tp, emcmotCommand->id);
+	    if (-1 == tpAddLine(&emcmotInternal->chan[mchan_active_channel].coord_tp,
 				emcmotCommand->pos,
 				emcmotCommand->motion_type,
 				emcmotCommand->vel,
 				emcmotCommand->ini_maxvel,
 				emcmotCommand->acc,
 				emcmotCommand->ini_maxjerk,
-				emcmotStatus->enables_new,
-				issue_atspeed,
+				emcmotInternal->chan[mchan_active_channel].coord_tp.enables_new, /* MCHAN MC22/MC20 */
+				issue_atspeed,   /* upstream: G38 probe waits for spindle at-speed */
 				-1,
 				emcmotCommand->tag)) {
 		reportError(_("can't add probe move"));
-		emcmotStatus->commandStatus = EMCMOT_COMMAND_BAD_EXEC;
-		tpAbort(&emcmotInternal->coord_tp);
-		SET_MOTION_ERROR_FLAG(1);
+		(*mchan_echo_status) = EMCMOT_COMMAND_BAD_EXEC;
+		tpAbort(&emcmotInternal->chan[mchan_active_channel].coord_tp);
+		SET_MOTION_ERROR_FLAG_SCOPED(1);
 		break;
 	    } else {
 		emcmotStatus->probing = 1;
                 emcmotStatus->probe_type = emcmotCommand->probe_type;
+		emcmotInternal->probe_owner = mchan_active_channel; /* MC25 */
 		SET_MOTION_ERROR_FLAG(0);
 		/* set flag that indicates all joints need rehoming, if any
 		   joint is moved in joint mode, for machines with no forward
@@ -1553,44 +2395,44 @@ void emcmotCommandHandler_locked(void *arg, long servo_period)
 
 	case EMCMOT_RIGID_TAP:
 	    /* most of this is taken from EMCMOT_SET_LINE */
-	    /* emcmotInternal->coord_tp up a linear move */
+	    /* emcmotInternal->chan[mchan_active_channel].coord_tp up a linear move */
 	    /* requires coordinated mode, enable off, not on limits */
 	    rtapi_print_msg(RTAPI_MSG_DBG, "RIGID_TAP");
 	    if (!GET_MOTION_COORD_FLAG() || !GET_MOTION_ENABLE_FLAG()) {
 		reportError(_("need to be enabled, in coord mode for rigid tap move"));
-		emcmotStatus->commandStatus = EMCMOT_COMMAND_INVALID_COMMAND;
-		SET_MOTION_ERROR_FLAG(1);
+		(*mchan_echo_status) = EMCMOT_COMMAND_INVALID_COMMAND;
+		SET_MOTION_ERROR_FLAG_SCOPED(1);
 		break;
 	    } else if (!inRange(emcmotCommand->pos, emcmotCommand->id, "Rigid tap")) {
-		emcmotStatus->commandStatus = EMCMOT_COMMAND_INVALID_PARAMS;
-		tpAbort(&emcmotInternal->coord_tp);
-		SET_MOTION_ERROR_FLAG(1);
+		(*mchan_echo_status) = EMCMOT_COMMAND_INVALID_PARAMS;
+		tpAbort(&emcmotInternal->chan[mchan_active_channel].coord_tp);
+		SET_MOTION_ERROR_FLAG_SCOPED(1);
 		break;
 	    } else if (!limits_ok()) {
 		reportError(_("can't do rigid tap move with limits exceeded"));
-		emcmotStatus->commandStatus = EMCMOT_COMMAND_INVALID_PARAMS;
-		tpAbort(&emcmotInternal->coord_tp);
-		SET_MOTION_ERROR_FLAG(1);
+		(*mchan_echo_status) = EMCMOT_COMMAND_INVALID_PARAMS;
+		tpAbort(&emcmotInternal->chan[mchan_active_channel].coord_tp);
+		SET_MOTION_ERROR_FLAG_SCOPED(1);
 		break;
 	    }
 
 	    /* append it to the emcmotInternal->tp */
-	    tpSetId(&emcmotInternal->coord_tp, emcmotCommand->id);
-        int res_addtap = tpAddRigidTap(&emcmotInternal->coord_tp,
+	    tpSetId(&emcmotInternal->chan[mchan_active_channel].coord_tp, emcmotCommand->id);
+        int res_addtap = tpAddRigidTap(&emcmotInternal->chan[mchan_active_channel].coord_tp,
                                     emcmotCommand->pos,
                                     emcmotCommand->vel,
                                     emcmotCommand->ini_maxvel,
                                     emcmotCommand->acc,
 									emcmotCommand->ini_maxjerk,
-                                    emcmotStatus->enables_new,
+                                    emcmotInternal->chan[mchan_active_channel].coord_tp.enables_new, /* MCHAN MC22/MC20 */
                                     emcmotCommand->scale,
                                     emcmotCommand->tag);
         if (res_addtap < 0) {
             emcmotStatus->atspeed_next_feed = 0; /* rigid tap always waits for spindle to be at-speed */
             reportError(_("can't add rigid tap move at line %d, error code %d"),
                     emcmotCommand->id, res_addtap);
-		tpAbort(&emcmotInternal->coord_tp);
-		SET_MOTION_ERROR_FLAG(1);
+		tpAbort(&emcmotInternal->chan[mchan_active_channel].coord_tp);
+		SET_MOTION_ERROR_FLAG_SCOPED(1);
 		break;
 	    } else {
 		SET_MOTION_ERROR_FLAG(0);
@@ -1606,20 +2448,48 @@ void emcmotCommandHandler_locked(void *arg, long servo_period)
 	/* needed for synchronous I/O */
 	case EMCMOT_SET_AOUT:
 	    rtapi_print_msg(RTAPI_MSG_DBG, "SET_AOUT");
+	    /* MCHAN MC27: refuse an analog-out index outside this channel's
+	     * window (count==0 = unrestricted = legacy/D7). */
+	    {
+		emcmot_channel_t *ioc = &emcmotInternal->chan[mchan_active_channel];
+		if (ioc->aio_count > 0 &&
+		    (emcmotCommand->out < ioc->aio_base ||
+		     emcmotCommand->out >= ioc->aio_base + ioc->aio_count)) {
+		    reportError(_("ch%d: analog I/O index %d outside this channel's range [%d..%d] (M67/M68 refused)"),
+			mchan_active_channel, emcmotCommand->out,
+			ioc->aio_base, ioc->aio_base + ioc->aio_count - 1);
+		    (*mchan_echo_status) = EMCMOT_COMMAND_INVALID_PARAMS;
+		    break;
+		}
+	    }
 	    if (emcmotCommand->now) { //we set it right away
 		emcmotAioWrite(emcmotCommand->out, emcmotCommand->minLimit);
 	    } else { // we put it on the TP queue, warning: only room for one in there, any new ones will overwrite
-		tpSetAout(&emcmotInternal->coord_tp, emcmotCommand->out,
+		tpSetAout(&emcmotInternal->chan[mchan_active_channel].coord_tp, emcmotCommand->out,
 		    emcmotCommand->minLimit, emcmotCommand->maxLimit);
 	    }
 	    break;
 
 	case EMCMOT_SET_DOUT:
 	    rtapi_print_msg(RTAPI_MSG_DBG, "SET_DOUT");
+	    /* MCHAN MC27: refuse a digital-out index outside this channel's
+	     * window (count==0 = unrestricted = legacy/D7). */
+	    {
+		emcmot_channel_t *ioc = &emcmotInternal->chan[mchan_active_channel];
+		if (ioc->dio_count > 0 &&
+		    (emcmotCommand->out < ioc->dio_base ||
+		     emcmotCommand->out >= ioc->dio_base + ioc->dio_count)) {
+		    reportError(_("ch%d: digital I/O index %d outside this channel's range [%d..%d] (M62-M65 refused)"),
+			mchan_active_channel, emcmotCommand->out,
+			ioc->dio_base, ioc->dio_base + ioc->dio_count - 1);
+		    (*mchan_echo_status) = EMCMOT_COMMAND_INVALID_PARAMS;
+		    break;
+		}
+	    }
 	    if (emcmotCommand->now) { //we set it right away
 		emcmotDioWrite(emcmotCommand->out, emcmotCommand->start);
 	    } else { // we put it on the TP queue, warning: only room for one in there, any new ones will overwrite
-		tpSetDout(&emcmotInternal->coord_tp, emcmotCommand->out,
+		tpSetDout(&emcmotInternal->chan[mchan_active_channel].coord_tp, emcmotCommand->out,
 		    emcmotCommand->start, emcmotCommand->end);
 	    }
 	    break;
@@ -1633,7 +2503,7 @@ void emcmotCommandHandler_locked(void *arg, long servo_period)
 	    spindle_num = emcmotCommand->spindle;
         if (spindle_num >= emcmotConfig->numSpindles){
             reportError(_("Attempt to configure non-existent spindle"));
-            emcmotStatus->commandStatus = EMCMOT_COMMAND_INVALID_COMMAND;
+            (*mchan_echo_status) = EMCMOT_COMMAND_INVALID_COMMAND;
             break;
         }
         emcmotStatus->spindle_status[spindle_num].max_pos_speed = emcmotCommand->maxLimit;
@@ -1651,7 +2521,7 @@ void emcmotCommandHandler_locked(void *arg, long servo_period)
 	    spindle_num = emcmotCommand->spindle;
         if (spindle_num >= emcmotConfig->numSpindles){
             reportError(_("Attempt to start non-existent spindle"));
-            emcmotStatus->commandStatus = EMCMOT_COMMAND_INVALID_COMMAND;
+            (*mchan_echo_status) = EMCMOT_COMMAND_INVALID_COMMAND;
             break;
         }
         s0 = spindle_num;
@@ -1672,7 +2542,7 @@ void emcmotCommandHandler_locked(void *arg, long servo_period)
 
 	        /* if (emcmotStatus->spindle.orient) { */
 	        /* 	reportError(_("can\'t turn on spindle during orient in progress")); */
-	        /* 	emcmotStatus->commandStatus = EMCMOT_COMMAND_INVALID_COMMAND; */
+	        /* 	(*mchan_echo_status) = EMCMOT_COMMAND_INVALID_COMMAND; */
 	        /* 	tpAbort(&emcmotInternal->tp); */
 	        /* 	SET_MOTION_ERROR_FLAG(1); */
 	        /* } else {...} */
@@ -1704,7 +2574,7 @@ void emcmotCommandHandler_locked(void *arg, long servo_period)
 	    spindle_num = emcmotCommand->spindle;
         if (spindle_num >= emcmotConfig->numSpindles){
             reportError(_("Attempt to stop non-existent spindle <%d>"),spindle_num);
-            emcmotStatus->commandStatus = EMCMOT_COMMAND_INVALID_COMMAND;
+            (*mchan_echo_status) = EMCMOT_COMMAND_INVALID_COMMAND;
             break;
         }
         s0 = spindle_num;
@@ -1739,7 +2609,7 @@ void emcmotCommandHandler_locked(void *arg, long servo_period)
 	    spindle_num = emcmotCommand->spindle;
         if (spindle_num >= emcmotConfig->numSpindles){
             reportError(_("Attempt to orient non-existent spindle <%d>"),spindle_num);
-            emcmotStatus->commandStatus = EMCMOT_COMMAND_INVALID_COMMAND;
+            (*mchan_echo_status) = EMCMOT_COMMAND_INVALID_COMMAND;
             break;
         }
         s0 = spindle_num;
@@ -1759,7 +2629,7 @@ void emcmotCommandHandler_locked(void *arg, long servo_period)
 
 		    // mah:FIXME unsure whether this is ok or an error
 		    /* reportError(_("orient already in progress")); */
-		    /* emcmotStatus->commandStatus = EMCMOT_COMMAND_INVALID_COMMAND; */
+		    /* (*mchan_echo_status) = EMCMOT_COMMAND_INVALID_COMMAND; */
 		    /* tpAbort(&emcmotInternal->tp); */
 		    /* SET_MOTION_ERROR_FLAG(1); */
 	        }
@@ -1790,7 +2660,7 @@ void emcmotCommandHandler_locked(void *arg, long servo_period)
 	    spindle_num = emcmotCommand->spindle;
         if (spindle_num >= emcmotConfig->numSpindles){
             reportError(_("Attempt to increase non-existent spindle <%d>"),spindle_num);
-            emcmotStatus->commandStatus = EMCMOT_COMMAND_INVALID_COMMAND;
+            (*mchan_echo_status) = EMCMOT_COMMAND_INVALID_COMMAND;
             break;
         }
         s0 = spindle_num;
@@ -1814,7 +2684,7 @@ void emcmotCommandHandler_locked(void *arg, long servo_period)
 	    spindle_num = emcmotCommand->spindle;
         if (spindle_num >= emcmotConfig->numSpindles){
             reportError(_("Attempt to decrease non-existent spindle <%d>."),spindle_num);
-            emcmotStatus->commandStatus = EMCMOT_COMMAND_INVALID_COMMAND;
+            (*mchan_echo_status) = EMCMOT_COMMAND_INVALID_COMMAND;
             break;
         }
         s0 = spindle_num;
@@ -1838,7 +2708,7 @@ void emcmotCommandHandler_locked(void *arg, long servo_period)
 	    spindle_num = emcmotCommand->spindle;
         if (spindle_num >= emcmotConfig->numSpindles){
             reportError(_("Attempt to engage brake of non-existent spindle <%d>"),spindle_num);
-            emcmotStatus->commandStatus = EMCMOT_COMMAND_INVALID_COMMAND;
+            (*mchan_echo_status) = EMCMOT_COMMAND_INVALID_COMMAND;
             break;
         }
         s0 = spindle_num;
@@ -1860,7 +2730,7 @@ void emcmotCommandHandler_locked(void *arg, long servo_period)
 	    spindle_num = emcmotCommand->spindle;
         if (spindle_num >= emcmotConfig->numSpindles){
             reportError(_("Attempt to release brake of non-existent spindle <%d>"),spindle_num);
-            emcmotStatus->commandStatus = EMCMOT_COMMAND_INVALID_COMMAND;
+            (*mchan_echo_status) = EMCMOT_COMMAND_INVALID_COMMAND;
             break;
         }
         s0 = spindle_num;
@@ -1911,8 +2781,13 @@ void emcmotCommandHandler_locked(void *arg, long servo_period)
 	    break;
 
         case EMCMOT_SET_OFFSET:
+            /* MCHAN MC23: scoped to the requesting channel; ch0 mirrors to
+             * the legacy status field (feeds motion.tooloffset.* HAL pins). */
             rtapi_print_msg(RTAPI_MSG_DBG, "SET_OFFSET");
-            emcmotStatus->tool_offset = emcmotCommand->tool_offset;
+            emcmotInternal->chan[mchan_active_channel].tool_offset = emcmotCommand->tool_offset;
+            if (mchan_active_channel == 0) {
+                emcmotStatus->tool_offset = emcmotCommand->tool_offset;
+            }
             break;
 
 	case EMCMOT_SET_AXIS_POSITION_LIMITS:
@@ -1924,8 +2799,15 @@ void emcmotCommandHandler_locked(void *arg, long servo_period)
             if ((emcmotCommand->axis < 0) || (emcmotCommand->axis >= EMCMOT_MAX_AXIS)) {
                 break;
             }
-            axis_set_min_pos_limit(emcmotCommand->axis, emcmotCommand->minLimit);
-            axis_set_max_pos_limit(emcmotCommand->axis, emcmotCommand->maxLimit);
+            /* MCHAN MC24: ch0 = legacy axis module; secondary channels get
+             * their own envelope (used by inRange for their moves) */
+            if (mchan_active_channel == 0) {
+                axis_set_min_pos_limit(emcmotCommand->axis, emcmotCommand->minLimit);
+                axis_set_max_pos_limit(emcmotCommand->axis, emcmotCommand->maxLimit);
+            } else {
+                emcmotInternal->chan[mchan_active_channel].axis_lim[emcmotCommand->axis].min_pos_limit = emcmotCommand->minLimit;
+                emcmotInternal->chan[mchan_active_channel].axis_lim[emcmotCommand->axis].max_pos_limit = emcmotCommand->maxLimit;
+            }
 	    break;
 
         case EMCMOT_SET_AXIS_VEL_LIMIT:
@@ -1937,8 +2819,20 @@ void emcmotCommandHandler_locked(void *arg, long servo_period)
             if ((emcmotCommand->axis < 0) || (emcmotCommand->axis >= EMCMOT_MAX_AXIS)) {
                 break;
             }
-            axis_set_vel_limit(emcmotCommand->axis, emcmotCommand->vel);
-            axis_set_ext_offset_vel_limit(emcmotCommand->axis, emcmotCommand->ext_offset_vel);
+            /* MCHAN MC24: per-channel; the channel TP's XYZ planning bound
+             * follows (ch0's tracks the legacy axis module exactly) */
+            if (mchan_active_channel == 0) {
+                axis_set_vel_limit(emcmotCommand->axis, emcmotCommand->vel);
+                axis_set_ext_offset_vel_limit(emcmotCommand->axis, emcmotCommand->ext_offset_vel);
+            } else {
+                emcmotInternal->chan[mchan_active_channel].axis_lim[emcmotCommand->axis].vel_limit = emcmotCommand->vel;
+            }
+            {
+                TP_STRUCT *ctp = &emcmotInternal->chan[mchan_active_channel].coord_tp;
+                if (emcmotCommand->axis == 0) ctp->xyz_vel_bound.x = emcmotCommand->vel;
+                else if (emcmotCommand->axis == 1) ctp->xyz_vel_bound.y = emcmotCommand->vel;
+                else if (emcmotCommand->axis == 2) ctp->xyz_vel_bound.z = emcmotCommand->vel;
+            }
             break;
 
         case EMCMOT_SET_AXIS_ACC_LIMIT:
@@ -1950,8 +2844,18 @@ void emcmotCommandHandler_locked(void *arg, long servo_period)
             if ((emcmotCommand->axis < 0) || (emcmotCommand->axis >= EMCMOT_MAX_AXIS)) {
                 break;
             }
-            axis_set_acc_limit(emcmotCommand->axis, emcmotCommand->acc);
-            axis_set_ext_offset_acc_limit(emcmotCommand->axis, emcmotCommand->ext_offset_acc);
+            if (mchan_active_channel == 0) {
+                axis_set_acc_limit(emcmotCommand->axis, emcmotCommand->acc);
+                axis_set_ext_offset_acc_limit(emcmotCommand->axis, emcmotCommand->ext_offset_acc);
+            } else {
+                emcmotInternal->chan[mchan_active_channel].axis_lim[emcmotCommand->axis].acc_limit = emcmotCommand->acc;
+            }
+            {
+                TP_STRUCT *ctp = &emcmotInternal->chan[mchan_active_channel].coord_tp;
+                if (emcmotCommand->axis == 0) ctp->xyz_acc_bound.x = emcmotCommand->acc;
+                else if (emcmotCommand->axis == 1) ctp->xyz_acc_bound.y = emcmotCommand->acc;
+                else if (emcmotCommand->axis == 2) ctp->xyz_acc_bound.z = emcmotCommand->acc;
+            }
             break;
 
 		case EMCMOT_SET_AXIS_JERK_LIMIT:
@@ -1963,7 +2867,11 @@ void emcmotCommandHandler_locked(void *arg, long servo_period)
 			if ((emcmotCommand->axis < 0) || (emcmotCommand->axis >= EMCMOT_MAX_AXIS)) {
 			break;
 			}
-			axis_set_jerk_limit(emcmotCommand->axis, emcmotCommand->jerk);
+			if (mchan_active_channel == 0) {
+				axis_set_jerk_limit(emcmotCommand->axis, emcmotCommand->jerk);
+			} else {
+				emcmotInternal->chan[mchan_active_channel].axis_lim[emcmotCommand->axis].jerk_limit = emcmotCommand->jerk;
+			}
 			break;
 
         case EMCMOT_SET_AXIS_LOCKING_JOINT:
@@ -1979,7 +2887,7 @@ void emcmotCommandHandler_locked(void *arg, long servo_period)
 	default:
 	    rtapi_print_msg(RTAPI_MSG_DBG, "UNKNOWN");
 	    reportError(_("unrecognized command %d"), emcmotCommand->command);
-	    emcmotStatus->commandStatus = EMCMOT_COMMAND_UNKNOWN_COMMAND;
+	    (*mchan_echo_status) = EMCMOT_COMMAND_UNKNOWN_COMMAND;
 	    break;
         case EMCMOT_SET_MAX_FEED_OVERRIDE:
             rtapi_print_msg(RTAPI_MSG_DBG, "SET_MAX_FEED_OVERRIDE");
@@ -2001,9 +2909,9 @@ void emcmotCommandHandler_locked(void *arg, long servo_period)
             break;
 
 	}			/* end of: command switch */
-	if (emcmotStatus->commandStatus != EMCMOT_COMMAND_OK) {
+	if ((*mchan_echo_status) != EMCMOT_COMMAND_OK) {
 	    rtapi_print_msg(RTAPI_MSG_DBG, "ERROR: %d",
-		emcmotStatus->commandStatus);
+		(*mchan_echo_status));
 	}
 	rtapi_print_msg(RTAPI_MSG_DBG, "\n");
 	/* synch tail count */
@@ -2019,12 +2927,39 @@ void emcmotCommandHandler_locked(void *arg, long servo_period)
 
 
 void emcmotCommandHandler(void *arg, long servo_period) {
-    if (rtapi_mutex_try(&emcmotStruct->command_mutex) != 0) {
-        // Failed to take the mutex, because it is held by Task.
-        // This means Task is in the process of updating the command.
-        // Give up for now, and try again on the next invocation.
-        return;
+    /* MCHAN: service every channel's mailbox each invocation. Channel 0 is
+     * the historic command/echo pair (bit-identical path at num_channels=1);
+     * secondary channels use their own mailboxes. The locked handler reads
+     * via the emcmotCommand pointer and echoes via the mchan_echo_* trio,
+     * both selected here per mailbox. */
+    for (int ch = 0; ch < motion_num_channels; ch++) {
+	rtapi_mutex_t *mtx = (ch == 0) ? &emcmotStruct->command_mutex
+				       : &emcmotStruct->mchan_cmd[ch].mutex;
+	if (rtapi_mutex_try(mtx) != 0) {
+	    // Held by this channel's Task, which is updating the command.
+	    // Give up for now, and try again on the next invocation.
+	    continue;
+	}
+	mchan_active_channel = ch;
+	if (ch == 0) {
+	    emcmotCommand     = &emcmotStruct->command;
+	    mchan_echo_cmd    = &emcmotStatus->commandEcho;
+	    mchan_echo_num    = &emcmotStatus->commandNumEcho;
+	    mchan_echo_status = &emcmotStatus->commandStatus;
+	} else {
+	    emcmotCommand     = &emcmotStruct->mchan_cmd[ch].command;
+	    mchan_echo_cmd    = &emcmotStruct->mchan_cmd[ch].commandEcho;
+	    mchan_echo_num    = &emcmotStruct->mchan_cmd[ch].commandNumEcho;
+	    mchan_echo_status = &emcmotStruct->mchan_cmd[ch].commandStatus;
+	}
+	emcmotCommandHandler_locked(arg, servo_period);
+	rtapi_mutex_give(mtx);
     }
-    emcmotCommandHandler_locked(arg, servo_period);
-    rtapi_mutex_give(&emcmotStruct->command_mutex);
+    /* restore the channel-0 view for code that consults these globals
+     * between handler passes */
+    mchan_active_channel = 0;
+    emcmotCommand     = &emcmotStruct->command;
+    mchan_echo_cmd    = &emcmotStatus->commandEcho;
+    mchan_echo_num    = &emcmotStatus->commandNumEcho;
+    mchan_echo_status = &emcmotStatus->commandStatus;
 }

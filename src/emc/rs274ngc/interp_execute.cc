@@ -238,6 +238,7 @@ int Interp::execute_block(block_pointer block,   //!< pointer to a block of RS27
 {
   int status = INTERP_EXIT;
 
+  settings->waitm_flag = false;   // MCHAN MC10/Phase4: set per-block by convert_m
   block->line_number = settings->sequence_number;
   if ((block->comment[0] != 0) && ONCE(STEP_COMMENT)) {
     status = convert_comment(block->comment);
@@ -288,7 +289,7 @@ int Interp::execute_block(block_pointer block,   //!< pointer to a block of RS27
                 status = convert_speed(block->dollar_number, block, settings);
             }
         } else {
-            status = convert_speed(0, block, settings);
+            status = convert_speed(settings->default_spindle, block, settings); // MCHAN MC26
         }
     CHP(status);
     }
@@ -320,6 +321,9 @@ int Interp::execute_block(block_pointer block,   //!< pointer to a block of RS27
       return (INTERP_EXECUTE_FINISH);
 
   if (settings->input_flag)
+      return (INTERP_EXECUTE_FINISH);
+
+  if (settings->waitm_flag)        // MCHAN MC10/Phase4: waiting-M queue-buster
       return (INTERP_EXECUTE_FINISH);
 
   if (settings->toolchange_flag)

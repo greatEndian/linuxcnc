@@ -129,6 +129,14 @@ typedef struct {
     hal_bit_t *feed_hold;	/* RPI: set TRUE to stop motion maskable with g53 P1*/
     hal_bit_t *feed_inhibit;	/* RPI: set TRUE to stop motion (non maskable)*/
     hal_bit_t *homing_inhibit;	/* RPI: set TRUE to inhibit homing*/
+    hal_bit_t *mchan_homing_own_idle; /* MCHAN D-MC4 HOMING_INTERLOCK:
+                                FALSE (default) = 'all' - homing starts
+                                only when EVERY channel is idle (safe);
+                                TRUE = 'own' - only the requesting
+                                channel must be idle (re-home one head
+                                while the other cuts; integrator enables
+                                per machine once homing directions are
+                                proven safe / MC31 zones exist) */
     hal_bit_t *jog_inhibit;	/* RPI: set TRUE to inhibit jogging*/
     hal_bit_t *jog_stop;	/* RPI: set TRUE to stop jogging following accel values*/
     hal_bit_t *jog_stop_immediate;	/* RPI: set TRUE to stop jogging immediately*/
@@ -174,6 +182,13 @@ typedef struct {
     // realtime overrun detection
     hal_u32_t   *last_period;	/* pin: last period in nanoseconds */
 
+    /* MCHAN (MC1): coordinated-TP cost instrumentation. The multichannel CPU
+     * budget is N x (per-channel TP cost); these pins make that cost
+     * observable at any time. Updated only in COORD motion (holds last value
+     * otherwise). Nanoseconds per servo cycle. */
+    hal_s32_t   *tp_time_last;	/* pin: coord TP execution time, last cycle */
+    hal_s32_t   *tp_time_max;	/* pin: coord TP execution time, max since load */
+
     hal_float_t *tooloffset_x;
     hal_float_t *tooloffset_y;
     hal_float_t *tooloffset_z;
@@ -183,6 +198,54 @@ typedef struct {
     hal_float_t *tooloffset_u;
     hal_float_t *tooloffset_v;
     hal_float_t *tooloffset_w;
+
+    /* MCHAN MC5: per-channel run-control pins, exported as motion.N.* (one
+     * set per configured channel). The global motion.feed-hold / .feed-
+     * inhibit pins remain the all-channel D5 floor; these are channel-
+     * scoped operator controls (a hardware feed-hold button / feed-override
+     * pot per head). feed_override multiplies the channel's GUI/NML feed
+     * scale and only applies when feed_override_enable is TRUE, so an
+     * unwired channel is exactly stock (D7). */
+    struct {
+	hal_bit_t   *feed_hold;            /* IN : TRUE = hold this channel (scale->0) */
+	hal_float_t *feed_override;        /* IN : per-channel feed override factor */
+	hal_bit_t   *feed_override_enable; /* IN : TRUE = apply feed_override pin */
+	hal_s32_t   *feed_group;           /* IN : MC32 sync group id; <0 = independent.
+					      Channels sharing an id couple: feed-hold
+					      OR'd across the group, feed override taken
+					      from the group authority (lowest member). */
+	hal_bit_t   *is_moving;            /* OUT: this channel is commanding motion */
+	hal_float_t *current_vel;          /* OUT: this channel's velocity (machine units/s) */
+	/* MCHAN MC10/Phase4 waiting-M observability (read by mchan-waitm.sh /
+	 * pyvcp / tests without the GUI) */
+	hal_bit_t   *waitm_waiting;        /* OUT: parked at a waiting-M rendezvous */
+	hal_s32_t   *waitm_number;         /* OUT: the M-number waited at (-1 = none) */
+	hal_s32_t   *waitm_blockers;       /* OUT: bitmask of channels not yet arrived */
+	/* MCHAN MC31 interference observability */
+	hal_bit_t   *interfere_hold;       /* OUT: this channel is co-occupying the keep-out zone */
+	/* MCHAN MC7: per-channel run-status feedback (the global motion.* pins
+	 * report only the machine/ch0 view; these let a per-channel HMI/HAL read
+	 * each channel uniformly as motion.N.*). Computed from chan[N].coord_tp. */
+	hal_bit_t   *in_position;          /* OUT: this channel at rest, queue empty */
+	hal_s32_t   *program_line;         /* OUT: this channel's executing motion line (0 = none) */
+	hal_float_t *distance_to_go;       /* OUT: this channel's remaining distance on the current move */
+    } mchan[EMCMOT_MAX_CHANNELS];
+
+    /* MCHAN MC10/Phase4: waiting-M deadlock timeout (s); a parked channel
+     * whose partners never arrive emits a one-shot error after this and HOLDS
+     * (error+hold policy). 0 = wait forever. Set from [MCHAN]WAITM_TIMEOUT in
+     * HAL (setp motion.waitm-timeout). */
+    hal_float_t *waitm_timeout;
+
+    /* MCHAN MC31: TRUE when two or more channels are simultaneously inside the
+     * interference keep-out zone. (Warn-only in I2; drives the protective stop
+     * in I3.) Integrator can wire it to a beacon / extra interlock. */
+    hal_bit_t   *interfere_active;
+    /* MCHAN MC31 I3: handover permit. While TRUE, co-occupancy is ALLOWED (no
+     * protective stop) - the program/integrator asserts it ONLY around a
+     * sanctioned waiting-M part transfer where both heads must meet by design.
+     * Default FALSE = guard always enforces. interfere-active still reports. */
+    hal_bit_t   *interfere_allow;
 
     spindle_hal_t spindle[EMCMOT_MAX_SPINDLES];     /*spindle data */
     joint_hal_t joint[EMCMOT_MAX_JOINTS];	/* data for each joint */
@@ -270,6 +333,12 @@ extern void refresh_jog_limits(emcmot_joint_t *joint,int joint_num);
 extern void clearHomes(int joint_num);
 
 extern void emcmot_config_change(void);
+/* MCHAN: which channel's mailbox the command handler is currently
+ * serving (0 outside handler passes). reportError() routes channel-
+ * scoped messages to that channel's own error ring (MC30). */
+extern int mchan_active_channel;
+/* MCHAN: owner of the current (exclusive) homing session */
+extern int mchan_homing_session_ch;
 extern void reportError(const char *fmt, ...) __attribute__((format(printf,1,2))); /* Use the rtapi_print call */
 
 
@@ -315,6 +384,14 @@ int joint_is_lockable(int joint_num);
 #define GET_TRAJ_PLANNER_TYPE() (emcmotStatus->planner_type)
 
 #define SET_TRAK_PLANNER_TYPE(tp) (emcmotStatus->planner_type = tp)
+
+/* PLANNER_SWITCH_DEFER (reversible): defined in command.c, called each servo cycle
+ * from emcmotController() to apply a latched planner-type switch once motion is idle. */
+extern void emcmotApplyPendingPlannerType(void);
+
+/* MCHAN: validated channel count (1..EMCMOT_MAX_CHANNELS), set at module
+ * init from the num_channels loadrt parameter. 1 = historic behavior. */
+extern int motion_num_channels;
 
 /* joint flags */
 

@@ -2215,6 +2215,8 @@ int Interp::convert_control_mode(
     int g_code,                   // g_code being executed (G_61, G61_1, G_64)
     double tolerance_in,          // tolerance for the path following in G64
     double naivecam_tolerance_in, // tolerance for the naivecam
+    double r_word,                // G64_R_PLANNER: R value (planner/aggressiveness)
+    bool r_present,               // G64_R_PLANNER: true if R was given on the block
     setup_pointer settings)       // pointer to machine settings
 {
     double tolerance, naivecam_tolerance;
@@ -2235,7 +2237,27 @@ int Interp::convert_control_mode(
       }
       settings->control_mode = CANON_CONTINUOUS;
       settings->tolerance = tolerance;
-      SET_MOTION_CONTROL_MODE(CANON_CONTINUOUS, tolerance);
+      /* G64_R_PLANNER: optional R word carries planner INTENT plus cornering
+       * aggressiveness (Fanuc G05.1-style level). The program never names a
+       * planner implementation; "smooth" is resolved by task against
+       * [TRAJ]SMOOTH_PLANNER, so part programs stay machine-portable.
+       * R absent -> leave planner unchanged (sentinels).
+       *   R<=0      -> trapezoidal, peak_scale unchanged
+       *   0<R<=1.0  -> smooth (jerk-limited), scale = R (clamped 0.1..1.0)
+       *   R>1.0     -> smooth, scale clamped to 1.0
+       * Note: R0 -> R0.1 is a regime flip (jerk-unlimited trapezoid), not the
+       * gentle end of a gradient; R0.1 is the gentlest setting. */
+      int planner_type = -1;          // -1 = unchanged
+      double peak_scale = -1.0;       // <0 = unchanged
+      if (r_present) {
+          if (r_word <= 0.0) {
+              planner_type = 0;       // trapezoidal / BRISK
+          } else {
+              planner_type = 1;       // smooth / SOFT (resolved by task)
+              peak_scale = (r_word > 1.0) ? 1.0 : ((r_word < 0.1) ? 0.1 : r_word);
+          }
+      }
+      SET_MOTION_CONTROL_MODE(CANON_CONTINUOUS, tolerance, planner_type, peak_scale);
 
       if (naivecam_tolerance_in >= 0){
 	      naivecam_tolerance = naivecam_tolerance_in;
@@ -2969,7 +2991,9 @@ int Interp::convert_g(block_pointer block,       //!< pointer to a block of RS27
     }
     if ((block->g_modes[GM_CONTROL_MODE] != -1) && ONCE(STEP_CONTROL_MODE)) {
 	status = convert_control_mode(block->g_modes[GM_CONTROL_MODE],
-				      block->p_number, block->q_number, settings);
+				      block->p_number, block->q_number,
+				      block->r_number, block->r_flag, /* G64_R_PLANNER */
+				      settings);
 	CHP(status);
     }
     if ((block->g_modes[GM_DISTANCE_MODE] != -1) && ONCE(STEP_DISTANCE_MODE)) {
@@ -3730,6 +3754,7 @@ int Interp::restore_from_tag(StateTag const &tag)
     // clear queue buster sflags, otherwise the command won't be
     // executed - Tormach *dpr 8/17/15
     _setup.input_flag = false;
+    _setup.waitm_flag = false;   // MCHAN MC10/Phase4
     _setup.toolchange_flag = false;
     _setup.probe_flag = false;
 
@@ -3830,6 +3855,20 @@ int Interp::convert_m(block_pointer block,       //!< pointer to a block of RS27
      M66 waits for an input
      M67 reads a digital input
      M68 reads an analog input*/
+
+  /* MCHAN MC10/Phase4: waiting-M rendezvous (M200-M229). A queue-buster:
+   * prior moves drain, this channel parks, and it continues only when all
+   * participants (P-word channel bitmask, or all configured channels if no
+   * P) have also arrived at the same M-number. */
+  if (block->waitm_flag) {
+      CHKS((settings->cutter_comp_side != CUTTER_COMP::OFF),
+           (_("Cannot use a waiting-M (M200-M229) with cutter radius compensation on")));
+      int mask = block->p_flag ? round_to_int(block->p_number) : 0;
+      CHKS((mask < 0), (_("Negative P-word (channel mask) with waiting-M")));
+      write_canon_state_tag(block, settings);
+      WAIT_RENDEZVOUS(block->waitm_number, mask);
+      settings->waitm_flag = true;   /* queue-buster: see interp_execute.cc */
+  }
 
   if (is_user_defined_m_code(block, settings, 5) &&
       STEP_REMAPPED_IN_BLOCK(block, STEP_M_5) &&
@@ -4020,9 +4059,9 @@ int Interp::convert_m(block_pointer block,       //!< pointer to a block of RS27
             enqueue_START_SPINDLE_CLOCKWISE(block->dollar_number);
             settings->spindle_turning[(int)block->dollar_number] = CANON_CLOCKWISE;
         }
-     } else { // the default spindle
-        enqueue_START_SPINDLE_CLOCKWISE(0);
-        settings->spindle_turning[0] = CANON_CLOCKWISE;
+     } else { // the default spindle (MCHAN MC26: this channel's spindle)
+        enqueue_START_SPINDLE_CLOCKWISE(settings->default_spindle);
+        settings->spindle_turning[settings->default_spindle] = CANON_CLOCKWISE;
      }
  } else if ((block->m_modes[7] == 4) && ONCE_M(7)) {
      if (block->dollar_flag){
@@ -4037,9 +4076,9 @@ int Interp::convert_m(block_pointer block,       //!< pointer to a block of RS27
             enqueue_START_SPINDLE_COUNTERCLOCKWISE(block->dollar_number);
             settings->spindle_turning[(int)block->dollar_number] = CANON_COUNTERCLOCKWISE;
         }
-     } else { // default spindle
-         enqueue_START_SPINDLE_COUNTERCLOCKWISE(0);
-         settings->spindle_turning[0] = CANON_COUNTERCLOCKWISE;
+     } else { // default spindle (MCHAN MC26: this channel's spindle)
+         enqueue_START_SPINDLE_COUNTERCLOCKWISE(settings->default_spindle);
+         settings->spindle_turning[settings->default_spindle] = CANON_COUNTERCLOCKWISE;
      }
  } else if ((block->m_modes[7] == 5) && ONCE_M(7)){
     if (block->dollar_flag){
@@ -4054,7 +4093,12 @@ int Interp::convert_m(block_pointer block,       //!< pointer to a block of RS27
             settings->spindle_turning[block->dollar_number] = CANON_STOPPED;
             enqueue_STOP_SPINDLE_TURNING(block->dollar_number);
         }
-    } else { // the default spindle
+    } else if (settings->default_spindle_set) {
+      // MCHAN MC26: a channel with its own default spindle stops ONLY that
+      // one - a bare M5 must not stop another channel's spindle.
+      settings->spindle_turning[settings->default_spindle] = CANON_STOPPED;
+      enqueue_STOP_SPINDLE_TURNING(settings->default_spindle);
+    } else { // stock: bare M5 stops all spindles
       for (int i = 0; i < settings->num_spindles; i++){
         settings->spindle_turning[i] = CANON_STOPPED;
         enqueue_STOP_SPINDLE_TURNING(i);
@@ -4068,12 +4112,12 @@ int Interp::convert_m(block_pointer block,       //!< pointer to a block of RS27
              (_("Spindle ($) number out of range in M19 Command")));
       }
       if (block->r_flag || block->p_flag)
-      enqueue_ORIENT_SPINDLE(block->dollar_flag ? block->dollar_number : 0,
+      enqueue_ORIENT_SPINDLE(block->dollar_flag ? block->dollar_number : settings->default_spindle,
                              block->r_flag ? (block->r_number + settings->orient_offset) : settings->orient_offset,
                              block->p_flag ? block->p_number : 0);
       if (block->q_flag) {
 	  CHKS((block->q_number <= 0.0),(_("Q word with M19 requires a value > 0")));
-	  enqueue_WAIT_ORIENT_SPINDLE_COMPLETE(block->dollar_flag ? block->dollar_number : 0,
+	  enqueue_WAIT_ORIENT_SPINDLE_COMPLETE(block->dollar_flag ? block->dollar_number : settings->default_spindle,
 			  	  	  	  	  	  	  	   block->q_number);
       }
   } else if ((block->m_modes[7] == 70) || (block->m_modes[7] == 73)) {
@@ -5455,6 +5499,12 @@ int Interp::convert_straight(int move,   //!< either G_0 or G_1
 		CHKS((block->dollar_number < 0 || block->dollar_number >= settings->num_spindles),
 				(_("Invalid spindle ($) number in G33 move")));
 		settings->active_spindle = (int)block->dollar_number;
+	} else if (settings->default_spindle_set) {
+		/* MCHAN MC8: with no $, thread on THIS channel's default spindle
+		 * ([CHANNEL]SPINDLE) instead of spindle 0 - otherwise a secondary
+		 * channel's G33 hits spindle 0 (foreign) and is refused. ch0 has no
+		 * default set -> active_spindle stays 0 = stock (D7). */
+		settings->active_spindle = settings->default_spindle;
 	}
     CHKS(((settings->spindle_turning[settings->active_spindle] != CANON_CLOCKWISE) &&
            (settings->spindle_turning[settings->active_spindle] != CANON_COUNTERCLOCKWISE)),
@@ -5470,6 +5520,8 @@ int Interp::convert_straight(int move,   //!< either G_0 or G_1
 		CHKS((block->dollar_number < 0 || block->dollar_number >= settings->num_spindles),
 				(_("Invalid spindle ($) number in G33.1 move")));
 		settings->active_spindle = (int)block->dollar_number;
+	} else if (settings->default_spindle_set) {
+		settings->active_spindle = settings->default_spindle;	/* MCHAN MC8: per-channel default spindle */
 	}
     CHKS(((settings->spindle_turning[settings->active_spindle] != CANON_CLOCKWISE) &&
            (settings->spindle_turning[settings->active_spindle] != CANON_COUNTERCLOCKWISE)),
@@ -5490,6 +5542,8 @@ int Interp::convert_straight(int move,   //!< either G_0 or G_1
 		CHKS((block->dollar_number < 0 || block->dollar_number >= settings->num_spindles),
 				(_("Invalid D-number in G76 cycle")));
 		settings->active_spindle = (int)block->dollar_number;
+	} else if (settings->default_spindle_set) {
+		settings->active_spindle = settings->default_spindle;	/* MCHAN MC8: per-channel default spindle */
 	}
     CHKS(((settings->spindle_turning[settings->active_spindle] != CANON_CLOCKWISE) &&
            (settings->spindle_turning[settings->active_spindle] != CANON_COUNTERCLOCKWISE)),

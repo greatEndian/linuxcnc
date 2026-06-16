@@ -47,6 +47,12 @@ static emcmot_internal_t *emcmotInternal = 0;
 static emcmot_error_t *emcmotError = 0;
 static emcmot_struct_t *emcmotStruct = 0;
 
+/* MCHAN: which motion channel this PROCESS talks to (0 = the historic
+ * channel). Set once from [EMCMOT]MOTION_CHANNEL in usrmotIniLoad(); each
+ * channel's task stack carries its own INI, so nothing above this layer
+ * needs a channel parameter. */
+static int usrmot_channel = 0;
+
 /* usrmotIniLoad() loads params (SHMEM_KEY, COMM_TIMEOUT)
    from named INI file */
 int usrmotIniLoad(const char *filename)
@@ -71,6 +77,19 @@ int usrmotIniLoad(const char *filename)
             rcs_print("USRMOT: ERROR: Invalid [EMCMOT]COMM_TIMEOUT\n");
         }
     }
+    /* MCHAN: optional channel selection (default 0 = historic behavior) */
+    if (inifile.isSet("MOTION_CHANNEL", "EMCMOT")) {
+        if (auto inival = inifile.findInt("MOTION_CHANNEL", "EMCMOT")) {
+            if (*inival >= 0 && *inival < EMCMOT_MAX_CHANNELS) {
+                usrmot_channel = *inival;
+            } else {
+                rcs_print("USRMOT: ERROR: [EMCMOT]MOTION_CHANNEL %d out of range (0..%d)\n",
+                          *inival, EMCMOT_MAX_CHANNELS - 1);
+            }
+        } else {
+            rcs_print("USRMOT: ERROR: Invalid [EMCMOT]MOTION_CHANNEL\n");
+        }
+    }
     return 0;
 }
 
@@ -92,6 +111,30 @@ int usrmotWriteEmcmotCommand(emcmot_command_t * c)
     if (0 == emcmotCommand) {
         rcs_print("USRMOT: ERROR: can't connect to shared memory\n");
 	return EMCMOT_COMM_ERROR_CONNECT;
+    }
+
+    /* MCHAN: secondary channels use their own mailbox + echo; channel 0
+     * keeps the historic command/status path below, untouched. */
+    if (usrmot_channel != 0) {
+	emcmot_chan_mailbox_t *mb = &emcmotStruct->mchan_cmd[usrmot_channel];
+	rtapi_mutex_get(&mb->mutex);
+	mb->command = *c;
+	rtapi_mutex_give(&mb->mutex);
+	end = etime() + EMCMOT_COMM_TIMEOUT;
+	while (etime() < end) {
+	    if (mb->commandNumEcho == commandNum) {
+		if (mb->commandStatus == EMCMOT_COMMAND_OK) {
+		    return EMCMOT_COMM_OK;
+		} else {
+		    rcs_print("USRMOT: ERROR: invalid command (channel %d)\n", usrmot_channel);
+		    return EMCMOT_COMM_ERROR_COMMAND;
+		}
+	    }
+	    esleep(25e-6);
+	}
+	rcs_print("USRMOT: ERROR: command %u timeout (seq: %d, channel %d)\n",
+		  c->command, commandNum, usrmot_channel);
+	return EMCMOT_COMM_ERROR_TIMEOUT;
     }
 
     /* copy entire command structure to shared memory */
@@ -124,16 +167,38 @@ int usrmotWriteEmcmotCommand(emcmot_command_t * c)
 int usrmotReadEmcmotStatus(emcmot_status_t * s)
 {
     int split_read_count;
+    emcmot_status_t *src = emcmotStatus;
 
     /* check for shmem still around */
     if (0 == emcmotStatus) {
 	return EMCMOT_COMM_ERROR_CONNECT;
     }
+    /* MCHAN MC2b: a secondary channel's process reads ITS status snapshot
+     * (filled by motion every cycle); channel 0 keeps the legacy block.
+     * H7 TEAR FIX: the snapshot's publish window is microseconds wide, so
+     * the legacy check (head==tail compared INSIDE one local copy) misses
+     * a writer that starts AND finishes during our memcpy. Real seqlock:
+     * sample head from SHMEM before the copy and tail from SHMEM after -
+     * any overlap with a publish shows up as a mismatch. */
+    if (usrmot_channel != 0) {
+	src = &emcmotStruct->mchan_status[usrmot_channel];
+	split_read_count = 0;
+	do {
+	    if (split_read_count > 0) esleep(1e-6);
+	    unsigned char h1 = *(volatile unsigned char *) &src->head;
+	    memcpy(s, src, sizeof(emcmot_status_t));
+	    unsigned char h2 = *(volatile unsigned char *) &src->tail;
+	    if (h1 == h2 && s->head == s->tail && s->head == h1) {
+		return EMCMOT_COMM_OK;
+	    }
+	} while (++split_read_count < 8);
+	return EMCMOT_COMM_SPLIT_READ_TIMEOUT;
+    }
     split_read_count = 0;
     do {
 	if(split_read_count > 0) esleep(1e-6);	// Don't busy-loop and give time to process
 	/* copy status struct from shmem to local memory */
-	memcpy(s, emcmotStatus, sizeof(emcmot_status_t));
+	memcpy(s, src, sizeof(emcmot_status_t));
 	/* got it, now check head-tail matche */
 	if (s->head == s->tail) {
 	    /* head and tail match, done */
@@ -203,13 +268,20 @@ int usrmotReadEmcmotError(char *e)
     if (emcmotError == 0) {
 	return -1;
     }
+    /* MCHAN MC30: a secondary channel's stack drains its OWN error ring
+     * (channel-scoped refusals land there); the legacy ring stays the
+     * machine console read by channel 0's stack. */
+    emcmot_error_t *ring = emcmotError;
+    if (usrmot_channel != 0 && 0 != emcmotStruct) {
+	ring = &emcmotStruct->mchan_error[usrmot_channel];
+    }
 
     char data[EMCMOT_ERROR_LEN];
     struct dbuf d;
     dbuf_init(&d, (unsigned char *)data, EMCMOT_ERROR_LEN);
 
     /* returns 0 if something, -1 if not */
-    int result = emcmotErrorGet(emcmotError, data);
+    int result = emcmotErrorGet(ring, data);
     if(result < 0) return result;
 
     struct dbuf_iter di;

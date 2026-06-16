@@ -130,6 +130,14 @@ extern "C" {
 	EMCMOT_SET_ACC,		/* set the max accel for moves (tooltip) */
 	EMCMOT_SET_JERK,	/* set the max jerk for moves (tooltip) */
 	EMCMOT_SET_PLANNER_TYPE,	/* set planner type (0=trapezoidal, 1=S-curve) */
+	EMCMOT_SET_SCURVE_PEAK_SCALE,	/* set S-curve rest-to-rest peak scale (0.5=faithful..1.0=full) */
+	EMCMOT_SET_CHANNEL_AXIS_MAP,	/* MCHAN: map this channel's axis (.axis) to a global joint (.joint; -1 unmaps) */
+	EMCMOT_SET_CHANNEL_SPINDLE,	/* MCHAN MC26b: claim spindle (.spindle) for this channel (ownership) */
+	EMCMOT_WAIT_RENDEZVOUS,		/* MCHAN MC10/Phase4: this channel arrives at waiting-M (.waitm_num/.waitm_mask) */
+	EMCMOT_CANCEL_RENDEZVOUS,	/* MCHAN MC10/Phase4: clear this channel's pending waiting-M (abort/reset) */
+	EMCMOT_SET_CHANNEL_FRAME,	/* MCHAN MC31: this channel's world ORIGIN+ORIENT (.frame_origin/.frame_orient) */
+	EMCMOT_SET_INTERFERE_ZONE,	/* MCHAN MC31: world keep-out zone (.zone[6]) */
+	EMCMOT_SET_CHANNEL_IO_RANGE,	/* MCHAN MC27: this channel's allowed digital/analog I/O index window */
 	EMCMOT_SET_TERM_COND,	/* set termination condition (stop, blend) */
 	EMCMOT_SET_NUM_JOINTS,	/* set the number of joints */
 	EMCMOT_SET_NUM_SPINDLES, /* set the number of spindles */
@@ -227,6 +235,7 @@ extern "C" {
 	double jerk;			/* jerk for traj */
     double ini_maxjerk;
     int planner_type;	/* planner type: 0 = trapezoidal, 1 = S-curve */
+    double scurve_peak_scale;	/* S-curve rest-to-rest peak scale (0.5=faithful..1.0=full) */
 	double backlash;	/* amount of backlash */
 	int id;			/* id for motion */
 	int termCond;		/* termination condition */
@@ -234,6 +243,14 @@ extern "C" {
 	int joint;		/* which joint index to use for below */
 	int axis;		/* which axis index to use for below */
 	int spindle; 	/* which spindle to use */
+	int waitm_num;		/* MCHAN MC10/Phase4: waiting-M number (200-229) */
+	int waitm_mask;		/* MCHAN MC10/Phase4: participant channel bitmask
+				   (0 = all configured channels = no P-word) */
+	double frame_origin[3];	/* MCHAN MC31: world ORIGIN x,y,z (SET_CHANNEL_FRAME) */
+	double frame_orient[3];	/* MCHAN MC31: world ORIENT rx,ry,rz deg (SET_CHANNEL_FRAME) */
+	double zone[6];		/* MCHAN MC31: world keep-out box (SET_INTERFERE_ZONE) */
+	int io_dio_base, io_dio_count;	/* MCHAN MC27: this channel's digital I/O window [base,base+count); count=0 = unrestricted */
+	int io_aio_base, io_aio_count;	/* MCHAN MC27: this channel's analog  I/O window [base,base+count); count=0 = unrestricted */
 	double scale;		/* velocity scale or spindle_speed scale arg */
 	double offset;		/* input, output, or home offset arg */
 	double home;		/* joint home position */
@@ -590,6 +607,12 @@ Suggestion: Split this in to an Error and a Status flag register..
 		/* the above set is the enables in effect for new moves */
 	/* the rest are updated every cycle */
 	double net_feed_scale;	/* net scale factor for all motion */
+	/* MCHAN MC10 (Phase 4): channel-scoped waiting-M status (ch0 set in
+	 * control.c; ch>0 overlaid by mchan_update_status). Lets each channel's
+	 * task/GUI see its own rendezvous state. */
+	int waitm_num;		/* M-number this channel is waiting at, -1 = none */
+	int waitm_released;	/* 1 = rendezvous matched, cleared to continue */
+	int waitm_blockers;	/* mask of channels still not arrived */
 	unsigned char enables_queued;	/* flags for FS, SS, etc */
 		/* the above set is the enables in effect for the
 		   currently executing move */
@@ -647,6 +670,7 @@ Suggestion: Split this in to an Error and a Status flag register..
 	double acc;		/* scalar max accel */
 	double jerk;		/* jerk for traj */
     int planner_type;	/* planner type: 0 = trapezoidal, 1 = S-curve */
+    double scurve_peak_scale;	/* S-curve rest-to-rest peak scale (0.5=faithful..1.0=full) */
 
 	int motionType;
 	double distance_to_go;  /* in this move */
@@ -751,6 +775,78 @@ Suggestion: Split this in to an Error and a Status flag register..
     } emcmot_error_t;
 
 
+/* MCHAN: one motion channel = one independent coordinated trajectory
+ * planner. Grows per-channel state in later phases (mode machine, command
+ * area, axis ownership). */
+typedef struct emcmot_channel_t {
+    TP_STRUCT coord_tp;	/* this channel's coordinated-mode planner */
+    /* MCHAN (MC6): this channel's axis-letter -> global-joint map. Index is
+     * the channel-local axis (0=X..8=W in the channel's own letter space),
+     * value is the global joint number, -1 = unmapped. Channel 0 does not
+     * consult this (it uses the legacy kinematics path); secondary channels
+     * are identity-mapped subsets of the global joints. Set at config time
+     * via EMCMOT_SET_CHANNEL_AXIS_MAP through the channel's own mailbox. */
+    int axis_to_joint[EMCMOT_MAX_AXIS];
+    /* MCHAN MC23: this channel's active tool offset (G43/G43.x H). One
+     * channel's tool change must not overwrite another channel's offset.
+     * Channel 0 mirrors to the legacy emcmotStatus->tool_offset, which
+     * feeds the single motion.tooloffset.* HAL pin set and the legacy
+     * status view (per-channel pins/status = MC7/MC19 work). */
+    EmcPose tool_offset;
+    /* MCHAN MC24: this channel's own axis-LETTER envelope (the legacy axis
+     * module remains channel 0's). Used by inRange() for secondary-channel
+     * moves; vel/acc also mirrored into the channel TP's xyz bounds. Zero
+     * until the channel's task configures them (same strictness as the
+     * legacy startup). */
+    struct {
+        double min_pos_limit;
+        double max_pos_limit;
+        double vel_limit;
+        double acc_limit;
+        double jerk_limit;
+    } axis_lim[EMCMOT_MAX_AXIS];
+    /* MCHAN MC2b: the channel's VIRTUAL operating mode. The machine mode
+     * machine stays channel 0's until MC3; a secondary stack's stock task
+     * still sends FREE/COORD/TELEOP and then watches status for the mode to
+     * follow, so the MC28 gate records the request here and the channel's
+     * status view reflects it (execution remains coord-only by design).
+     * Zero-init = EMCMOT_MOTION_DISABLED, matching legacy startup. */
+    motion_state_t virt_state;
+    /* MCHAN MC10 (Phase 4): waiting-M (M200-M229) rendezvous state. waitm_num
+     * = the M-number this channel is parked at (-1 = not waiting); waitm_mask
+     * = participant channel bitmask (0 = all configured channels = no P-word);
+     * waitm_released = 1 when the rendezvous matched (cleared to continue);
+     * waitm_t0 = arrival time (deadlock timeout); waitm_reported = the
+     * error+hold message was emitted once; waitm_blockers = mask of channels
+     * still not arrived (for the GUI/observability message). Cleared on
+     * release, program-end, abort, estop and reset. */
+    int    waitm_num;
+    int    waitm_mask;
+    int    waitm_released;
+    int    waitm_reported;
+    int    waitm_blockers;
+    double waitm_t0;
+    /* MCHAN MC31: this channel's WORLD frame (from [CHANNEL]ORIGIN/ORIENT,
+     * same values the preview uses). The controlled point is transformed to
+     * world as Pworld = origin + rot * Pcarte, so the interference guard and
+     * the picture agree. rot is precomputed (Rz*Ry*Rx) from the orient degs.
+     * frame_set=0 (identity at origin) until the channel's chmap sends it. */
+    double origin[3];
+    double rot[3][3];
+    int    frame_set;
+    /* MC31 I3: set when this channel is a keep-out co-occupant AND the handover
+     * permit is off -> the feed-scale loop forces this channel's net feed to 0
+     * (protective hold). Cleared when it leaves the zone or permit goes on. */
+    int    interfere_stop;
+    /* MCHAN MC27: this channel's allowed digital/analog I/O index window
+     * (M62-M65 DOUT / M67-M68 AOUT). Writes outside [base, base+count) are
+     * refused so one head's PMC interface can't clobber another's (Fanuc
+     * per-path PMC areas). count==0 = unrestricted = legacy/D7. Set at config
+     * time via EMCMOT_SET_CHANNEL_IO_RANGE from [CHANNEL]DIO_RANGE/AIO_RANGE. */
+    int    dio_base, dio_count;
+    int    aio_base, aio_count;
+} emcmot_channel_t;
+
 typedef struct emcmot_internal_t {
     unsigned char head; /* flag count for mutex detect */
     unsigned char tail; /* flag count for mutex detect */
@@ -760,7 +856,36 @@ typedef struct emcmot_internal_t {
     int teleoperating;  /* starts up in free mode */
     int overriding;     /* non-zero means we've initiated an joint
                            move while overriding limits */
-    TP_STRUCT coord_tp; /* coordinated mode planner */
+    /* MCHAN: per-channel motion state. Each channel is an independent
+     * coordinated planner (Fanuc-multi-path style). chan[0] is the historic
+     * single channel; with num_channels=1 behavior is bit-identical to the
+     * pre-multichannel code. Future per-channel state (mode machines, axis
+     * ownership) lives here too. */
+    emcmot_channel_t chan[EMCMOT_MAX_CHANNELS];
+    /* MCHAN (MC6/D6): which channel owns each global joint. Default 0 (the
+     * historic channel owns everything = legacy behavior). A secondary
+     * channel claims a joint by mapping an axis onto it; claiming a joint
+     * owned by another secondary channel is rejected. Runtime-dynamic by
+     * design (axis exchange lands in phase 5). */
+    int joint_owner[EMCMOT_MAX_JOINTS];
+    /* MCHAN (MC26b): which channel owns each spindle. Default 0 (channel 0
+     * owns every spindle = legacy). A secondary channel claims a spindle via
+     * EMCMOT_SET_CHANNEL_SPINDLE (from its [CHANNEL]SPINDLE); a channel may
+     * only command spindles it owns, so one head's M3/M5 cannot touch
+     * another head's spindle. num_channels=1 -> all owned by ch0 = stock. */
+    int spindle_owner[EMCMOT_MAX_SPINDLES];
+    /* MCHAN MC31: keep-out / interference zone in WORLD coords
+     * {xmin,xmax,ymin,ymax,zmin,zmax}. When two+ channels' controlled points
+     * are simultaneously inside it, the guard protective-stops them. One zone
+     * in v1 (the handover band); zone_set=0 = no guard = stock. */
+    double interfere_zone[6];
+    int    interfere_zone_set;
+    /* MCHAN MC25: which channel currently owns the (single, shared) probe
+     * input. Day-1 mutual exclusion: while emcmotStatus->probing is set, a
+     * G38 from any OTHER channel is refused ("probe busy"); the probe trip in
+     * control.c aborts THIS channel's TP (not always ch0). num_channels=1 ->
+     * always 0 = stock. Per-channel probe pins/state = the full fix (later). */
+    int    probe_owner;
     int idForStep;      /* status id while stepping */
     } emcmot_internal_t;
 
