@@ -392,6 +392,10 @@ extern void emcmotApplyPendingPlannerType(void);
 /* MCHAN: validated channel count (1..EMCMOT_MAX_CHANNELS), set at module
  * init from the num_channels loadrt parameter. 1 = historic behavior. */
 extern int motion_num_channels;
+/* G43_4_RTCP: defined in command.c, called each servo cycle from
+ * emcmotController() to apply a latched switchkins (G43.4/G49) switch once
+ * motion is idle. */
+extern void emcmotApplyPendingSwitchkinsType(void);
 
 /* joint flags */
 

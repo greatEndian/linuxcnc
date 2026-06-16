@@ -394,6 +394,7 @@ extern int emcTrajSetScurvePeakScale(double scale);
 /* G64_R_PLANNER: [TRAJ]SMOOTH_PLANNER - planner a G64 R>0 request resolves to */
 extern int emcTrajSetSmoothPlanner(int type);
 extern int emcTrajGetSmoothPlanner(void);
+extern int emcTrajSetSwitchkinsType(int type);	/* G43_4_RTCP */
 // implementation functions for EMC_MOTION aggregate types
 
 extern int emcMotionInit();

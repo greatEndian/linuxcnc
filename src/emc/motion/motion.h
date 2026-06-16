@@ -138,6 +138,7 @@ extern "C" {
 	EMCMOT_SET_CHANNEL_FRAME,	/* MCHAN MC31: this channel's world ORIGIN+ORIENT (.frame_origin/.frame_orient) */
 	EMCMOT_SET_INTERFERE_ZONE,	/* MCHAN MC31: world keep-out zone (.zone[6]) */
 	EMCMOT_SET_CHANNEL_IO_RANGE,	/* MCHAN MC27: this channel's allowed digital/analog I/O index window */
+	EMCMOT_SET_SWITCHKINS_TYPE,	/* G43_4_RTCP: command a switchkins kinematics type (0=default,1,2) */
 	EMCMOT_SET_TERM_COND,	/* set termination condition (stop, blend) */
 	EMCMOT_SET_NUM_JOINTS,	/* set the number of joints */
 	EMCMOT_SET_NUM_SPINDLES, /* set the number of spindles */
@@ -236,6 +237,7 @@ extern "C" {
     double ini_maxjerk;
     int planner_type;	/* planner type: 0 = trapezoidal, 1 = S-curve */
     double scurve_peak_scale;	/* S-curve rest-to-rest peak scale (0.5=faithful..1.0=full) */
+    int switchkins_type;	/* G43_4_RTCP: requested switchkins kinematics type */
 	double backlash;	/* amount of backlash */
 	int id;			/* id for motion */
 	int termCond;		/* termination condition */

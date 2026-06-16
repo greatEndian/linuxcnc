@@ -882,6 +882,44 @@ int Interp::init()
       if (!inifile) {
           fprintf(stderr,"Unable to open inifile:%s:\n", iniFileName);
       } else {
+          /* G43_5_VECTOR: machine rotary topology for G43.5 vector TCP. Each
+           * formula set is derived from that topology's own kins forward math:
+           *  "AB" = tool dual-rotary (xyzab_tdr_kins): A about X, B about Y.
+           *  "AC" = tilting-rotary table (xyzac-trt-kins): A tilt, C rotary.
+           *  "BC" = tilting-rotary table (xyzbc-trt-kins): B tilt, C rotary.
+           *  "BCHEAD" = swivel HEAD (5axiskins, XYZBC spherical): B,C in the
+           *             spindle (head-head). Part fixed -> no part-frame xform.
+           * Unset/unknown -> G43.5 is refused. */
+          {
+              std::string topo = inifile.findStringV("TCP_ORIENT_AXES", "RS274NGC", "");
+              _setup.tcp_orient_axes = 0;
+              if (!topo.empty()) {
+                  if      (!strcasecmp(topo.c_str(), "AB"))     _setup.tcp_orient_axes = 1;
+                  else if (!strcasecmp(topo.c_str(), "AC"))     _setup.tcp_orient_axes = 2;
+                  else if (!strcasecmp(topo.c_str(), "BC"))     _setup.tcp_orient_axes = 3;
+                  else if (!strcasecmp(topo.c_str(), "BCHEAD")) _setup.tcp_orient_axes = 4;
+                  else if (!strcasecmp(topo.c_str(), "BCHT"))   _setup.tcp_orient_axes = 5;
+                  else fprintf(stderr, "rs274ngc: [RS274NGC]TCP_ORIENT_AXES=%s not supported (AB/AC/BC/BCHEAD/BCHT) - G43.5 disabled\n", topo.c_str());
+              }
+          }
+          /* TCP_CONVENTIONAL_DIRECTIONS selects the rotary direction sense used
+           * when G43.5 solves a tool vector into AC/BC/BCHT angles.  It MUST match
+           * the trt/maxkins module's conventional-directions HAL pin (default
+           * false => con-1); AB/BCHEAD have no such pin and ignore it. */
+          _setup.tcp_conventional_directions =
+              inifile.findBoolV("TCP_CONVENTIONAL_DIRECTIONS", "RS274NGC", false);
+          /* TCP_NO_SWITCH: set for a permanently full-kinematics, non-switchable
+           * module (e.g. maxkins) that is always tip-following.  G43.4/G43.5/G49
+           * then skip the switchkins-type request (there is no identity mode to
+           * toggle); G43.5 still solves the tool vector into rotary words. */
+          _setup.tcp_no_switch =
+              inifile.findBoolV("TCP_NO_SWITCH", "RS274NGC", false);
+          /* TCP_KINSTYPE: the switchkins-type value G43.4/G43.5 request for TCP.
+           * Default 1 matches the standard identityfirst module layout (type 0 =
+           * identity, used by G49; type 1 = TCP).  Set it when TCP lives at a
+           * different switchkins type (e.g. a user kins at type 2). */
+          _setup.tcp_kinstype =
+              inifile.findIntV("TCP_KINSTYPE", "RS274NGC", 1);
           _setup.tool_change_at_g30 = inifile.findBoolV("TOOL_CHANGE_AT_G30", "EMCIO", false);
           _setup.tool_change_quill_up = inifile.findBoolV("TOOL_CHANGE_QUILL_UP", "EMCIO", false);
           _setup.tool_change_with_spindle_on = inifile.findBoolV("TOOL_CHANGE_WITH_SPINDLE_ON", "EMCIO", false);

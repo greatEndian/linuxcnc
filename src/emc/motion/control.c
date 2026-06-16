@@ -45,6 +45,22 @@ static int    ext_offset_teleop_limit = 0;
 static int    ext_offset_coord_limit  = 0;
 static bool   coord_cubic_active = 0;
 static int    switchkins_type = 0;
+/* G43_4_RTCP (reversible): commanded kinematics-switch path. The HAL pin
+ * (motion.switchkins-type) used to be the only trigger, compared by LEVEL.
+ * A second, command-driven trigger (G43.4/G49 via EMCMOT_SET_SWITCHKINS_TYPE)
+ * needs the pin to be EDGE-triggered, else a stale pin level would instantly
+ * switch back. Pin edges still work (M428-style remaps stay functional);
+ * the commanded value wins if both arrive in the same cycle. */
+static int    switchkins_pin_last = 0;
+static int    switchkins_cmd_pending = 0;
+static int    switchkins_cmd_value = 0;
+
+/* Called from command.c (EMCMOT_SET_SWITCHKINS_TYPE handler) */
+void emcmotRequestSwitchkinsType(int type)
+{
+    switchkins_cmd_value = type;
+    switchkins_cmd_pending = 1;
+}
 /* kinematics flags */
 KINEMATICS_FORWARD_FLAGS fflags = 0;
 KINEMATICS_INVERSE_FLAGS iflags = 0;
@@ -299,6 +315,11 @@ void emcmotController(void *arg, long period)
 	tpRunCycle(&emcmotInternal->chan[mchan_ch].coord_tp, period);
     }
 
+    /* G43_4_RTCP: apply a latched kinematics (switchkins) switch once the
+     * coordinated queue has gone idle. The request lands in
+     * handle_kinematicsSwitch() on the next cycle, still idle. */
+    emcmotApplyPendingSwitchkinsType();
+
     get_pos_cmds(period);
     mchan_run_rendezvous();	/* MCHAN MC10/Phase4: waiting-M match/release/timeout */
     mchan_run_interference();	/* MCHAN MC31: interference zone co-occupancy detect */
@@ -340,10 +361,20 @@ static void handle_kinematicsSwitch(void) {
     int hal_switchkins_type = 0;
 
     if (!kinematicsSwitchable()) return;
+    /* G43_4_RTCP: pin is EDGE-triggered; commanded value (G43.4/G49) wins on tie */
+    int want_type = switchkins_type;
     hal_switchkins_type = (int)*emcmot_hal_data->switchkins_type;
-    if (switchkins_type == hal_switchkins_type) return;
+    if (hal_switchkins_type != switchkins_pin_last) {
+        switchkins_pin_last = hal_switchkins_type;
+        want_type = hal_switchkins_type;
+    }
+    if (switchkins_cmd_pending) {
+        want_type = switchkins_cmd_value;
+        switchkins_cmd_pending = 0;
+    }
+    if (switchkins_type == want_type) return;
 
-    switchkins_type = hal_switchkins_type;
+    switchkins_type = want_type;
 
     emcmot_joint_t *jointKinsSwitch;
     double joint_posKinsSwitch[EMCMOT_MAX_JOINTS] = {0,};

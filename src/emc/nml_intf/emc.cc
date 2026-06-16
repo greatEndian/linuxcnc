@@ -1605,6 +1605,7 @@ void EMC_TRAJ_SET_OFFSET::update(CMS * cms)
 {
     EMC_TRAJ_CMD_MSG::update(cms);
     EmcPose_update(cms, &offset);
+    cms->update(switchkins_type);  /* G43_4_RTCP: appended at end of serialization */
 }
 
 /*

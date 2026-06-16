@@ -5437,6 +5437,15 @@ the new longer or shorter straight move are taken at this feed.
 
 */
 
+/* G43_5_VECTOR: bring an absolute angle (deg) to the representation nearest a
+ * reference angle, so a vector solution never commands a needless 360° swing. */
+static double tcp_unwrap_near(double angle_deg, double ref_deg)
+{
+    while (angle_deg - ref_deg >  180.0) angle_deg -= 360.0;
+    while (angle_deg - ref_deg < -180.0) angle_deg += 360.0;
+    return angle_deg;
+}
+
 int Interp::convert_straight(int move,   //!< either G_0 or G_1
                             block_pointer block,        //!< pointer to a block of RS274 instructions
                             setup_pointer settings)     //!< pointer to machine settings
@@ -5451,6 +5460,277 @@ int Interp::convert_straight(int move,   //!< either G_0 or G_1
   int status;
 
   settings->arc_not_allowed = false;
+
+  /* ===== G43_5_VECTOR ================================================
+   * In G43.5 vector-TCP mode, I/J/K on a G0/G1 block are the desired tool-axis
+   * direction; convert them to rotary-axis words here so the rest of the
+   * pipeline (and the TCP kinematics) sees ordinary angles.
+   *
+   * Frame of the vector (matches Fanuc WKP=0 / Siemens ORIWKS):
+   *  - normal blocks: the PART frame.  Rotary G5x/G92 offsets define the
+   *    table pose at program zero, so part->table is the kins rotation chain
+   *    evaluated at the offset angles, and the vector must be rotated through
+   *    it before the inverse is solved.
+   *  - G53 on the block: machine/table frame one-shot (ORIMKS equivalent).
+   *    The vector is used raw and the solved MACHINE angles are written
+   *    unchanged; find_ends' G53 branch maps them back to program words.
+   *
+   * The angles are a direction, not a coordinate: in G91 the solved target
+   * is written as a delta from the current position so find_ends
+   * reconstructs the same absolute orientation in either distance mode.   */
+  if (settings->tcp_vector_mode &&
+      (block->i_flag || block->j_flag || block->k_flag)) {
+      CHKS((block->a_flag || block->b_flag || block->c_flag),
+           (_("G43.5: cannot mix rotary words (A/B/C) with a tool vector (I/J/K) on one line")));
+      CHKS((fabs(settings->tool_offset.a) > 1e-9 ||
+            fabs(settings->tool_offset.b) > 1e-9 ||
+            fabs(settings->tool_offset.c) > 1e-9),
+           (_("G43.5: rotary tool offsets are not supported with a tool vector")));
+      CHKS((settings->rotation_xy != 0.0),
+           (_("G43.5: XY coordinate rotation (G10 R) is not supported with a tool vector")));
+      double vi = block->i_flag ? block->i_number : 0.0;
+      double vj = block->j_flag ? block->j_number : 0.0;
+      double vk = block->k_flag ? block->k_number : 0.0;
+      double vnorm = sqrt(vi*vi + vj*vj + vk*vk);
+      CHKS((vnorm < 1e-9), (_("G43.5: tool vector I/J/K is zero-length")));
+      vi /= vnorm; vj /= vnorm; vk /= vnorm;
+
+      bool vec_machine_frame = (block->g_modes[GM_MODAL_0] == G_53);
+      bool vec_incremental = (settings->distance_mode == DISTANCE_MODE::INCREMENTAL);
+      double off_a = settings->AA_origin_offset + settings->AA_axis_offset;
+      double off_b = settings->BB_origin_offset + settings->BB_axis_offset;
+
+      switch (settings->tcp_orient_axes) {
+      case 1: {
+          /* AB dual-rotary table (xyzab_tdr_kins): that module's forward TCP
+           * matrix is M(a,b) = Rx(a)*Ry(b) (machine -> table coords), so the
+           * machine tool axis (+Z) seen from the table is
+           *   v = M(a,b)*z = ( sin(b), -sin(a)cos(b), cos(a)cos(b) ).
+           * Inverse:  b = asin(i);  a = atan2(-j, k)  (undefined at cos b = 0). */
+          if (!vec_machine_frame) {
+              /* part frame -> table frame: v_table = Rx(off_a)*Ry(off_b)*v.
+               * Exact identity when both offsets are zero. */
+              double soa = sin(off_a * M_PI / 180.0), coa = cos(off_a * M_PI / 180.0);
+              double sob = sin(off_b * M_PI / 180.0), cob = cos(off_b * M_PI / 180.0);
+              double rx = cob * vi + sob * vk;
+              double ry = vj;
+              double rz = -sob * vi + cob * vk;
+              vi = rx;
+              vj = coa * ry - soa * rz;
+              vk = soa * ry + coa * rz;
+          }
+          double bi = vi;
+          if (bi >  1.0) bi =  1.0;
+          if (bi < -1.0) bi = -1.0;
+          /* solved MACHINE angles, unwrapped near the current machine pose */
+          double b_mach = tcp_unwrap_near(asin(bi) * 180.0 / M_PI,
+                                          settings->BB_current + off_b);
+          bool a_defined = !(fabs(vj) < 1e-9 && fabs(vk) < 1e-9);
+          /* at the singularity (tool horizontal, cos b = 0) A is undefined;
+           * keep the current A angle (do not emit an A word). */
+          double a_mach = a_defined ? tcp_unwrap_near(atan2(-vj, vk) * 180.0 / M_PI,
+                                                      settings->AA_current + off_a)
+                                    : 0.0;
+          if (vec_machine_frame) {
+              /* G53 one-shot: machine words, absolute by G53's own nature */
+              block->b_number = b_mach;
+              block->b_flag = true;
+              if (a_defined) {
+                  block->a_number = a_mach;
+                  block->a_flag = true;
+              }
+          } else {
+              double b_prog = b_mach - off_b;
+              block->b_number = vec_incremental ? b_prog - settings->BB_current
+                                                : b_prog;
+              block->b_flag = true;
+              if (a_defined) {
+                  double a_prog = a_mach - off_a;
+                  block->a_number = vec_incremental ? a_prog - settings->AA_current
+                                                    : a_prog;
+                  block->a_flag = true;
+              }
+          }
+          break;
+      }
+      case 2: {
+          /* AC tilting-rotary table (xyzac-trt-kins): that module builds its
+           * forward rotation as Rz(con*c)*Rx(con*a) where con = +1 if the kins'
+           * conventional-directions pin is set, else -1 (the default).  The
+           * machine tool axis (+Z) seen from the table is
+           *   v = ( sin c sin a, -con cos c sin a, cos a ).
+           * Inverse:  a = atan2(hypot(i,j), k);  c = atan2(i, -con*j)
+           * (C undefined when the tool is parallel to Z, sin a = 0).
+           * con MUST match the kins pin; selected via
+           * [RS274NGC]TCP_CONVENTIONAL_DIRECTIONS (default false => con-1). */
+          const double con = settings->tcp_conventional_directions ? 1.0 : -1.0;
+          double off_c = settings->CC_origin_offset + settings->CC_axis_offset;
+          if (!vec_machine_frame) {
+              /* part frame -> table frame: v_table = Rz(con*off_c)*Rx(con*off_a)*v.
+               * Exact identity when both offsets are zero. */
+              double soa = sin(off_a * M_PI / 180.0), coa = cos(off_a * M_PI / 180.0);
+              double soc = sin(off_c * M_PI / 180.0), coc = cos(off_c * M_PI / 180.0);
+              double rx = vi;                              /* Rx(con*off_a) */
+              double ry = coa * vj - con * soa * vk;
+              double rz = con * soa * vj + coa * vk;
+              vi = coc * rx - con * soc * ry;              /* Rz(con*off_c) */
+              vj = con * soc * rx + coc * ry;
+              vk = rz;
+          }
+          double tilt = hypot(vi, vj);
+          double a_mach = tcp_unwrap_near(atan2(tilt, vk) * 180.0 / M_PI,
+                                          settings->AA_current + off_a);
+          bool c_defined = (tilt > 1e-9);
+          double c_mach = c_defined ? tcp_unwrap_near(atan2(vi, -con * vj) * 180.0 / M_PI,
+                                                      settings->CC_current + off_c)
+                                    : 0.0;
+          if (vec_machine_frame) {
+              block->a_number = a_mach; block->a_flag = true;
+              if (c_defined) { block->c_number = c_mach; block->c_flag = true; }
+          } else {
+              double a_prog = a_mach - off_a;
+              block->a_number = vec_incremental ? a_prog - settings->AA_current : a_prog;
+              block->a_flag = true;
+              if (c_defined) {
+                  double c_prog = c_mach - off_c;
+                  block->c_number = vec_incremental ? c_prog - settings->CC_current : c_prog;
+                  block->c_flag = true;
+              }
+          }
+          break;
+      }
+      case 3: {
+          /* BC tilting-rotary table (xyzbc-trt-kins): forward rotation
+           * Rz(con*c)*Ry(con*b) where con = +1 if the kins' conventional-
+           * directions pin is set, else -1 (the default).  The machine tool axis
+           * (+Z) seen from the table is
+           *   v = ( con cos c sin b, sin c sin b, cos b ).
+           * Inverse:  b = atan2(hypot(i,j), k);  c = atan2(j, con*i)
+           * (C undefined when the tool is parallel to Z, sin b = 0).
+           * con MUST match the kins pin; selected via
+           * [RS274NGC]TCP_CONVENTIONAL_DIRECTIONS (default false => con-1). */
+          const double con = settings->tcp_conventional_directions ? 1.0 : -1.0;
+          double off_c = settings->CC_origin_offset + settings->CC_axis_offset;
+          if (!vec_machine_frame) {
+              /* part frame -> table frame: v_table = Rz(con*off_c)*Ry(con*off_b)*v. */
+              double sob = sin(off_b * M_PI / 180.0), cob = cos(off_b * M_PI / 180.0);
+              double soc = sin(off_c * M_PI / 180.0), coc = cos(off_c * M_PI / 180.0);
+              double rx = cob * vi + con * sob * vk;       /* Ry(con*off_b) */
+              double ry = vj;
+              double rz = -con * sob * vi + cob * vk;
+              vi = coc * rx - con * soc * ry;              /* Rz(con*off_c) */
+              vj = con * soc * rx + coc * ry;
+              vk = rz;
+          }
+          double tilt = hypot(vi, vj);
+          double b_mach = tcp_unwrap_near(atan2(tilt, vk) * 180.0 / M_PI,
+                                          settings->BB_current + off_b);
+          bool c_defined = (tilt > 1e-9);
+          double c_mach = c_defined ? tcp_unwrap_near(atan2(vj, con * vi) * 180.0 / M_PI,
+                                                      settings->CC_current + off_c)
+                                    : 0.0;
+          if (vec_machine_frame) {
+              block->b_number = b_mach; block->b_flag = true;
+              if (c_defined) { block->c_number = c_mach; block->c_flag = true; }
+          } else {
+              double b_prog = b_mach - off_b;
+              block->b_number = vec_incremental ? b_prog - settings->BB_current : b_prog;
+              block->b_flag = true;
+              if (c_defined) {
+                  double c_prog = c_mach - off_c;
+                  block->c_number = vec_incremental ? c_prog - settings->CC_current : c_prog;
+                  block->c_flag = true;
+              }
+          }
+          break;
+      }
+      case 4: {
+          /* BCHEAD - swivel HEAD (5axiskins, XYZBC spherical): its forward uses
+           * r = s2r(R, C, 180-B) so the tool-axis (tip->holder, +Z at B=0) is
+           *   v = ( -sin B cos C, -sin B sin C, cos B ).
+           * Inverse:  B = atan2(hypot(i,j), k);  C = atan2(-j, -i)
+           * (C undefined when the tool is parallel to Z, sin B = 0).
+           * HEAD machine: the part is FIXED, so the vector is already in the
+           * machine frame - NO part->table transform (unlike AC/BC). Only the
+           * B/C angle OFFSETS map machine<->program. */
+          double off_b = settings->BB_origin_offset + settings->BB_axis_offset;
+          double off_c = settings->CC_origin_offset + settings->CC_axis_offset;
+          double tilt = hypot(vi, vj);
+          double b_mach = tcp_unwrap_near(atan2(tilt, vk) * 180.0 / M_PI,
+                                          settings->BB_current + off_b);
+          bool c_defined = (tilt > 1e-9);
+          double c_mach = c_defined ? tcp_unwrap_near(atan2(-vj, -vi) * 180.0 / M_PI,
+                                                      settings->CC_current + off_c)
+                                    : 0.0;
+          if (vec_machine_frame) {
+              block->b_number = b_mach; block->b_flag = true;
+              if (c_defined) { block->c_number = c_mach; block->c_flag = true; }
+          } else {
+              double b_prog = b_mach - off_b;
+              block->b_number = vec_incremental ? b_prog - settings->BB_current : b_prog;
+              block->b_flag = true;
+              if (c_defined) {
+                  double c_prog = c_mach - off_c;
+                  block->c_number = vec_incremental ? c_prog - settings->CC_current : c_prog;
+                  block->c_flag = true;
+              }
+          }
+          break;
+      }
+      case 5: {
+          /* BCHT - head-table "mixed" (maxkins): B tilts the spindle HEAD, so the
+           * tool axis in the MACHINE frame lies in the XZ plane,
+           *   u = ( con sin B, 0, cos B );
+           * C is a rotary TABLE that carries the part, so the tool axis relative
+           * to the PART is Rz(C)*u.  For a part-frame vector v = (i, j, k):
+           *   C = atan2(j, i)               (rotate the part to bring v into the
+           *                                  machine XZ plane the head can reach)
+           *   B = atan2(con*hypot(i,j), k)
+           * (C undefined when the tool is parallel to Z, hypot(i,j) = 0).
+           * con matches the maxkins conventional-directions pin (selected by
+           * TCP_CONVENTIONAL_DIRECTIONS).  maxkins is permanently full-kinematics
+           * and non-switchable, so this topology requires
+           * [RS274NGC]TCP_NO_SWITCH=1. */
+          const double con = settings->tcp_conventional_directions ? 1.0 : -1.0;
+          double off_b = settings->BB_origin_offset + settings->BB_axis_offset;
+          double off_c = settings->CC_origin_offset + settings->CC_axis_offset;
+          /* Rotary work offsets would rotate the part frame relative to the
+           * machine; the head-table offset transform is not yet derived, so
+           * refuse them rather than emit a wrong orientation. */
+          CHKS((!vec_machine_frame && (fabs(off_b) > 1e-9 || fabs(off_c) > 1e-9)),
+               (_("G43.5 (BCHT): rotary work offsets on B/C are not supported with a tool vector")));
+          double tilt = hypot(vi, vj);
+          double b_mach = tcp_unwrap_near(atan2(con * tilt, vk) * 180.0 / M_PI,
+                                          settings->BB_current + off_b);
+          bool c_defined = (tilt > 1e-9);
+          double c_mach = c_defined ? tcp_unwrap_near(atan2(vj, vi) * 180.0 / M_PI,
+                                                      settings->CC_current + off_c)
+                                    : 0.0;
+          if (vec_machine_frame) {
+              block->b_number = b_mach; block->b_flag = true;
+              if (c_defined) { block->c_number = c_mach; block->c_flag = true; }
+          } else {
+              double b_prog = b_mach - off_b;
+              block->b_number = vec_incremental ? b_prog - settings->BB_current : b_prog;
+              block->b_flag = true;
+              if (c_defined) {
+                  double c_prog = c_mach - off_c;
+                  block->c_number = vec_incremental ? c_prog - settings->CC_current : c_prog;
+                  block->c_flag = true;
+              }
+          }
+          break;
+      }
+      default:
+          ERS(_("G43.5: unsupported TCP_ORIENT_AXES topology"));
+      }
+      /* consume the vector words so downstream checks treat this as a plain
+       * linear move with rotary targets */
+      block->i_flag = false;
+      block->j_flag = false;
+      block->k_flag = false;
+  }
+  /* ===== END G43_5_VECTOR ============================================ */
 
   if (move == G_1) {
     if (settings->feed_mode == FEED_MODE::UNITS_PER_MINUTE) {
@@ -6335,12 +6615,26 @@ int Interp::convert_tool_length_offset(int g_code,       //!< g_code being execu
   EmcPose tool_offset;
   ZERO_EMC_POSE(tool_offset);
   settings->g43_with_zero_offset = 0;
-  
+  /* G43_4_RTCP: kinematics switch piggybacked on the tool-offset canon call.
+   * STATELESS by design (no interp-side mode flag that could desync from
+   * motion across aborts): G43.4 always requests TCP (1), G49 always requests
+   * identity (0), anything else leaves kinematics unchanged (-1). Motion
+   * silently ignores identity requests on non-switchable machines and errors
+   * loudly on TCP requests there (R10). */
+  int kins_switch = -1;
+
   CHKS((settings->cutter_comp_side != CUTTER_COMP::OFF),
        (_("Cannot change tool offset with cutter radius compensation on")));
+  /* G43_5_VECTOR: any tool-length-mode change other than G43.5 leaves vector
+   * mode; G43.5 re-enables it below once its guards pass. */
+  settings->tcp_vector_mode = 0;
   if (g_code == G_49) {
     idx = 0;
-  } else if (g_code == G_43) {
+    /* G43_4_RTCP: G49 lands in identity kinematics, unless the kins is a
+     * permanently full-kinematics non-switchable module (TCP_NO_SWITCH) which
+     * has no identity mode to switch to. */
+    kins_switch = settings->tcp_no_switch ? -1 : 0;
+  } else if (g_code == G_43 || g_code == G_43_4 || g_code == G_43_5) {  /* G43_4_RTCP: same TLO path as G43 */
       logDebug("convert_tool_length_offset h_flag=%d h_number=%d toolchange_flag=%d current_pocket=%d\n",
 	      block->h_flag,block->h_number,settings->toolchange_flag,settings->current_pocket);
     if(block->h_flag) {
@@ -6377,6 +6671,22 @@ int Interp::convert_tool_length_offset(int g_code,       //!< g_code being execu
       !(tool_offset.tran.x || tool_offset.tran.y || tool_offset.tran.z ||
         tool_offset.a || tool_offset.b || tool_offset.c ||
         tool_offset.u || tool_offset.v || tool_offset.w);
+    if (g_code == G_43_4 || g_code == G_43_5) {  /* G43_4_RTCP */
+      /* R8 guard: TCP with a zero tool length means the tip math is wrong by
+       * construction (forgotten tool / unmeasured tool table entry). */
+      CHKS(settings->g43_with_zero_offset,
+           (_("G43.4/G43.5: tool length offset is all zero - load a measured tool (Tn M6 or H word) before enabling TCP")));
+      /* request TCP kinematics (switchkins type = TCP_KINSTYPE, default 1),
+       * unless TCP_NO_SWITCH (always-TCP non-switchable kins, e.g. maxkins) -
+       * then there is nothing to switch and G43.5 still solves the tool vector
+       * into rotary words below. */
+      kins_switch = settings->tcp_no_switch ? -1 : settings->tcp_kinstype;
+      if (g_code == G_43_5) {  /* G43_5_VECTOR */
+        CHKS((settings->tcp_orient_axes == 0),
+             (_("G43.5: [RS274NGC]TCP_ORIENT_AXES is not configured (or not a supported topology)")));
+        settings->tcp_vector_mode = 1;
+      }
+    }
   } else if (g_code == G_43_1) {
     tool_offset = settings->tool_offset;
     idx = -1;
@@ -6420,9 +6730,9 @@ int Interp::convert_tool_length_offset(int g_code,       //!< g_code being execu
         if(block->w_flag) tool_offset.w += block->w_number;
     }
   } else {
-    ERS("BUG: Code not G43, G43.1, G43.2, or G49");
+    ERS("BUG: Code not G43, G43.1, G43.2, G43.4, G43.5, or G49");
   }
-  USE_TOOL_LENGTH_OFFSET(tool_offset);
+  USE_TOOL_LENGTH_OFFSET(tool_offset, kins_switch);  /* G43_4_RTCP */
 
   double dx, dy;
 
