@@ -316,6 +316,11 @@ int joint_is_lockable(int joint_num);
 
 #define SET_TRAK_PLANNER_TYPE(tp) (emcmotStatus->planner_type = tp)
 
+/* G43_4_RTCP: defined in command.c, called each servo cycle from
+ * emcmotController() to apply a latched switchkins (G43.4/G49) switch once
+ * motion is idle. */
+extern void emcmotApplyPendingSwitchkinsType(void);
+
 /* joint flags */
 
 #define GET_JOINT_ENABLE_FLAG(joint) ((joint)->flag & EMCMOT_JOINT_ENABLE_BIT ? 1 : 0)

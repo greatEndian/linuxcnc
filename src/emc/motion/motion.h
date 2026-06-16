@@ -130,6 +130,7 @@ extern "C" {
 	EMCMOT_SET_ACC,		/* set the max accel for moves (tooltip) */
 	EMCMOT_SET_JERK,	/* set the max jerk for moves (tooltip) */
 	EMCMOT_SET_PLANNER_TYPE,	/* set planner type (0=trapezoidal, 1=S-curve) */
+	EMCMOT_SET_SWITCHKINS_TYPE,	/* G43_4_RTCP: command a switchkins kinematics type (0=default,1,2) */
 	EMCMOT_SET_TERM_COND,	/* set termination condition (stop, blend) */
 	EMCMOT_SET_NUM_JOINTS,	/* set the number of joints */
 	EMCMOT_SET_NUM_SPINDLES, /* set the number of spindles */
@@ -227,6 +228,7 @@ extern "C" {
 	double jerk;			/* jerk for traj */
     double ini_maxjerk;
     int planner_type;	/* planner type: 0 = trapezoidal, 1 = S-curve */
+    int switchkins_type;	/* G43_4_RTCP: requested switchkins kinematics type */
 	double backlash;	/* amount of backlash */
 	int id;			/* id for motion */
 	int termCond;		/* termination condition */

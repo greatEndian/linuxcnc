@@ -80,6 +80,39 @@ extern int motion_num_spindles;
 
 static int rehomeAll;
 
+/* ===== BEGIN G43_4_RTCP =====================================================
+ * Commanded switchkins kinematics switch (G43.4 -> TCP, G49 -> identity). A
+ * switch requested while the coordinated TP queue is busy is LATCHED here and
+ * applied once motion is idle (never aborts). The actual switch + position
+ * reconciliation happens in control.c handle_kinematicsSwitch(). */
+extern int kinematicsSwitchable(void);          /* provided by the loaded kins module */
+extern void emcmotRequestSwitchkinsType(int);   /* control.c */
+
+static int switchkins_switch_pending = 0;
+static int switchkins_pending_value  = 0;
+
+/* True when the coordinated trajectory queue is idle (safe to switch kins). */
+static int switchkins_motion_idle(void)
+{
+    return tpIsDone(&emcmotInternal->coord_tp)
+        && (tpQueueDepth(&emcmotInternal->coord_tp) == 0);
+}
+
+/* Called once per servo cycle from emcmotController(). */
+void emcmotApplyPendingSwitchkinsType(void)
+{
+    if (!switchkins_switch_pending) {
+        return;
+    }
+    if (switchkins_motion_idle()) {
+        emcmotRequestSwitchkinsType(switchkins_pending_value);
+        switchkins_switch_pending = 0;
+        rtapi_print_msg(RTAPI_MSG_INFO,
+            "kinematics switch applied (switchkins type %d)", switchkins_pending_value);
+    }
+}
+/* ===== END G43_4_RTCP ======================================================= */
+
 /* limits_ok() returns 1 if none of the hard limits are set,
    0 if any are set. Called on a linear and circular move. */
 STATIC int limits_ok(void)
@@ -1228,6 +1261,38 @@ void emcmotCommandHandler_locked(void *arg, long servo_period)
 			emcmotStatus->planner_type = 0;
 		} else {
 			emcmotStatus->planner_type = emcmotCommand->planner_type;
+		}
+		break;
+
+	case EMCMOT_SET_SWITCHKINS_TYPE:
+		/* ===== G43_4_RTCP =====================================
+		 * Command a switchkins kinematics type (G43.4 -> TCP, G49 -> identity).
+		 * Idle: applied this/next cycle. Moving: latched, applied at queue-idle
+		 * (never aborts) with a GUI notice. Backstop guard R10: refuse cleanly
+		 * if the loaded kins module is not switchable. */
+		rtapi_print_msg(RTAPI_MSG_DBG, "SET_SWITCHKINS_TYPE, type(%d)", emcmotCommand->switchkins_type);
+		if (!kinematicsSwitchable()) {
+			/* type 0 (identity) on a non-switchable machine is a harmless
+			 * no-op (G49 always requests it, stateless) - stay silent.
+			 * type >= 1 (G43.4/TCP) without a switchable kins = real
+			 * operator error (R10) - report loudly. */
+			if (emcmotCommand->switchkins_type >= 1) {
+				reportError(_("G43.4: kinematics module is not switchable - TCP mode not available"));
+			}
+			break;
+		}
+		{
+			int req = emcmotCommand->switchkins_type;
+			if (switchkins_motion_idle()) {
+				emcmotRequestSwitchkinsType(req);
+				switchkins_switch_pending = 0;
+			} else {
+				switchkins_pending_value = req;
+				if (!switchkins_switch_pending) {
+					switchkins_switch_pending = 1;
+					reportError(_("kinematics switch deferred until motion stops (switchkins type %d)"), req);
+				}
+			}
 		}
 		break;
 				

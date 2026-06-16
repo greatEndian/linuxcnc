@@ -387,6 +387,7 @@ extern int emcTrajUpdate(EMC_TRAJ_STAT * stat);
 extern int emcTrajSetJerk(double jerk);
 extern int emcTrajSetMaxJerk(double jerk);
 extern int emcTrajPlannerType(int type);
+extern int emcTrajSetSwitchkinsType(int type);	/* G43_4_RTCP */
 // implementation functions for EMC_MOTION aggregate types
 
 extern int emcMotionInit();
