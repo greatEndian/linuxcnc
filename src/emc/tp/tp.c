@@ -2896,6 +2896,7 @@ int tpCalculateSCurveAccel(TP_STRUCT const * const tp, TC_STRUCT * const tc, TC_
         tc->ruckig_last_maxjerk = 0.0;
         tc->ruckig_last_target_vel = 0.0;
         tc->ruckig_last_final_vel = 0.0;
+        tc->ruckig_last_final_acc = 0.0;
         tc->ruckig_last_target_pos = 0.0;
         tc->ruckig_last_use_velocity_control = 0;
         tc->ruckig_last_req_pos = 0.0;
@@ -2957,6 +2958,7 @@ int tpCalculateSCurveAccel(TP_STRUCT const * const tp, TC_STRUCT * const tc, TC_
                 tc->ruckig_last_maxjerk = maxjerk;
                 tc->ruckig_last_target_vel = 0.0;
                 tc->ruckig_last_final_vel = 0.0;
+                tc->ruckig_last_final_acc = 0.0;
                 tc->ruckig_last_target_pos = 0.0;
                 tc->ruckig_last_use_velocity_control = 1;
                 tc->ruckig_last_req_pos = 0.0;
@@ -2984,6 +2986,7 @@ int tpCalculateSCurveAccel(TP_STRUCT const * const tp, TC_STRUCT * const tc, TC_
                                 fabs(tc->ruckig_last_maxjerk - maxjerk) > PARAM_EPSILON ||
                                 fabs(tc->ruckig_last_target_vel - effective_max_vel) > PARAM_EPSILON ||
                                 fabs(tc->ruckig_last_final_vel - effective_target_vel) > PARAM_EPSILON ||
+                                fabs(tc->ruckig_last_final_acc - tc->finalacc) > PARAM_EPSILON ||
                                 fabs(tc->ruckig_last_target_pos - target_pos) > PARAM_EPSILON);
 
             if (param_changed) {
@@ -2997,17 +3000,34 @@ int tpCalculateSCurveAccel(TP_STRUCT const * const tp, TC_STRUCT * const tc, TC_
             double replan_vel = tc->currentvel;
             double replan_acc = tc->currentacc;
 
+            double planned_target_acc = tc->finalacc;
             int plan_result = ruckig_plan_position(tc->ruckig_planner,
                                           replan_pos,            // current position
                                           replan_vel,            // current velocity
                                           replan_acc,            // current acceleration
                                           target_pos,            // target position
                                           effective_target_vel,  // target velocity (finalvel)
-                                          0.0,                   // target acceleration (usually 0)
+                                          planned_target_acc,    // target acceleration
                                           0.0,                   // min velocity (unidirectional)
                                           effective_max_vel,     // max velocity
                                           maxaccel,              // max acceleration
                                           maxjerk);              // max jerk
+
+            if (plan_result != 0 && fabs(planned_target_acc) > 1e-6) {
+                rtapi_print_msg(RTAPI_MSG_INFO, "tpCalculateSCurveAccel: ruckig_plan_position failed with target_acc = %.6f, trying with 0.0\n", planned_target_acc);
+                planned_target_acc = 0.0;
+                plan_result = ruckig_plan_position(tc->ruckig_planner,
+                                          replan_pos,
+                                          replan_vel,
+                                          replan_acc,
+                                          target_pos,
+                                          effective_target_vel,
+                                          planned_target_acc,    // fallback target acceleration
+                                          0.0,
+                                          effective_max_vel,
+                                          maxaccel,
+                                          maxjerk);
+            }
 
             if (plan_result != 0) {
                 rtapi_print_msg(RTAPI_MSG_INFO, "tpCalculateSCurveAccel: ruckig_plan_position failed with result %d\n", plan_result);
@@ -3040,6 +3060,7 @@ int tpCalculateSCurveAccel(TP_STRUCT const * const tp, TC_STRUCT * const tc, TC_
                 tc->ruckig_last_maxjerk = maxjerk;
                 tc->ruckig_last_target_vel = effective_max_vel;
                 tc->ruckig_last_final_vel = effective_target_vel;
+                tc->ruckig_last_final_acc = planned_target_acc;
                 tc->ruckig_last_target_pos = target_pos;
                 tc->ruckig_last_use_velocity_control = 0;
                 tc->ruckig_last_req_pos = 0.0;
