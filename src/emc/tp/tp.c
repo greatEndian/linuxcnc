@@ -3422,6 +3422,21 @@ STATIC int tpCompleteSegment(TP_STRUCT * const tp,
     // Clean up Ruckig planner resources
     tcCleanupRuckig(tc);
 
+    // S-curve: Carry over ending velocity and acceleration to the next segment if tangent
+    if (GET_TRAJ_PLANNER_TYPE() == 1 && !tp->reverse_run) {
+        if (tc->term_cond == TC_TERM_COND_TANGENT) {
+            TC_STRUCT *next_tc = tcqItem(&tp->queue, 1);
+            if (next_tc) {
+                double maxacc_next = tcGetTangentialMaxAccel(next_tc);
+                next_tc->currentacc = saturate(tc->currentacc, maxacc_next);
+                next_tc->currentvel = tc->currentvel;
+                next_tc->currentjerk = tc->currentjerk;
+                tp_debug_print("tpCompleteSegment (S-curve tangent handover): id %d -> id %d, vel=%f, acc=%f (limited by %f), jerk=%f\n",
+                               tc->id, next_tc->id, next_tc->currentvel, next_tc->currentacc, maxacc_next, next_tc->currentjerk);
+            }
+        }
+    }
+
     //TODO make progress to match target?
     // done with this move
     if (tp->reverse_run) {
