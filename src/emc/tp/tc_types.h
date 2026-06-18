@@ -131,6 +131,7 @@ typedef struct {
     double currentvel;      // keep track of current step (vel * cycle_time)
     double last_move_length;// last move length
     double finalvel;        // velocity to aim for at end of segment
+    double finalacc;        // acceleration to aim for at end of segment
     double term_vel;        // actual velocity at termination of segment
     double kink_vel;        // Temporary way to store our calculation of maximum velocity we can handle if this segment is declared tangent with the next
     double kink_accel_reduce_prev; // How much to reduce the allowed tangential acceleration to account for the extra acceleration at an approximate tangent intersection.

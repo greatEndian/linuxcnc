@@ -712,6 +712,7 @@ int tcInit(TC_STRUCT * const tc,
     tc->ruckig_planner = NULL;
     tc->ruckig_trajectory_time = 0.0;
     tc->ruckig_planned = 0;
+    tc->finalacc = 0.0;
     tc->ruckig_last_maxaccel = 0.0;
     tc->ruckig_last_maxjerk = 0.0;
     tc->ruckig_last_target_vel = 0.0;
