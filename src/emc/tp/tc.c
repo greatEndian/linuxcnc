@@ -717,6 +717,7 @@ int tcInit(TC_STRUCT * const tc,
     tc->ruckig_last_maxjerk = 0.0;
     tc->ruckig_last_target_vel = 0.0;
     tc->ruckig_last_final_vel = 0.0;
+    tc->ruckig_last_final_acc = 0.0;
     tc->ruckig_last_target_pos = 0.0;
     tc->ruckig_last_use_velocity_control = 0;
     tc->ruckig_last_req_pos = 0.0;

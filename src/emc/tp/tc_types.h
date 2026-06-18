@@ -207,6 +207,7 @@ typedef struct {
     double ruckig_last_maxjerk;        // max jerk used in last planning
     double ruckig_last_target_vel;     // target velocity used in last planning
     double ruckig_last_final_vel;      // final velocity used in last planning
+    double ruckig_last_final_acc;      // final acceleration used in last planning
     double ruckig_last_target_pos;     // target position used in last planning
     int ruckig_last_use_velocity_control;  // control mode used in last planning (1=velocity, 0=position)
     double ruckig_last_req_pos;        // last req_pos value from Ruckig (for velocity control incremental calc)

@@ -1797,12 +1797,34 @@ STATIC int tpComputeOptimalVelocity(TP_STRUCT const * const tp, TC_STRUCT * cons
     if (GET_TRAJ_PLANNER_TYPE() == 1) {
         double acc_prev = tcGetTangentialMaxAccel(prev1_tc);
         double jerk_prev = fmin(prev1_tc->maxjerk, emcmotStatus->jerk);
-        double prev_max_end_vel = findSCurveVPeak(acc_prev, jerk_prev, prev1_tc->target);
-        vs_back = fmin(vs_back, prev_max_end_vel);
+        if (prev1_tc->term_cond != TC_TERM_COND_TANGENT) {
+            double prev_max_end_vel = findSCurveVPeak(acc_prev, jerk_prev, prev1_tc->target);
+            vs_back = fmin(vs_back, prev_max_end_vel);
+        }
     }
 
     //Limit tc's target velocity to avoid creating "humps" in the velocity profile
     prev1_tc->finalvel = vs_back;
+
+    // Calculate transition acceleration for continuous S-curve transitions
+    if (GET_TRAJ_PLANNER_TYPE() == 1) {
+        if (prev1_tc->term_cond == TC_TERM_COND_TANGENT) {
+            double v_start = vs_back;
+            double v_end = tc->finalvel;
+            double dx = tc->target;
+            if (dx > 0.0) {
+                double a_avg = (pmSq(v_end) - pmSq(v_start)) / (2.0 * dx);
+                double acc_limit = tcGetTangentialMaxAccel(tc);
+                prev1_tc->finalacc = fmin(acc_limit, fmax(-acc_limit, a_avg));
+            } else {
+                prev1_tc->finalacc = 0.0;
+            }
+        } else {
+            prev1_tc->finalacc = 0.0;
+        }
+    } else {
+        prev1_tc->finalacc = 0.0;
+    }
 
     //Reduce max velocity to match sample rate
     double sample_maxvel = tc->target / (tp->cycleTime * TP_MIN_SEGMENT_CYCLES);
@@ -1897,6 +1919,9 @@ STATIC int tpRunOptimization(TP_STRUCT * const tp) {
             //slight hiccup, but the alternative is a sudden hard stop.
             tp_debug_print("Found atspeed at id %d\n",tc->id);
             tc->finalvel = 0.0;
+            if (GET_TRAJ_PLANNER_TYPE() == 1) {
+                tc->finalacc = 0.0;
+            }
         }
 
         if (!tc->finalized) {
@@ -1913,6 +1938,10 @@ STATIC int tpRunOptimization(TP_STRUCT * const tp) {
               prev1_tc->finalvel = fmin(prev1_tc->finalvel, prev1_tc->kink_vel);
             }
             tc->finalvel = 0.0;
+            if (GET_TRAJ_PLANNER_TYPE() == 1) {
+                prev1_tc->finalacc = 0.0;
+                tc->finalacc = 0.0;
+            }
         } else {
             tpComputeOptimalVelocity(tp, tc, prev1_tc);
         }
