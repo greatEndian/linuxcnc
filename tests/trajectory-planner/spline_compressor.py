@@ -131,6 +131,51 @@ def fit_arc_kasa(points, tolerance, units):
     if max_dev > tolerance * 10:  # Allow 10x tolerance for LSQ fit
         return None
 
+    # Endpoint correction: force arc center onto perpendicular bisector of chord
+    # This ensures distance from center to start == distance from center to end
+    p_start = p_xy[0]
+    p_end = p_xy[-1]
+
+    # Perpendicular bisector midpoint
+    mid_x = (p_start[0] + p_end[0]) / 2.0
+    mid_y = (p_start[1] + p_end[1]) / 2.0
+
+    # Chord vector
+    chord_x = p_end[0] - p_start[0]
+    chord_y = p_end[1] - p_start[1]
+    chord_len_sq = chord_x*chord_x + chord_y*chord_y
+
+    if chord_len_sq > 1e-12:
+        # Project LSQ center onto perpendicular bisector
+        # Vector from start to LSQ center
+        to_center_x = xc - p_start[0]
+        to_center_y = yc - p_start[1]
+
+        # Project onto chord
+        proj = (to_center_x * chord_x + to_center_y * chord_y) / chord_len_sq
+
+        # Perpendicular component (from midpoint towards projected center)
+        perp_x = xc - (p_start[0] + proj * chord_x)
+        perp_y = yc - (p_start[1] + proj * chord_y)
+        perp_len = math.sqrt(perp_x*perp_x + perp_y*perp_y)
+
+        if perp_len > 1e-12:
+            # Corrected center on the perpendicular bisector
+            xc_corr = mid_x + perp_x
+            yc_corr = mid_y + perp_y
+
+            # Verify corrected fit is still within tolerance
+            max_dev_corr = 0
+            for x, y in p_xy:
+                dist = abs(math.sqrt((x - xc_corr)**2 + (y - yc_corr)**2) -
+                          math.sqrt((p_start[0] - xc_corr)**2 + (p_start[1] - yc_corr)**2))
+                if dist > max_dev_corr:
+                    max_dev_corr = dist
+
+            if max_dev_corr <= tolerance * 10:
+                xc, yc = xc_corr, yc_corr
+                r = math.sqrt((p_start[0] - xc)**2 + (p_start[1] - yc)**2)
+
     # Sanity check: chord-to-radius ratio (prevent flat spurious arcs)
     p_start = p_xy[0]
     p_end = p_xy[-1]
