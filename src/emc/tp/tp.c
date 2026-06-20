@@ -1755,17 +1755,21 @@ STATIC blend_type_t tpCheckBlendArcType(
 STATIC int tpComputeOptimalVelocity(TP_STRUCT const * const tp, TC_STRUCT * const tc, TC_STRUCT * const prev1_tc) {
     //Calculate the maximum starting velocity vs_back of segment tc, given the
     //trajectory parameters
+
+    // OPTIMIZATION: Cache acceleration and jerk lookups to avoid redundant function calls
     double acc_this = tcGetTangentialMaxAccel(tc);
+    double acc_prev = tcGetTangentialMaxAccel(prev1_tc);
+    double maxjerk_this = fmin(tc->maxjerk, emcmotStatus->jerk);
+    double maxjerk_prev = fmin(prev1_tc->maxjerk, emcmotStatus->jerk);
 
     // Find the reachable velocity of tc, moving backwards in time
     // Calculate max start speed that can decelerate to tc->finalvel within tc->target
     double vs_back;
     if(GET_TRAJ_PLANNER_TYPE() == 1){
         // S-curve mode: use findSCurveMaxStartSpeed for reverse velocity optimization
-        // Use minimum of segment's max jerk and system max jerk to ensure limits are not exceeded
-        double maxjerk = fmin(tc->maxjerk, emcmotStatus->jerk);
+        // Use cached jerk value
         double vs_back2 = pmSqrt(pmSq(tc->finalvel) + 2.0 * acc_this * tc->target);
-        if(findSCurveMaxStartSpeed(tc->target, tc->finalvel, acc_this, maxjerk, &vs_back) != 1){
+        if(findSCurveMaxStartSpeed(tc->target, tc->finalvel, acc_this, maxjerk_this, &vs_back) != 1){
             // S-curve calculation failed, use conservative estimate (at least maintain finalvel)
             vs_back = tc->finalvel;
         }
@@ -1796,10 +1800,9 @@ STATIC int tpComputeOptimalVelocity(TP_STRUCT const * const tp, TC_STRUCT * cons
      * within prev1_tc's length under jerk constraints, otherwise Ruckig cannot
      * plan from current velocity to that finalvel within prev1_tc->target */
     if (GET_TRAJ_PLANNER_TYPE() == 1) {
-        double acc_prev = tcGetTangentialMaxAccel(prev1_tc);
-        double jerk_prev = fmin(prev1_tc->maxjerk, emcmotStatus->jerk);
+        // Use cached acceleration and jerk values
         if (prev1_tc->term_cond != TC_TERM_COND_TANGENT) {
-            double prev_max_end_vel = findSCurveVPeak(acc_prev, jerk_prev, prev1_tc->target);
+            double prev_max_end_vel = findSCurveVPeak(acc_prev, maxjerk_prev, prev1_tc->target);
             vs_back = fmin(vs_back, prev_max_end_vel);
         }
     }
@@ -1817,9 +1820,9 @@ STATIC int tpComputeOptimalVelocity(TP_STRUCT const * const tp, TC_STRUCT * cons
     double dx = tc->target;
     if (dx > 0.0) {
         double a_avg = (pmSq(v_end) - pmSq(v_start)) / (2.0 * dx);
-        double acc_limit = tcGetTangentialMaxAccel(prev1_tc);
+        // Use cached acceleration value (already computed above)
         // Clamp to machine limits
-        prev1_tc->finalacc = fmin(acc_limit, fmax(-acc_limit, a_avg));
+        prev1_tc->finalacc = fmin(acc_prev, fmax(-acc_prev, a_avg));
         tp_debug_print("finalacc for segment %d: v_start=%f, v_end=%f, dx=%f, a_avg=%f, finalacc=%f\n",
                       prev1_tc->id, v_start, v_end, dx, a_avg, prev1_tc->finalacc);
     } else {
@@ -2089,6 +2092,24 @@ STATIC int tpSetupTangent(TP_STRUCT const * const tp,
         return TP_ERR_FAIL;
     }
 
+    // OPTIMIZATION: Cache HAL pin values to avoid repeated pointer dereferences
+    // These are read once and reused throughout the function
+    double tolerance_deg = 3.0;
+    double sharp_corner_deg = 2.0;
+    if (emcmot_hal_data) {
+        if (emcmot_hal_data->tangent_angle_tolerance) {
+            tolerance_deg = *(emcmot_hal_data->tangent_angle_tolerance);
+        }
+        if (emcmot_hal_data->sharp_corner_angle) {
+            sharp_corner_deg = *(emcmot_hal_data->sharp_corner_angle);
+        }
+    }
+    // Precompute tolerance thresholds to avoid repeated cos() calls
+    double tolerance_rad = tolerance_deg * PM_PI / 180.0;
+    double dot_threshold = cos(tolerance_rad);
+    double sharp_corner_rad = sharp_corner_deg * PM_PI / 180.0;
+    double sharp_dot_threshold = -cos(sharp_corner_rad);
+
     PmCartesian prev_tan, this_tan;
 
     int res_endtan = tcGetEndTangentUnitVector(prev_tc, &prev_tan);
@@ -2100,18 +2121,6 @@ STATIC int tpSetupTangent(TP_STRUCT const * const tp,
 
     tp_debug_print("prev tangent vector (linear): %f %f %f\n", prev_tan.x, prev_tan.y, prev_tan.z);
     tp_debug_print("this tangent vector (linear): %f %f %f\n", this_tan.x, this_tan.y, this_tan.z);
-
-    // Get tolerance value (default 3.0 degrees)
-    double tolerance_deg = 3.0;
-    if (emcmot_hal_data && emcmot_hal_data->tangent_angle_tolerance) {
-        tolerance_deg = *(emcmot_hal_data->tangent_angle_tolerance);
-    }
-    // OPTIMIZATION: Convert angle tolerance to dot product threshold to avoid acos()
-    // For unit vectors: dot = cos(angle)
-    // Small angle: 1 - cos(angle) ≈ angle²/2 is more stable numerically
-    // Threshold: (1 - cos(tolerance)) where tolerance is in radians
-    double tolerance_rad = tolerance_deg * PM_PI / 180.0;
-    double dot_threshold = cos(tolerance_rad);  // For angle comparison: if dot >= threshold, within tolerance
 
     // Calculate linear dot product
     double dot_lin;
@@ -2187,18 +2196,7 @@ STATIC int tpSetupTangent(TP_STRUCT const * const tp,
     }
 
     // OPTIMIZATION: Check for sharp corners using dot product instead of pmCartCartAntiParallel
-    // SHARP_CORNER_DEG is tunable via HAL pin motion.sharp-corner-angle (default 2.0°)
-    double sharp_corner_deg = 2.0;
-    if (emcmot_hal_data && emcmot_hal_data->sharp_corner_angle) {
-        sharp_corner_deg = *(emcmot_hal_data->sharp_corner_angle);
-    }
-
-    // Sharp corner detection: approximately opposite directions (angle > 90° - threshold)
-    // For opposite directions: dot ≈ -1 (cos(180°) = -1)
-    // For sharp corner threshold: angle > (180° - sharp_corner_deg)
-    // Equivalently: dot < -cos(sharp_corner_deg) in radians
-    double sharp_corner_rad = sharp_corner_deg * PM_PI / 180.0;
-    double sharp_dot_threshold = -cos(sharp_corner_rad);  // Approximately -1 + O(θ²)
+    // Use cached thresholds (computed at function entry to avoid redundant calculations)
 
     // Check for sharp corners in linear motion (anti-parallel or near anti-parallel)
     int is_sharp_linear = (dot_lin < sharp_dot_threshold);
