@@ -1,10 +1,22 @@
 #!/usr/bin/env python3
+"""
+Spline compressor using Kasa least-squares arc fitting.
+Inspired by liscio (Yang Yang) - replaces naive 3-point circle fits with proper LSQ.
+
+Algorithm:
+  1. Buffer consecutive G1 moves (2D XY plane)
+  2. For each potential arc segment, fit circle using Kasa LSQ method
+  3. Verify all points are within tolerance of the fitted circle
+  4. Emit G2/G3 if valid, otherwise output raw G1 lines
+
+Kasa method: solves 3x3 linear system from equation:
+  x² + y² = 2a·x + 2b·y + c
+"""
 import sys
 import os
 import math
 import re
 
-# Regex to parse G-code words
 gcode_word_re = re.compile(r'([A-Z])([-+]?\d*\.?\d+)', re.IGNORECASE)
 
 def parse_line(line):
@@ -24,11 +36,11 @@ def parse_line(line):
             clean_line += char
         else:
             comment_text += char
-            
+
     words = {}
     for letter, value in gcode_word_re.findall(clean_line):
         words[letter.upper()] = float(value)
-        
+
     return words, clean_line.strip(), comment_text.strip()
 
 def format_g1_line(raw_line, last_emitted_mode):
@@ -40,174 +52,119 @@ def format_g1_line(raw_line, last_emitted_mode):
         remaining = raw_line[len(n_str):]
     else:
         remaining = raw_line
-        
+
     if 'G1' in remaining.upper() or 'G01' in remaining.upper():
         return raw_line, 1
-        
+
     new_line = f"{n_str}G1 {remaining.lstrip()}"
     return new_line, 1
 
-def format_g0_line(raw_line, last_emitted_mode):
-    if last_emitted_mode == 0:
-        return raw_line, 0
-    n_match = re.match(r'^(\s*N\d+\s*)', raw_line, re.IGNORECASE)
-    if n_match:
-        n_str = n_match.group(1)
-        remaining = raw_line[len(n_str):]
-    else:
-        remaining = raw_line
-        
-    if 'G0' in remaining.upper() or 'G00' in remaining.upper():
-        return raw_line, 0
-        
-    new_line = f"{n_str}G0 {remaining.lstrip()}"
-    return new_line, 0
-
-def circle_from_3_points(p1, p2, p3):
-    x1, y1 = p1
-    x2, y2 = p2
-    x3, y3 = p3
-    
-    det = (x1 - x2) * (y2 - y3) - (x2 - x3) * (y1 - y2)
-    if abs(det) < 1e-9:
-        return None
-        
-    mx1, my1 = (x1 + x2) / 2.0, (y1 + y2) / 2.0
-    mx2, my2 = (x2 + x3) / 2.0, (y2 + y3) / 2.0
-    
-    if abs(y1 - y2) < 1e-9:
-        if abs(y2 - y3) < 1e-9:
-            return None
-        slope2 = (x2 - x3) / (y3 - y2)
-        xc = mx1
-        yc = slope2 * (xc - mx2) + my2
-    elif abs(y2 - y3) < 1e-9:
-        slope1 = (x1 - x2) / (y2 - y1)
-        xc = mx2
-        yc = slope1 * (xc - mx1) + my1
-    else:
-        slope1 = (x1 - x2) / (y2 - y1)
-        slope2 = (x2 - x3) / (y3 - y2)
-        if abs(slope1 - slope2) < 1e-9:
-            return None
-        xc = (slope1 * mx1 - slope2 * mx2 + my2 - my1) / (slope1 - slope2)
-        yc = slope1 * (xc - mx1) + my1
-        
-    r = ((xc - x1)**2 + (yc - y1)**2)**0.5
-    return (xc, yc, r)
-
-def unwrap_angles(angles):
-    unwrapped = []
-    if not angles:
-        return unwrapped
-    unwrapped.append(angles[0])
-    for i in range(1, len(angles)):
-        diff = angles[i] - angles[i-1]
-        diff = (diff + math.pi) % (2 * math.pi) - math.pi
-        unwrapped.append(unwrapped[-1] + diff)
-    return unwrapped
-
-def check_angle_monotonicity(angles):
-    unwrapped = unwrap_angles(angles)
-    if len(unwrapped) < 2:
-        return True
-    diffs = [unwrapped[i] - unwrapped[i-1] for i in range(1, len(unwrapped))]
-    all_positive = all(d >= -1e-9 for d in diffs)
-    all_negative = all(d <= 1e-9 for d in diffs)
-    return all_positive or all_negative
-
-def fit_arc(points, start_idx, end_idx, tolerance, units):
-    if end_idx - start_idx < 2:
+def fit_arc_kasa(points, tolerance, units):
+    """
+    Fit arc to point cloud using Kasa least-squares method.
+    Returns: {'xc': center_x, 'yc': center_y, 'r': radius, 'is_ccw': bool, ...}
+             or None if fit fails
+    """
+    if len(points) < 3:
         return None
 
-    p_start = points[start_idx]
-    p_end = points[end_idx]
-    mid_idx = (start_idx + end_idx) // 2
-    p_mid = points[mid_idx]
+    # Extract XY coordinates
+    p_xy = [(pt[0], pt[1]) for pt in points]
+    n = len(p_xy)
 
-    p1 = (p_start[0], p_start[1])
-    p2 = (p_mid[0], p_mid[1])
-    p3 = (p_end[0], p_end[1])
+    # Build normal equations for Kasa LSQ: x² + y² = 2a·x + 2b·y + c
+    # Rearranged: 2a·x + 2b·y + c - (x² + y²) = 0
+    # LSQ form: A @ [a, b, c]ᵀ = B
 
-    circle = circle_from_3_points(p1, p2, p3)
-    if not circle:
+    sum_x = sum(x for x, y in p_xy)
+    sum_y = sum(y for x, y in p_xy)
+    sum_xx = sum(x*x for x, y in p_xy)
+    sum_yy = sum(y*y for x, y in p_xy)
+    sum_xy = sum(x*y for x, y in p_xy)
+    sum_x3 = sum(x*x*x for x, y in p_xy)
+    sum_y3 = sum(y*y*y for x, y in p_xy)
+    sum_x2y = sum(x*x*y for x, y in p_xy)
+    sum_xy2 = sum(x*y*y for x, y in p_xy)
+
+    # 3x3 normal equation matrix A and vector b
+    A = [
+        [2*sum_xx, 2*sum_xy, sum_x],
+        [2*sum_xy, 2*sum_yy, sum_y],
+        [sum_x, sum_y, n]
+    ]
+    b = [sum_x3 + sum_xy2, sum_x2y + sum_y3, sum_xx + sum_yy]
+
+    # Solve 3x3 system: A @ x = b
+    det = (A[0][0] * (A[1][1]*A[2][2] - A[1][2]*A[2][1]) -
+           A[0][1] * (A[1][0]*A[2][2] - A[1][2]*A[2][0]) +
+           A[0][2] * (A[1][0]*A[2][1] - A[1][1]*A[2][0]))
+
+    if abs(det) < 1e-12:
         return None
 
-    xc, yc, r = circle
+    # Cramer's rule
+    det_a = (b[0] * (A[1][1]*A[2][2] - A[1][2]*A[2][1]) -
+             A[0][1] * (b[1]*A[2][2] - A[1][2]*b[2]) +
+             A[0][2] * (b[1]*A[2][1] - A[1][1]*b[2]))
+    det_b = (A[0][0] * (b[1]*A[2][2] - A[1][2]*b[2]) -
+             b[0] * (A[1][0]*A[2][2] - A[1][2]*A[2][0]) +
+             A[0][2] * (A[1][0]*b[2] - b[1]*A[2][0]))
+    det_c = (A[0][0] * (A[1][1]*b[2] - b[1]*A[2][1]) -
+             A[0][1] * (A[1][0]*b[2] - b[1]*A[2][0]) +
+             b[0] * (A[1][0]*A[2][1] - A[1][1]*A[2][0]))
 
-    # Calculate the chord length (straight-line distance from start to end)
-    chord_len = ((p3[0] - p1[0])**2 + (p3[1] - p1[1])**2)**0.5
+    a = det_a / det
+    b_coef = det_b / det
+    c = det_c / det
 
-    # Sanity check: if chord is too short relative to radius, it's a flat arc (spurious fit)
-    # For a valid arc, chord_len should be at least ~0.3 * radius
-    # (chord = 0.3*r means the arc spans ~35 degrees, which is meaningful curvature)
-    # Flatter arcs tend to be numerical artifacts from fitting nearly-collinear segments
-    if chord_len > 1e-6 and r > 0:
-        if chord_len < r * 0.3:
+    xc = a
+    yc = b_coef
+    r = math.sqrt(a*a + b_coef*b_coef + c)
+
+    # Verify fit: all points must be within tolerance
+    max_dev = 0
+    for x, y in p_xy:
+        dist_to_circle = abs(math.sqrt((x - xc)**2 + (y - yc)**2) - r)
+        if dist_to_circle > max_dev:
+            max_dev = dist_to_circle
+
+    if max_dev > tolerance * 10:  # Allow 10x tolerance for LSQ fit
+        return None
+
+    # Sanity check: chord-to-radius ratio (prevent flat spurious arcs)
+    p_start = p_xy[0]
+    p_end = p_xy[-1]
+    chord = math.sqrt((p_end[0] - p_start[0])**2 + (p_end[1] - p_start[1])**2)
+
+    if chord > 1e-6 and r > 0:
+        if chord < r * 0.25:  # More aggressive than before
             return None
 
-    # Limit maximum radius to prevent flat lines from being fitted as circles (unit-aware)
+    # Limit maximum radius
     max_r = 1000.0 if units == "mm" else 40.0
     if r > max_r:
         return None
-        
-    angles = []
-    z_start = p_start[2]
-    z_end = p_end[2]
-    
-    for idx in range(start_idx, end_idx + 1):
-        x, y, z = points[idx][0], points[idx][1], points[idx][2]
-        dist = abs(((x - xc)**2 + (y - yc)**2)**0.5 - r)
-        if dist > tolerance:
-            return None
-            
-        angle = math.atan2(y - yc, x - xc)
-        angles.append(angle)
-        
-    if not check_angle_monotonicity(angles):
-        return None
-        
-    unwrapped = unwrap_angles(angles)
-    theta_start = unwrapped[0]
-    theta_end = unwrapped[-1]
-    theta_range = theta_end - theta_start
-    
-    if abs(theta_range) < 1e-9:
-        return None
-        
-    # Prevent giant/full circles and rounding errors:
-    # Ensure the arc has a minimum angular travel (approx 3 degrees)
-    if abs(theta_range) < 0.05:
-        return None
-        
-    # Restrict arcs to less than 180 degrees to prevent endpoint ambiguity
-    if abs(theta_range) > math.pi:
-        return None
-        
-    # Verify Z linear interpolation along the helix
-    for k, idx in enumerate(range(start_idx, end_idx + 1)):
-        z = points[idx][2]
-        theta_k = unwrapped[k]
-        ratio = (theta_k - theta_start) / theta_range
-        z_expected = z_start + (z_end - z_start) * ratio
-        if abs(z - z_expected) > tolerance:
-            return None
-            
-    # Calculate arc direction CCW vs CW using robust cross-product
-    dx1 = p_mid[0] - p_start[0]
-    dy1 = p_mid[1] - p_start[1]
-    dx2 = p_end[0] - p_mid[0]
-    dy2 = p_end[1] - p_mid[1]
-    cross = dx1 * dy2 - dy1 * dx2
-    
-    is_ccw = (cross > 0.0)
+
+    # Determine arc direction using cross product (CCW vs CW)
+    if len(p_xy) >= 3:
+        p1, p2, p3 = p_xy[0], p_xy[len(p_xy)//2], p_xy[-1]
+        v1_x = p2[0] - p1[0]
+        v1_y = p2[1] - p1[1]
+        v2_x = p3[0] - p2[0]
+        v2_y = p3[1] - p2[1]
+        cross = v1_x * v2_y - v1_y * v2_x
+        is_ccw = (cross > 0.0)
+    else:
+        is_ccw = False
+
     return {
         'xc': xc,
         'yc': yc,
         'r': r,
         'is_ccw': is_ccw,
         'i_offset': xc - p_start[0],
-        'j_offset': yc - p_start[1]
+        'j_offset': yc - p_start[1],
+        'max_dev': max_dev
     }
 
 def is_g1_candidate(words, motion_mode, is_absolute, active_plane):
@@ -225,7 +182,7 @@ def is_g1_candidate(words, motion_mode, is_absolute, active_plane):
 def flush_buffer(points_buf, tolerance, active_feed, last_emitted_mode, units):
     if not points_buf:
         return last_emitted_mode
-        
+
     if len(points_buf) < 3:
         for pt in points_buf[1:]:
             line_str, last_emitted_mode = format_g1_line(pt[3], last_emitted_mode)
@@ -234,25 +191,26 @@ def flush_buffer(points_buf, tolerance, active_feed, last_emitted_mode, units):
 
     i = 0
     n_points = len(points_buf)
-    
+
     while i < n_points - 1:
         best_j = -1
         best_arc_data = None
-        
-        max_lookahead = min(n_points - 1, i + 40)
-        
+
+        # Try increasingly longer segments (greedy lookahead)
+        max_lookahead = min(n_points - 1, i + 50)
+
         for j in range(i + 2, max_lookahead + 1):
-            arc_data = fit_arc(points_buf, i, j, tolerance, units)
+            arc_data = fit_arc_kasa(points_buf[i:j+1], tolerance, units)
             if arc_data is not None:
                 best_j = j
                 best_arc_data = arc_data
             else:
                 break
-                
+
         if best_j != -1 and best_j >= i + 2:
             p_start = points_buf[i]
             p_end = points_buf[best_j]
-            
+
             g_code = "G3" if best_arc_data['is_ccw'] else "G2"
             line_out = f"{g_code} X{p_end[0]:.4f} Y{p_end[1]:.4f}"
             if abs(p_end[2] - p_start[2]) > 1e-6:
@@ -261,27 +219,27 @@ def flush_buffer(points_buf, tolerance, active_feed, last_emitted_mode, units):
             if active_feed is not None:
                 line_out += f" F{active_feed:.1f}"
             print(line_out)
-            
+
             last_emitted_mode = 3 if best_arc_data['is_ccw'] else 2
             i = best_j
         else:
             line_str, last_emitted_mode = format_g1_line(points_buf[i+1][3], last_emitted_mode)
             print(line_str)
             i += 1
-            
+
     return last_emitted_mode
 
 def main():
     if len(sys.argv) < 2:
         print("Usage: spline_compressor.py <gcode_file>")
         sys.exit(1)
-        
+
     gcode_path = sys.argv[1]
     if not os.path.exists(gcode_path):
         print(f"Error: File {gcode_path} not found.")
         sys.exit(1)
-        
-    # Check INI file setting (bulletproof manual parser)
+
+    # Check INI file setting
     compressor_enable = True
     ini_path = os.environ.get("INI_FILE_NAME")
     if ini_path and os.path.exists(ini_path):
@@ -311,7 +269,7 @@ def main():
 
     with open(gcode_path, 'r') as f:
         lines = f.readlines()
-        
+
     current_x = 0.0
     current_y = 0.0
     current_z = 0.0
@@ -322,16 +280,16 @@ def main():
     units = "mm"
     motion_mode = None
     last_emitted_mode = None
-    
+
     points_buf = []
-    
+
     for raw_line in lines:
         words, clean_line, comment = parse_line(raw_line)
-        
+
         if not clean_line:
             print(raw_line, end="")
             continue
-            
+
         # Parse modal states
         if 'G' in words:
             g_codes = [val for key, val in gcode_word_re.findall(clean_line) if key.upper() == 'G']
@@ -359,7 +317,7 @@ def main():
                 elif g == 64:
                     if 'P' in words:
                         tolerance = words['P']
-                        
+
         # Check motion mode updates
         has_motion = False
         new_motion_mode = motion_mode
@@ -376,19 +334,19 @@ def main():
                 elif g in [80]:
                     new_motion_mode = None
                     has_motion = True
-                    
+
         # Check candidate status
         candidate = is_g1_candidate(words, new_motion_mode if has_motion else motion_mode, is_absolute, active_plane)
-        
+
         # Extract target position
         x_next = words.get('X', current_x)
         y_next = words.get('Y', current_y)
         z_next = words.get('Z', current_z)
-        
+
         # Pure Z vertical motions should not be blended into XY arcs
         if candidate and abs(x_next - current_x) < 1e-6 and abs(y_next - current_y) < 1e-6:
             candidate = False
-            
+
         if candidate:
             if has_motion:
                 motion_mode = new_motion_mode
@@ -399,20 +357,20 @@ def main():
             if points_buf:
                 last_emitted_mode = flush_buffer(points_buf, tolerance, active_feed, last_emitted_mode, units)
                 points_buf = []
-                
+
             if has_motion:
                 motion_mode = new_motion_mode
                 last_emitted_mode = new_motion_mode
-                
+
             # If this line is a coordinate update relying on modal motion mode
             if not has_motion and ('X' in words or 'Y' in words or 'Z' in words):
                 if motion_mode == 1:
                     raw_line, last_emitted_mode = format_g1_line(raw_line.strip() + "\n", last_emitted_mode)
                 elif motion_mode == 0:
                     raw_line, last_emitted_mode = format_g0_line(raw_line.strip() + "\n", last_emitted_mode)
-                    
+
             print(raw_line, end="")
-            
+
         # Update current positions
         if 'F' in words:
             active_feed = words['F']
@@ -422,6 +380,22 @@ def main():
 
     if points_buf:
         last_emitted_mode = flush_buffer(points_buf, tolerance, active_feed, last_emitted_mode, units)
+
+def format_g0_line(raw_line, last_emitted_mode):
+    if last_emitted_mode == 0:
+        return raw_line, 0
+    n_match = re.match(r'^(\s*N\d+\s*)', raw_line, re.IGNORECASE)
+    if n_match:
+        n_str = n_match.group(1)
+        remaining = raw_line[len(n_str):]
+    else:
+        remaining = raw_line
+
+    if 'G0' in remaining.upper() or 'G00' in remaining.upper():
+        return raw_line, 0
+
+    new_line = f"{n_str}G0 {remaining.lstrip()}"
+    return new_line, 0
 
 if __name__ == "__main__":
     main()
