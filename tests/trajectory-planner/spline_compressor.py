@@ -263,7 +263,7 @@ def main():
         sys.exit(1)
 
     # Check INI file setting
-    compressor_enable = True
+    compressor_enable = 0  # Default: disabled
     ini_path = os.environ.get("INI_FILE_NAME")
     if ini_path and os.path.exists(ini_path):
         try:
@@ -278,13 +278,23 @@ def main():
                     elif '=' in clean_ini and current_section in ['TRAJ', 'FILTER']:
                         key, val = clean_ini.split('=', 1)
                         if key.strip().upper() == 'COMPRESSOR_ENABLE':
-                            val_clean = val.strip().upper()
-                            if val_clean in ['0', 'NO', 'FALSE', 'OFF']:
-                                compressor_enable = False
+                            try:
+                                compressor_enable = int(val.strip())
+                            except ValueError:
+                                compressor_enable = 0
         except Exception:
             pass
 
-    if not compressor_enable:
+    # Pass-through mode (COMPRESSOR_ENABLE = 0): output G-code UNCHANGED
+    # This is the SAFE default. Arc fitting can create spurious arcs.
+    if compressor_enable == 0:
+        # Use binary mode to preserve exact line endings (CRLF vs LF)
+        with open(gcode_path, 'rb') as f:
+            sys.stdout.buffer.write(f.read())
+        return
+
+    # Compression modes (1=perpbisector, 2=liscio) only if explicitly enabled
+    if not (compressor_enable >= 1):
         with open(gcode_path, 'r') as f:
             for line in f:
                 print(line, end="")
