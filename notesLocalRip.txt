@@ -1,0 +1,10 @@
+cd src
+./autogen.sh          					# only first time / after configure.ac change
+./configure --with-realtime=uspace   	# uspace (no RTAI). first time / config change
+make -j$(nproc)
+sudo make setuid      					# needed for HAL/RT hardware access, after each build of certain comps
+
+
+
+. ../scripts/rip-environment
+linuxcnc

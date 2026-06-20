@@ -1865,7 +1865,12 @@ STATIC int tpRunOptimization(TP_STRUCT * const tp) {
      * the front. We can't do anything with the very last element because its
      * length may change if a new line is added to the queue.*/
 
-    for (x = 1; x < emcmotConfig->arcBlendOptDepth + 2; ++x) {
+    int opt_depth = emcmotConfig->arcBlendOptDepth;
+    if (opt_depth > 150) {
+        opt_depth = 150;
+    }
+
+    for (x = 1; x < opt_depth + 2; ++x) {
         tp_info_print("==== Optimization step %d ====\n",x);
 
         // Update the pointers to the trajectory segments in use
@@ -1924,6 +1929,9 @@ STATIC int tpRunOptimization(TP_STRUCT * const tp) {
             }
         }
 
+        double old_finalvel = prev1_tc->finalvel;
+        double old_finalacc = prev1_tc->finalacc;
+
         if (!tc->finalized) {
             tp_debug_print("Segment %d, type %d not finalized, continuing\n",tc->id,tc->motion_type);
             // use worst-case final velocity that allows for up to 1/2 of a segment to be consumed.
@@ -1947,6 +1955,14 @@ STATIC int tpRunOptimization(TP_STRUCT * const tp) {
         }
 
         tc->active_depth = x - 2 - hit_peaks;
+
+        // Early-out if the velocity profile did not change (converged)
+        if (fabs(prev1_tc->finalvel - old_finalvel) < 1e-6 &&
+            fabs(prev1_tc->finalacc - old_finalacc) < 1e-6) {
+            tp_debug_print(" Optimization converged at depth %d, early out\n", x);
+            break;
+        }
+
 #ifdef TP_OPTIMIZATION_LAZY
         if (tc->optimization_state == TC_OPTIM_AT_MAX) {
             hit_peaks++;
@@ -2002,6 +2018,27 @@ STATIC int tpSetupTangent(TP_STRUCT const * const tp,
 
     tp_debug_print("prev tangent vector: %f %f %f\n", prev_tan.x, prev_tan.y, prev_tan.z);
     tp_debug_print("this tangent vector: %f %f %f\n", this_tan.x, this_tan.y, this_tan.z);
+
+    double dot;
+    pmCartCartDot(&prev_tan, &this_tan, &dot);
+    double angle_rad = acos(saturate(dot, 1.0));
+    double angle_deg = angle_rad * 180.0 / PM_PI;
+
+    double tolerance_deg = 3.0;
+    if (emcmot_hal_data && emcmot_hal_data->tangent_angle_tolerance) {
+        tolerance_deg = *(emcmot_hal_data->tangent_angle_tolerance);
+    }
+
+    if (angle_deg <= tolerance_deg) {
+        double v_max1 = tcGetMaxTargetVel(prev_tc, getMaxFeedScale(prev_tc));
+        double v_max2 = tcGetMaxTargetVel(tc, getMaxFeedScale(tc));
+        double v_max = fmin(v_max1, v_max2);
+        tp_debug_print(" Soft Tangent: angle %f deg is within tolerance %f deg. Forcing tangent blend at v_max = %f\n",
+                       angle_deg, tolerance_deg, v_max);
+        tcSetTermCond(prev_tc, tc, TC_TERM_COND_TANGENT);
+        tcSetKinkProperties(prev_tc, tc, v_max, 0.0);
+        return TP_ERR_OK;
+    }
 
     // Assume small angle approximation here
     const double SHARP_CORNER_DEG = 2.0;
@@ -2876,6 +2913,23 @@ int tpCalculateSCurveAccel(TP_STRUCT const * const tp, TC_STRUCT * const tc, TC_
     // Check if feed_override = 0 (not pause/abort, but velocity limited to 0)
     bool use_velocity_control = (is_pausing || is_aborting ||
                                    emcmotStatus->net_feed_scale <= TP_VEL_EPSILON);
+
+    // Phase 2: Kinematic Deadband Bypass & Clamping
+    // If the active segment distance is micro-scale (< 10^-5 mm) or the current speed is near zero (< 10^-4 mm/s)
+    // during a position-controlled segment, we bypass the Ruckig solver to avoid numerical instability and warning logs.
+    if (!use_velocity_control && (dx < 1e-5 || (tc->currentvel < 1e-4 && dx < 1e-3))) {
+        *acc = 0.0;
+        *jerk = 0.0;
+        *vel_desired = tc_finalvel;
+        *pos_error = 0.0;
+        if (req_pos) {
+            *req_pos = tcGetTarget(tc, tp->reverse_run);
+        }
+        tc_debug_print(" Deadband Bypass: dx = %g, currentvel = %g. Bypassing Ruckig position control.\n",
+                       dx, tc->currentvel);
+        return (tc_finalvel < tc->currentvel) ? TP_SCURVE_ACCEL_DECEL : TP_SCURVE_ACCEL_ACCEL;
+    }
+
     // Normal operation parameters
     double effective_max_vel = tc_target_vel;
     double effective_target_vel = tc_finalvel;

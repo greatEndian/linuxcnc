@@ -211,6 +211,7 @@ typedef struct {
     hal_float_t *interp_straight_heading;
     hal_float_t *interp_normal_heading;
     hal_bit_t   *iscircle;
+    hal_float_t *tangent_angle_tolerance;
 } emcmot_hal_data_t;
 
 /***********************************************************************
