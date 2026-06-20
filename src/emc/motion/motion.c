@@ -521,6 +521,8 @@ static int init_hal_io(void)
     CALL_CHECK(hal_pin_bit_newf(HAL_IN, &(emcmot_hal_data->probe_input), mot_comp_id, "motion.probe-input"));
     CALL_CHECK(hal_pin_float_newf(HAL_IN, &(emcmot_hal_data->adaptive_feed), mot_comp_id, "motion.adaptive-feed"));
     CALL_CHECK(hal_pin_float_newf(HAL_IN, &(emcmot_hal_data->tangent_angle_tolerance), mot_comp_id, "motion.tangent-angle-tolerance"));
+    CALL_CHECK(hal_pin_float_newf(HAL_IN, &(emcmot_hal_data->sharp_corner_angle), mot_comp_id, "motion.sharp-corner-angle"));
+    CALL_CHECK(hal_pin_float_newf(HAL_IN, &(emcmot_hal_data->convergence_tolerance), mot_comp_id, "motion.convergence-tolerance"));
     CALL_CHECK(hal_pin_bit_newf(HAL_IN, &(emcmot_hal_data->feed_hold), mot_comp_id, "motion.feed-hold"));
     CALL_CHECK(hal_pin_bit_newf(HAL_IN, &(emcmot_hal_data->feed_inhibit), mot_comp_id, "motion.feed-inhibit"));
     CALL_CHECK(hal_pin_bit_newf(HAL_IN, &(emcmot_hal_data->homing_inhibit), mot_comp_id, "motion.homing-inhibit"));
@@ -656,6 +658,8 @@ static int init_hal_io(void)
     /* initialize machine wide pins and parameters */
     *(emcmot_hal_data->adaptive_feed) = 1.0;
     *(emcmot_hal_data->tangent_angle_tolerance) = 3.0;
+    *(emcmot_hal_data->sharp_corner_angle) = 2.0;
+    *(emcmot_hal_data->convergence_tolerance) = 1e-6;
     *(emcmot_hal_data->feed_hold) = 0;
     *(emcmot_hal_data->feed_inhibit) = 0;
     *(emcmot_hal_data->homing_inhibit) = 0;

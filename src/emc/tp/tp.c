@@ -1957,8 +1957,13 @@ STATIC int tpRunOptimization(TP_STRUCT * const tp) {
         tc->active_depth = x - 2 - hit_peaks;
 
         // Early-out if the velocity profile did not change (converged)
-        if (fabs(prev1_tc->finalvel - old_finalvel) < 1e-6 &&
-            fabs(prev1_tc->finalacc - old_finalacc) < 1e-6) {
+        // convergence_tolerance is tunable via HAL pin motion.convergence-tolerance (default 1e-6)
+        double convergence_tol = 1e-6;
+        if (emcmot_hal_data && emcmot_hal_data->convergence_tolerance) {
+            convergence_tol = *(emcmot_hal_data->convergence_tolerance);
+        }
+        if (fabs(prev1_tc->finalvel - old_finalvel) < convergence_tol &&
+            fabs(prev1_tc->finalacc - old_finalacc) < convergence_tol) {
             tp_debug_print(" Optimization converged at depth %d, early out\n", x);
             break;
         }
@@ -2041,8 +2046,12 @@ STATIC int tpSetupTangent(TP_STRUCT const * const tp,
     }
 
     // Assume small angle approximation here
-    const double SHARP_CORNER_DEG = 2.0;
-    const double SHARP_CORNER_EPSILON = pmSq(PM_PI * ( SHARP_CORNER_DEG / 180.0));
+    // SHARP_CORNER_DEG is tunable via HAL pin motion.sharp-corner-angle (default 2.0°)
+    double sharp_corner_deg = 2.0;
+    if (emcmot_hal_data && emcmot_hal_data->sharp_corner_angle) {
+        sharp_corner_deg = *(emcmot_hal_data->sharp_corner_angle);
+    }
+    const double SHARP_CORNER_EPSILON = pmSq(PM_PI * (sharp_corner_deg / 180.0));
     if (pmCartCartAntiParallel(&prev_tan, &this_tan, SHARP_CORNER_EPSILON))
     {
         tp_debug_print("Found sharp corner\n");
