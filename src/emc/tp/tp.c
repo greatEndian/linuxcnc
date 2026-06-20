@@ -12,6 +12,7 @@
 ********************************************************************/
 #include <rtapi.h>              /* rtapi_print_msg */
 #include <rtapi_math.h>
+#include <string.h>             /* memset */
 #include <posemath.h>           /* Geometry types & functions */
 #include <emcpose.h>
 #include <motion_types.h>
@@ -1995,9 +1996,23 @@ STATIC int tpSetupTangent(TP_STRUCT const * const tp,
         tp_debug_print("missing tc or prev tc in tangent check\n");
         return TP_ERR_FAIL;
     }
-    //If we have ABCUVW movement, then don't check for tangency
-    if (tcRotaryMotionCheck(tc) || tcRotaryMotionCheck(prev_tc)) {
-        tp_debug_print("found rotary axis motion\n");
+    // Note: We now handle rotary motion (ABC) in tangent blending.
+    // UVW (secondary linear) motion is still rejected as it's uncommon.
+    int has_rotary_motion = false;
+    if ((tc->motion_type == TC_LINEAR && !tc->coords.line.abc.tmag_zero) ||
+        (tc->motion_type == TC_CIRCULAR && !tc->coords.circle.abc.tmag_zero) ||
+        (prev_tc->motion_type == TC_LINEAR && !prev_tc->coords.line.abc.tmag_zero) ||
+        (prev_tc->motion_type == TC_CIRCULAR && !prev_tc->coords.circle.abc.tmag_zero)) {
+        has_rotary_motion = true;
+    }
+
+    // Reject if UVW motion is present (uncommon secondary linear axes)
+    if ((tc->motion_type == TC_LINEAR && !tc->coords.line.uvw.tmag_zero) ||
+        (tc->motion_type == TC_CIRCULAR && !tc->coords.circle.uvw.tmag_zero) ||
+        (prev_tc->motion_type == TC_LINEAR && !prev_tc->coords.line.uvw.tmag_zero) ||
+        (prev_tc->motion_type == TC_CIRCULAR && !prev_tc->coords.circle.uvw.tmag_zero) ||
+        tc->motion_type == TC_SPHERICAL || prev_tc->motion_type == TC_SPHERICAL) {
+        tp_debug_print("found UVW or spherical motion, rejecting tangent blending\n");
         return TP_ERR_FAIL;
     }
 
@@ -2021,13 +2036,64 @@ STATIC int tpSetupTangent(TP_STRUCT const * const tp,
                 res_endtan, res_starttan);
     }
 
-    tp_debug_print("prev tangent vector: %f %f %f\n", prev_tan.x, prev_tan.y, prev_tan.z);
-    tp_debug_print("this tangent vector: %f %f %f\n", this_tan.x, this_tan.y, this_tan.z);
+    tp_debug_print("prev tangent vector (linear): %f %f %f\n", prev_tan.x, prev_tan.y, prev_tan.z);
+    tp_debug_print("this tangent vector (linear): %f %f %f\n", this_tan.x, this_tan.y, this_tan.z);
 
-    double dot;
-    pmCartCartDot(&prev_tan, &this_tan, &dot);
-    double angle_rad = acos(saturate(dot, 1.0));
+    // Calculate linear angle
+    double dot_lin;
+    pmCartCartDot(&prev_tan, &this_tan, &dot_lin);
+    double angle_rad = acos(saturate(dot_lin, 1.0));
     double angle_deg = angle_rad * 180.0 / PM_PI;
+
+    // If there's rotary motion, also check rotary tangent angle
+    double angle_deg_rotary = 0.0;
+    if (has_rotary_motion) {
+        PmCartesian prev_tan_rot, this_tan_rot;
+
+        // Extract rotary tangent vectors
+        switch (prev_tc->motion_type) {
+            case TC_LINEAR:
+                prev_tan_rot = prev_tc->coords.line.abc.uVec;
+                break;
+            case TC_CIRCULAR:
+                // For circular motion, use tangent at end point
+                prev_tan_rot = prev_tc->coords.circle.abc.uVec;
+                break;
+            default:
+                memset(&prev_tan_rot, 0, sizeof(PmCartesian));
+        }
+
+        switch (tc->motion_type) {
+            case TC_LINEAR:
+                this_tan_rot = tc->coords.line.abc.uVec;
+                break;
+            case TC_CIRCULAR:
+                // For circular motion, use tangent at start point
+                this_tan_rot = tc->coords.circle.abc.uVec;
+                break;
+            default:
+                memset(&this_tan_rot, 0, sizeof(PmCartesian));
+        }
+
+        tp_debug_print("prev tangent vector (rotary): %f %f %f\n", prev_tan_rot.x, prev_tan_rot.y, prev_tan_rot.z);
+        tp_debug_print("this tangent vector (rotary): %f %f %f\n", this_tan_rot.x, this_tan_rot.y, this_tan_rot.z);
+
+        // Calculate rotary angle (only if both have non-zero magnitude)
+        double prev_rot_mag, this_rot_mag;
+        pmCartMag(&prev_tan_rot, &prev_rot_mag);
+        pmCartMag(&this_tan_rot, &this_rot_mag);
+        if (prev_rot_mag > 1e-9 && this_rot_mag > 1e-9) {
+            double dot_rot;
+            pmCartCartDot(&prev_tan_rot, &this_tan_rot, &dot_rot);
+            double angle_rad_rot = acos(saturate(dot_rot, 1.0));
+            angle_deg_rotary = angle_rad_rot * 180.0 / PM_PI;
+            tp_debug_print("rotary tangent angle: %f deg\n", angle_deg_rotary);
+        }
+
+        // Use maximum angle (most conservative)
+        angle_deg = fmax(angle_deg, angle_deg_rotary);
+        tp_debug_print("combined tangent angle (max): %f deg\n", angle_deg);
+    }
 
     double tolerance_deg = 3.0;
     if (emcmot_hal_data && emcmot_hal_data->tangent_angle_tolerance) {
@@ -2052,9 +2118,21 @@ STATIC int tpSetupTangent(TP_STRUCT const * const tp,
         sharp_corner_deg = *(emcmot_hal_data->sharp_corner_angle);
     }
     const double SHARP_CORNER_EPSILON = pmSq(PM_PI * (sharp_corner_deg / 180.0));
-    if (pmCartCartAntiParallel(&prev_tan, &this_tan, SHARP_CORNER_EPSILON))
-    {
-        tp_debug_print("Found sharp corner\n");
+
+    // Check for sharp corners in linear motion
+    int is_sharp_linear = pmCartCartAntiParallel(&prev_tan, &this_tan, SHARP_CORNER_EPSILON);
+
+    // Check for sharp corners in rotary motion (if present)
+    int is_sharp_rotary = 0;
+    if (has_rotary_motion && angle_deg_rotary > 0.0) {
+        // If rotary angle is > 90 degrees, it's a reversal (sharp corner in rotation)
+        if (angle_deg_rotary > 90.0) {
+            is_sharp_rotary = 1;
+        }
+    }
+
+    if (is_sharp_linear || is_sharp_rotary) {
+        tp_debug_print("Found sharp corner (linear=%d, rotary=%d)\n", is_sharp_linear, is_sharp_rotary);
         tcSetTermCond(prev_tc, tc, TC_TERM_COND_STOP);
         return TP_ERR_FAIL;
     }
