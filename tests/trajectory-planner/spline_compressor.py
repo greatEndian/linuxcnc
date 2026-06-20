@@ -241,10 +241,18 @@ def flush_buffer(points_buf, tolerance, active_feed, last_emitted_mode, units):
             line_out += f" I{best_arc_data['i_offset']:.4f} J{best_arc_data['j_offset']:.4f}"
             if active_feed is not None:
                 line_out += f" F{active_feed:.1f}"
-            print(line_out)
 
-            last_emitted_mode = 3 if best_arc_data['is_ccw'] else 2
-            i = best_j
+            # ARTIFACT SUPPRESSION: Detect and skip spurious orbital arcs
+            if is_spurious_arc(line_out, tolerance):
+                # Suppress the arc, output original G1 move instead
+                line_str, last_emitted_mode = format_g1_line(points_buf[i+1][3], last_emitted_mode)
+                print(line_str)
+                i += 1
+            else:
+                # Arc is valid, output it
+                print(line_out)
+                last_emitted_mode = 3 if best_arc_data['is_ccw'] else 2
+                i = best_j
         else:
             line_str, last_emitted_mode = format_g1_line(points_buf[i+1][3], last_emitted_mode)
             print(line_str)
@@ -429,6 +437,54 @@ def format_g0_line(raw_line, last_emitted_mode):
 
     new_line = f"{n_str}G0 {remaining.lstrip()}"
     return new_line, 0
+
+def is_spurious_arc(line_str, tolerance):
+    """
+    Detect spurious/orbital arcs that should be suppressed.
+    Returns True if arc should be rejected (replaced with G1 moves).
+
+    Heuristics:
+    1. Arc with extremely large I/J (center far from segment) = orbital artifact
+    2. Arc with I or J > 100mm and chord < 30mm = likely spurious
+    3. Arc offset magnitude >> radius = numerical fitting error
+    """
+    # Try to parse as G2/G3 arc
+    if not re.match(r'^G[23]\s', line_str.upper()):
+        return False
+
+    # Extract I, J values
+    i_match = re.search(r'I([-+]?\d*\.?\d+)', line_str, re.IGNORECASE)
+    j_match = re.search(r'J([-+]?\d*\.?\d+)', line_str, re.IGNORECASE)
+    x_match = re.search(r'X([-+]?\d*\.?\d+)', line_str, re.IGNORECASE)
+    y_match = re.search(r'Y([-+]?\d*\.?\d+)', line_str, re.IGNORECASE)
+
+    if not (i_match and j_match and x_match and y_match):
+        return False
+
+    try:
+        i_val = float(i_match.group(1))
+        j_val = float(j_match.group(1))
+        x_end = float(x_match.group(1))
+        y_end = float(y_match.group(1))
+    except (ValueError, AttributeError):
+        return False
+
+    # Compute radius from offsets
+    radius = math.sqrt(i_val*i_val + j_val*j_val)
+
+    # ORBITAL DETECTOR: Arc center far from segment = bad fit
+    # If |I| > 50mm or |J| > 50mm with small radius, likely spurious
+    offset_mag = max(abs(i_val), abs(j_val))
+
+    if offset_mag > 50.0 and radius < 100.0:
+        # Large offset, small radius = orbital artifact
+        return True
+
+    if radius > 0 and offset_mag > radius * 2:
+        # Offset much larger than radius = numerical error
+        return True
+
+    return False
 
 if __name__ == "__main__":
     main()
