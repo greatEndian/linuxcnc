@@ -1762,13 +1762,17 @@ STATIC int tpComputeOptimalVelocity(TP_STRUCT const * const tp, TC_STRUCT * cons
     double maxjerk_this = fmin(tc->maxjerk, emcmotStatus->jerk);
     double maxjerk_prev = fmin(prev1_tc->maxjerk, emcmotStatus->jerk);
 
+    // OPTIMIZATION: Cache squared velocity values to avoid repeated pmSq() and pmSqrt() calls
+    // tc->finalvel is used multiple times in this function
+    double tc_finalvel_sq = pmSq(tc->finalvel);
+
     // Find the reachable velocity of tc, moving backwards in time
     // Calculate max start speed that can decelerate to tc->finalvel within tc->target
     double vs_back;
     if(GET_TRAJ_PLANNER_TYPE() == 1){
         // S-curve mode: use findSCurveMaxStartSpeed for reverse velocity optimization
-        // Use cached jerk value
-        double vs_back2 = pmSqrt(pmSq(tc->finalvel) + 2.0 * acc_this * tc->target);
+        // Use cached squared velocity (reuse tc_finalvel_sq)
+        double vs_back2 = pmSqrt(tc_finalvel_sq + 2.0 * acc_this * tc->target);
         if(findSCurveMaxStartSpeed(tc->target, tc->finalvel, acc_this, maxjerk_this, &vs_back) != 1){
             // S-curve calculation failed, use conservative estimate (at least maintain finalvel)
             vs_back = tc->finalvel;
@@ -1776,7 +1780,8 @@ STATIC int tpComputeOptimalVelocity(TP_STRUCT const * const tp, TC_STRUCT * cons
         vs_back = fmin(vs_back, vs_back2);
     } else {
         // Trapezoidal mode: v^2 = v0^2 + 2as
-        vs_back = pmSqrt(pmSq(tc->finalvel) + 2.0 * acc_this * tc->target);
+        // Reuse cached tc_finalvel_sq
+        vs_back = pmSqrt(tc_finalvel_sq + 2.0 * acc_this * tc->target);
     }
     // Find the reachable velocity of prev1_tc, moving forwards in time
 
@@ -1816,15 +1821,17 @@ STATIC int tpComputeOptimalVelocity(TP_STRUCT const * const tp, TC_STRUCT * cons
     // For non-zero segment length, estimate average acceleration needed
     // to reach next segment's target velocity from this segment's ending velocity.
     double v_start = vs_back;
-    double v_end = tc->finalvel;
     double dx = tc->target;
     if (dx > 0.0) {
-        double a_avg = (pmSq(v_end) - pmSq(v_start)) / (2.0 * dx);
+        // OPTIMIZATION: Use cached tc_finalvel_sq instead of computing pmSq(v_end) again
+        // Also cache v_start_sq to avoid redundant pmSq() call
+        double v_start_sq = pmSq(v_start);
+        double a_avg = (tc_finalvel_sq - v_start_sq) / (2.0 * dx);
         // Use cached acceleration value (already computed above)
         // Clamp to machine limits
         prev1_tc->finalacc = fmin(acc_prev, fmax(-acc_prev, a_avg));
         tp_debug_print("finalacc for segment %d: v_start=%f, v_end=%f, dx=%f, a_avg=%f, finalacc=%f\n",
-                      prev1_tc->id, v_start, v_end, dx, a_avg, prev1_tc->finalacc);
+                      prev1_tc->id, v_start, tc->finalvel, dx, a_avg, prev1_tc->finalacc);
     } else {
         // Zero-length segment: no transition acceleration needed
         prev1_tc->finalacc = 0.0;
