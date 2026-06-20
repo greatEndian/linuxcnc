@@ -2039,14 +2039,31 @@ STATIC int tpSetupTangent(TP_STRUCT const * const tp,
     tp_debug_print("prev tangent vector (linear): %f %f %f\n", prev_tan.x, prev_tan.y, prev_tan.z);
     tp_debug_print("this tangent vector (linear): %f %f %f\n", this_tan.x, this_tan.y, this_tan.z);
 
-    // Calculate linear angle
+    // Get tolerance value (default 3.0 degrees)
+    double tolerance_deg = 3.0;
+    if (emcmot_hal_data && emcmot_hal_data->tangent_angle_tolerance) {
+        tolerance_deg = *(emcmot_hal_data->tangent_angle_tolerance);
+    }
+    // OPTIMIZATION: Convert angle tolerance to dot product threshold to avoid acos()
+    // For unit vectors: dot = cos(angle)
+    // Small angle: 1 - cos(angle) ≈ angle²/2 is more stable numerically
+    // Threshold: (1 - cos(tolerance)) where tolerance is in radians
+    double tolerance_rad = tolerance_deg * PM_PI / 180.0;
+    double dot_threshold = cos(tolerance_rad);  // For angle comparison: if dot >= threshold, within tolerance
+
+    // Calculate linear dot product
     double dot_lin;
     pmCartCartDot(&prev_tan, &this_tan, &dot_lin);
-    double angle_rad = acos(saturate(dot_lin, 1.0));
-    double angle_deg = angle_rad * 180.0 / PM_PI;
+    dot_lin = saturate(dot_lin, 1.0);
 
-    // If there's rotary motion, also check rotary tangent angle
+    // For blending decision: use dot product directly (avoids acos)
+    // If dot_lin >= dot_threshold, angle is within tolerance
+    int is_tangent_linear = (dot_lin >= dot_threshold);
+
+    // Check rotary motion if present
+    int is_tangent_rotary = 1;  // Default: allow tangent if no rotary motion
     double angle_deg_rotary = 0.0;
+
     if (has_rotary_motion) {
         PmCartesian prev_tan_rot, this_tan_rot;
 
@@ -2056,7 +2073,6 @@ STATIC int tpSetupTangent(TP_STRUCT const * const tp,
                 prev_tan_rot = prev_tc->coords.line.abc.uVec;
                 break;
             case TC_CIRCULAR:
-                // For circular motion, use tangent at end point
                 prev_tan_rot = prev_tc->coords.circle.abc.uVec;
                 break;
             default:
@@ -2068,7 +2084,6 @@ STATIC int tpSetupTangent(TP_STRUCT const * const tp,
                 this_tan_rot = tc->coords.line.abc.uVec;
                 break;
             case TC_CIRCULAR:
-                // For circular motion, use tangent at start point
                 this_tan_rot = tc->coords.circle.abc.uVec;
                 break;
             default:
@@ -2078,29 +2093,27 @@ STATIC int tpSetupTangent(TP_STRUCT const * const tp,
         tp_debug_print("prev tangent vector (rotary): %f %f %f\n", prev_tan_rot.x, prev_tan_rot.y, prev_tan_rot.z);
         tp_debug_print("this tangent vector (rotary): %f %f %f\n", this_tan_rot.x, this_tan_rot.y, this_tan_rot.z);
 
-        // Calculate rotary angle (only if both have non-zero magnitude)
+        // Check rotary angle (only if both have non-zero magnitude)
         double prev_rot_mag, this_rot_mag;
         pmCartMag(&prev_tan_rot, &prev_rot_mag);
         pmCartMag(&this_tan_rot, &this_rot_mag);
         if (prev_rot_mag > 1e-9 && this_rot_mag > 1e-9) {
             double dot_rot;
             pmCartCartDot(&prev_tan_rot, &this_tan_rot, &dot_rot);
-            double angle_rad_rot = acos(saturate(dot_rot, 1.0));
-            angle_deg_rotary = angle_rad_rot * 180.0 / PM_PI;
-            tp_debug_print("rotary tangent angle: %f deg\n", angle_deg_rotary);
+            dot_rot = saturate(dot_rot, 1.0);
+            is_tangent_rotary = (dot_rot >= dot_threshold);
+
+            // For debugging: compute angle in degrees (expensive, only when needed)
+            if (!is_tangent_rotary) {
+                double angle_rad_rot = acos(dot_rot);
+                angle_deg_rotary = angle_rad_rot * 180.0 / PM_PI;
+                tp_debug_print("rotary tangent angle: %f deg (exceeds tolerance)\n", angle_deg_rotary);
+            }
         }
-
-        // Use maximum angle (most conservative)
-        angle_deg = fmax(angle_deg, angle_deg_rotary);
-        tp_debug_print("combined tangent angle (max): %f deg\n", angle_deg);
     }
 
-    double tolerance_deg = 3.0;
-    if (emcmot_hal_data && emcmot_hal_data->tangent_angle_tolerance) {
-        tolerance_deg = *(emcmot_hal_data->tangent_angle_tolerance);
-    }
-
-    if (angle_deg <= tolerance_deg) {
+    // Blend allowed if BOTH linear AND rotary are within tolerance (most conservative)
+    if (is_tangent_linear && is_tangent_rotary) {
         double v_max1 = tcGetMaxTargetVel(prev_tc, getMaxFeedScale(prev_tc));
         double v_max2 = tcGetMaxTargetVel(tc, getMaxFeedScale(tc));
         double v_max = fmin(v_max1, v_max2);
@@ -2111,16 +2124,22 @@ STATIC int tpSetupTangent(TP_STRUCT const * const tp,
         return TP_ERR_OK;
     }
 
-    // Assume small angle approximation here
+    // OPTIMIZATION: Check for sharp corners using dot product instead of pmCartCartAntiParallel
     // SHARP_CORNER_DEG is tunable via HAL pin motion.sharp-corner-angle (default 2.0°)
     double sharp_corner_deg = 2.0;
     if (emcmot_hal_data && emcmot_hal_data->sharp_corner_angle) {
         sharp_corner_deg = *(emcmot_hal_data->sharp_corner_angle);
     }
-    const double SHARP_CORNER_EPSILON = pmSq(PM_PI * (sharp_corner_deg / 180.0));
 
-    // Check for sharp corners in linear motion
-    int is_sharp_linear = pmCartCartAntiParallel(&prev_tan, &this_tan, SHARP_CORNER_EPSILON);
+    // Sharp corner detection: approximately opposite directions (angle > 90° - threshold)
+    // For opposite directions: dot ≈ -1 (cos(180°) = -1)
+    // For sharp corner threshold: angle > (180° - sharp_corner_deg)
+    // Equivalently: dot < -cos(sharp_corner_deg) in radians
+    double sharp_corner_rad = sharp_corner_deg * PM_PI / 180.0;
+    double sharp_dot_threshold = -cos(sharp_corner_rad);  // Approximately -1 + O(θ²)
+
+    // Check for sharp corners in linear motion (anti-parallel or near anti-parallel)
+    int is_sharp_linear = (dot_lin < sharp_dot_threshold);
 
     // Check for sharp corners in rotary motion (if present)
     int is_sharp_rotary = 0;
