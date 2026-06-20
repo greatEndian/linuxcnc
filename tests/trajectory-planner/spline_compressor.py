@@ -151,13 +151,16 @@ def fit_arc_perpbisector(points, tolerance, units):
         if dev > max_dev:
             max_dev = dev
 
-    if max_dev > tolerance * 10:
+    # Much stricter tolerance: max deviation should be <= tolerance (not 10x)
+    if max_dev > tolerance:
         return None
 
     # Sanity check: chord-to-radius ratio
+    # CRITICAL: Only accept arcs with significant curvature (>60 degrees)
+    # chord < 0.5*r means arc < 60 degrees = too flat, likely a fitting artifact
     chord = math.sqrt(chord_x*chord_x + chord_y*chord_y)
     if chord > 1e-6 and r > 0:
-        if chord < r * 0.25:
+        if chord < r * 0.5:  # STRICT: reject arcs < 60 degrees
             return None
 
     # Limit maximum radius
