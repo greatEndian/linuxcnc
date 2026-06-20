@@ -1862,6 +1862,12 @@ STATIC int tpRunOptimization(TP_STRUCT * const tp) {
     // Flag that says we've hit at least 1 non-tangent segment
     bool hit_non_tangent = false;
 
+    // Adaptive loop pruning: track max velocity to detect plateaus
+    double max_vel_last_iteration = 0.0;
+    int plateau_count = 0;
+    // Plateau threshold: if velocity improvement < 0.1%, consider it plateaued
+    const double VELOCITY_PLATEAU_THRESHOLD = 0.001;
+
     /* Starting at the 2nd to last element in the queue, work backwards towards
      * the front. We can't do anything with the very last element because its
      * length may change if a new line is added to the queue.*/
@@ -1969,11 +1975,35 @@ STATIC int tpRunOptimization(TP_STRUCT * const tp) {
             break;
         }
 
+        // OPTIMIZATION: Adaptive loop pruning via velocity plateau detection
+        // Stop iterating if the achievable velocity has plateaued (marginal improvement)
+        // This avoids expensive lookahead iterations when further segments won't help
+        double current_max_vel = prev1_tc->finalvel;
+        if (x > 1 && max_vel_last_iteration > 0.0) {
+            // Calculate relative improvement from last iteration
+            double vel_improvement = (current_max_vel - max_vel_last_iteration) / max_vel_last_iteration;
+            if (fabs(vel_improvement) < VELOCITY_PLATEAU_THRESHOLD) {
+                plateau_count++;
+                tp_debug_print(" Velocity plateau detected (improvement=%.4f%%, count=%d)\n",
+                              vel_improvement * 100.0, plateau_count);
+                // Stop after 2 plateau iterations: velocity improvements are marginal
+                if (plateau_count >= 2) {
+                    tp_debug_print(" Stopping optimization: velocity plateau after %d iterations\n", x);
+                    return TP_ERR_OK;
+                }
+            } else {
+                plateau_count = 0;  // Reset plateau counter on significant improvement
+            }
+        }
+        max_vel_last_iteration = current_max_vel;
+
 #ifdef TP_OPTIMIZATION_LAZY
         if (tc->optimization_state == TC_OPTIM_AT_MAX) {
             hit_peaks++;
         }
+        // Also stop if we hit peak velocity many times (fallback to original cutoff)
         if (hit_peaks > TP_OPTIMIZATION_CUTOFF) {
+            tp_debug_print(" Stopping optimization: hit %d peak velocities\n", hit_peaks);
             return TP_ERR_OK;
         }
 #endif
