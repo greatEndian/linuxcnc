@@ -284,10 +284,6 @@ def main():
     # Check INI file setting (bulletproof manual parser)
     compressor_enable = True
     ini_path = os.environ.get("INI_FILE_NAME")
-    with open("/tmp/spline_compressor_debug.log", "a") as log_f:
-        log_f.write(f"INI_FILE_NAME: {ini_path}\n")
-        log_f.write(f"ENV: {dict(os.environ)}\n")
-        log_f.write(f"Exists: {os.path.exists(ini_path) if ini_path else False}\n")
     if ini_path and os.path.exists(ini_path):
         try:
             with open(ini_path, 'r') as ini_f:
