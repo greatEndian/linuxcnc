@@ -1807,23 +1807,23 @@ STATIC int tpComputeOptimalVelocity(TP_STRUCT const * const tp, TC_STRUCT * cons
     //Limit tc's target velocity to avoid creating "humps" in the velocity profile
     prev1_tc->finalvel = vs_back;
 
-    // Calculate transition acceleration for continuous S-curve transitions
-    if (GET_TRAJ_PLANNER_TYPE() == 1) {
-        if (prev1_tc->term_cond == TC_TERM_COND_TANGENT) {
-            double v_start = vs_back;
-            double v_end = tc->finalvel;
-            double dx = tc->target;
-            if (dx > 0.0) {
-                double a_avg = (pmSq(v_end) - pmSq(v_start)) / (2.0 * dx);
-                double acc_limit = tcGetTangentialMaxAccel(tc);
-                prev1_tc->finalacc = fmin(acc_limit, fmax(-acc_limit, a_avg));
-            } else {
-                prev1_tc->finalacc = 0.0;
-            }
-        } else {
-            prev1_tc->finalacc = 0.0;
-        }
+    // Calculate transition acceleration for all planner types and transitions
+    // This enables acceleration state carryover across segment boundaries
+    // improving motion smoothness and reducing jerk spikes at transitions.
+    // For non-zero segment length, estimate average acceleration needed
+    // to reach next segment's target velocity from this segment's ending velocity.
+    double v_start = vs_back;
+    double v_end = tc->finalvel;
+    double dx = tc->target;
+    if (dx > 0.0) {
+        double a_avg = (pmSq(v_end) - pmSq(v_start)) / (2.0 * dx);
+        double acc_limit = tcGetTangentialMaxAccel(prev1_tc);
+        // Clamp to machine limits
+        prev1_tc->finalacc = fmin(acc_limit, fmax(-acc_limit, a_avg));
+        tp_debug_print("finalacc for segment %d: v_start=%f, v_end=%f, dx=%f, a_avg=%f, finalacc=%f\n",
+                      prev1_tc->id, v_start, v_end, dx, a_avg, prev1_tc->finalacc);
     } else {
+        // Zero-length segment: no transition acceleration needed
         prev1_tc->finalacc = 0.0;
     }
 
@@ -3563,17 +3563,28 @@ STATIC int tpCompleteSegment(TP_STRUCT * const tp,
     // Clean up Ruckig planner resources
     tcCleanupRuckig(tc);
 
-    // S-curve: Carry over ending velocity and acceleration to the next segment if tangent
-    if (GET_TRAJ_PLANNER_TYPE() == 1 && !tp->reverse_run) {
-        if (tc->term_cond == TC_TERM_COND_TANGENT) {
-            TC_STRUCT *next_tc = tcqItem(&tp->queue, 1);
-            if (next_tc) {
-                double maxacc_next = tcGetTangentialMaxAccel(next_tc);
-                next_tc->currentacc = saturate(tc->currentacc, maxacc_next);
+    // Carry over acceleration state to the next segment for all planners and transitions
+    // This maintains acceleration continuity and reduces jerk at segment boundaries
+    if (!tp->reverse_run) {
+        TC_STRUCT *next_tc = tcqItem(&tp->queue, 1);
+        if (next_tc) {
+            double maxacc_next = tcGetTangentialMaxAccel(next_tc);
+
+            // Always use tc->finalacc as starting hint for next segment
+            // For S-curve, this is especially important for smooth blending
+            // For trapezoidal, this helps avoid sudden acceleration changes
+            if (tc->finalacc != 0.0) {
+                next_tc->currentacc = saturate(tc->finalacc, maxacc_next);
+                tp_debug_print("tpCompleteSegment (finalacc carryover): id %d -> id %d, finalacc=%f -> currentacc=%f (limited by %f)\n",
+                               tc->id, next_tc->id, tc->finalacc, next_tc->currentacc, maxacc_next);
+            }
+
+            // For S-curve + tangent transitions, also carry velocity and jerk
+            if (GET_TRAJ_PLANNER_TYPE() == 1 && tc->term_cond == TC_TERM_COND_TANGENT) {
                 next_tc->currentvel = tc->currentvel;
                 next_tc->currentjerk = tc->currentjerk;
-                tp_debug_print("tpCompleteSegment (S-curve tangent handover): id %d -> id %d, vel=%f, acc=%f (limited by %f), jerk=%f\n",
-                               tc->id, next_tc->id, next_tc->currentvel, next_tc->currentacc, maxacc_next, next_tc->currentjerk);
+                tp_debug_print("tpCompleteSegment (S-curve tangent handover): id %d -> id %d, vel=%f, acc=%f, jerk=%f\n",
+                               tc->id, next_tc->id, next_tc->currentvel, next_tc->currentacc, next_tc->currentjerk);
             }
         }
     }
