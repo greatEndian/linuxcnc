@@ -59,11 +59,15 @@ def format_g1_line(raw_line, last_emitted_mode):
     new_line = f"{n_str}G1 {remaining.lstrip()}"
     return new_line, 1
 
-def fit_arc_kasa(points, tolerance, units):
+def fit_arc_perpbisector(points, tolerance, units):
     """
-    Fit arc to point cloud using Kasa least-squares method.
-    Returns: {'xc': center_x, 'yc': center_y, 'r': radius, 'is_ccw': bool, ...}
-             or None if fit fails
+    Fit arc to point cloud using perpendicular bisector method.
+    This guarantees endpoints are equidistant from center (required for CNC).
+
+    Algorithm:
+    1. Fit LSQ circle to all points using Kasa method
+    2. Force center onto perpendicular bisector of chord (start→end)
+    3. Verify all points within tolerance of the corrected circle
     """
     if len(points) < 3:
         return None
@@ -72,10 +76,7 @@ def fit_arc_kasa(points, tolerance, units):
     p_xy = [(pt[0], pt[1]) for pt in points]
     n = len(p_xy)
 
-    # Build normal equations for Kasa LSQ: x² + y² = 2a·x + 2b·y + c
-    # Rearranged: 2a·x + 2b·y + c - (x² + y²) = 0
-    # LSQ form: A @ [a, b, c]ᵀ = B
-
+    # Start with LSQ estimate
     sum_x = sum(x for x, y in p_xy)
     sum_y = sum(y for x, y in p_xy)
     sum_xx = sum(x*x for x, y in p_xy)
@@ -86,7 +87,6 @@ def fit_arc_kasa(points, tolerance, units):
     sum_x2y = sum(x*x*y for x, y in p_xy)
     sum_xy2 = sum(x*y*y for x, y in p_xy)
 
-    # 3x3 normal equation matrix A and vector b
     A = [
         [2*sum_xx, 2*sum_xy, sum_x],
         [2*sum_xy, 2*sum_yy, sum_y],
@@ -94,7 +94,6 @@ def fit_arc_kasa(points, tolerance, units):
     ]
     b = [sum_x3 + sum_xy2, sum_x2y + sum_y3, sum_xx + sum_yy]
 
-    # Solve 3x3 system: A @ x = b
     det = (A[0][0] * (A[1][1]*A[2][2] - A[1][2]*A[2][1]) -
            A[0][1] * (A[1][0]*A[2][2] - A[1][2]*A[2][0]) +
            A[0][2] * (A[1][0]*A[2][1] - A[1][1]*A[2][0]))
@@ -102,7 +101,6 @@ def fit_arc_kasa(points, tolerance, units):
     if abs(det) < 1e-12:
         return None
 
-    # Cramer's rule
     det_a = (b[0] * (A[1][1]*A[2][2] - A[1][2]*A[2][1]) -
              A[0][1] * (b[1]*A[2][2] - A[1][2]*b[2]) +
              A[0][2] * (b[1]*A[2][1] - A[1][1]*b[2]))
@@ -113,76 +111,53 @@ def fit_arc_kasa(points, tolerance, units):
              A[0][1] * (A[1][0]*b[2] - b[1]*A[2][0]) +
              b[0] * (A[1][0]*A[2][1] - A[1][1]*A[2][0]))
 
-    a = det_a / det
-    b_coef = det_b / det
-    c = det_c / det
+    lsq_xc = det_a / det
+    lsq_yc = det_b / det
+    lsq_c = det_c / det
 
-    xc = a
-    yc = b_coef
-    r = math.sqrt(a*a + b_coef*b_coef + c)
-
-    # Verify fit: all points must be within tolerance
-    max_dev = 0
-    for x, y in p_xy:
-        dist_to_circle = abs(math.sqrt((x - xc)**2 + (y - yc)**2) - r)
-        if dist_to_circle > max_dev:
-            max_dev = dist_to_circle
-
-    if max_dev > tolerance * 10:  # Allow 10x tolerance for LSQ fit
-        return None
-
-    # Endpoint correction: force arc center onto perpendicular bisector of chord
-    # This ensures distance from center to start == distance from center to end
+    # Now force center onto perpendicular bisector
     p_start = p_xy[0]
     p_end = p_xy[-1]
 
-    # Perpendicular bisector midpoint
     mid_x = (p_start[0] + p_end[0]) / 2.0
     mid_y = (p_start[1] + p_end[1]) / 2.0
 
-    # Chord vector
     chord_x = p_end[0] - p_start[0]
     chord_y = p_end[1] - p_start[1]
     chord_len_sq = chord_x*chord_x + chord_y*chord_y
 
-    if chord_len_sq > 1e-12:
-        # Project LSQ center onto perpendicular bisector
-        # Vector from start to LSQ center
-        to_center_x = xc - p_start[0]
-        to_center_y = yc - p_start[1]
+    if chord_len_sq < 1e-12:
+        return None
 
-        # Project onto chord
-        proj = (to_center_x * chord_x + to_center_y * chord_y) / chord_len_sq
+    # Project LSQ center onto perpendicular bisector
+    to_center_x = lsq_xc - p_start[0]
+    to_center_y = lsq_yc - p_start[1]
+    proj_t = (to_center_x * chord_x + to_center_y * chord_y) / chord_len_sq
 
-        # Perpendicular component (from midpoint towards projected center)
-        perp_x = xc - (p_start[0] + proj * chord_x)
-        perp_y = yc - (p_start[1] + proj * chord_y)
-        perp_len = math.sqrt(perp_x*perp_x + perp_y*perp_y)
+    # Perpendicular displacement
+    perp_x = lsq_xc - (p_start[0] + proj_t * chord_x)
+    perp_y = lsq_yc - (p_start[1] + proj_t * chord_y)
 
-        if perp_len > 1e-12:
-            # Corrected center on the perpendicular bisector
-            xc_corr = mid_x + perp_x
-            yc_corr = mid_y + perp_y
+    # Corrected center: on perpendicular bisector at same offset as LSQ
+    xc = mid_x + perp_x
+    yc = mid_y + perp_y
+    r = math.sqrt((p_start[0] - xc)**2 + (p_start[1] - yc)**2)
 
-            # Verify corrected fit is still within tolerance
-            max_dev_corr = 0
-            for x, y in p_xy:
-                dist = abs(math.sqrt((x - xc_corr)**2 + (y - yc_corr)**2) -
-                          math.sqrt((p_start[0] - xc_corr)**2 + (p_start[1] - yc_corr)**2))
-                if dist > max_dev_corr:
-                    max_dev_corr = dist
+    # Verify all points are within tolerance
+    max_dev = 0
+    for x, y in p_xy:
+        dist = math.sqrt((x - xc)**2 + (y - yc)**2)
+        dev = abs(dist - r)
+        if dev > max_dev:
+            max_dev = dev
 
-            if max_dev_corr <= tolerance * 10:
-                xc, yc = xc_corr, yc_corr
-                r = math.sqrt((p_start[0] - xc)**2 + (p_start[1] - yc)**2)
+    if max_dev > tolerance * 10:
+        return None
 
-    # Sanity check: chord-to-radius ratio (prevent flat spurious arcs)
-    p_start = p_xy[0]
-    p_end = p_xy[-1]
-    chord = math.sqrt((p_end[0] - p_start[0])**2 + (p_end[1] - p_start[1])**2)
-
+    # Sanity check: chord-to-radius ratio
+    chord = math.sqrt(chord_x*chord_x + chord_y*chord_y)
     if chord > 1e-6 and r > 0:
-        if chord < r * 0.25:  # More aggressive than before
+        if chord < r * 0.25:
             return None
 
     # Limit maximum radius
@@ -190,7 +165,7 @@ def fit_arc_kasa(points, tolerance, units):
     if r > max_r:
         return None
 
-    # Determine arc direction using cross product (CCW vs CW)
+    # Determine arc direction using cross product
     if len(p_xy) >= 3:
         p1, p2, p3 = p_xy[0], p_xy[len(p_xy)//2], p_xy[-1]
         v1_x = p2[0] - p1[0]
@@ -245,7 +220,7 @@ def flush_buffer(points_buf, tolerance, active_feed, last_emitted_mode, units):
         max_lookahead = min(n_points - 1, i + 50)
 
         for j in range(i + 2, max_lookahead + 1):
-            arc_data = fit_arc_kasa(points_buf[i:j+1], tolerance, units)
+            arc_data = fit_arc_perpbisector(points_buf[i:j+1], tolerance, units)
             if arc_data is not None:
                 best_j = j
                 best_arc_data = arc_data
