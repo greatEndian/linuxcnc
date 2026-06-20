@@ -68,8 +68,20 @@ def fit_arc_perpbisector(points, tolerance, units):
     1. Fit LSQ circle to all points using Kasa method
     2. Force center onto perpendicular bisector of chord (start→end)
     3. Verify all points within tolerance of the corrected circle
+
+    CRITICAL: Reject 3D segments (Z motion) - these should not be arcs.
+    Only compress pure XY moves (constant Z).
     """
     if len(points) < 3:
+        return None
+
+    # SAFETY: Reject 3D segments with Z motion
+    # Arcs should only be in XY plane with constant Z (tool depth)
+    # If Z changes, the segment is a positioning/retraction move, not a cut
+    p_start_z = points[0][2]
+    p_end_z = points[-1][2]
+    if abs(p_end_z - p_start_z) > 1e-6:
+        # Z changed - this is a 3D move, don't fit arc
         return None
 
     # Extract XY coordinates
