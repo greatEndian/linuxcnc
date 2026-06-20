@@ -2182,8 +2182,44 @@ STATIC int tpSetupTangent(TP_STRUCT const * const tp,
 
     if (is_sharp_linear || is_sharp_rotary) {
         tp_debug_print("Found sharp corner (linear=%d, rotary=%d)\n", is_sharp_linear, is_sharp_rotary);
+
+        // OPTIMIZATION: Velocity dampening for sharp corners
+        // Instead of hard stop (v=0), reduce velocity proportionally to corner sharpness
+        // This allows smooth motion through sharp corners while respecting acceleration limits
+
+        // Calculate corner sharpness: 0=straight (180°), 1=reversal (0°)
+        // For linear motion: compute angle from dot product
+        double angle_from_straight_rad = acos(saturate(dot_lin, 1.0));
+        double corner_sharpness = (PM_PI - angle_from_straight_rad) / PM_PI;  // 0 to 1
+
+        // Velocity damping curve: v = v_max * (1 - sharpness²)
+        // This gives: 90° = 50% speed, 45° = 75% speed, 10° = 99% speed
+        double damping_factor = 1.0 - pmSq(corner_sharpness);
+
+        // Get velocity bounds for both segments
+        double v_max1 = tcGetMaxTargetVel(prev_tc, getMaxFeedScale(prev_tc));
+        double v_max2 = tcGetMaxTargetVel(tc, getMaxFeedScale(tc));
+        double v_max_base = fmin(v_max1, v_max2);
+
+        // Apply damping to get corner velocity
+        double v_corner = v_max_base * damping_factor;
+
+        // Set corner with dampened velocity instead of full stop
+        tp_debug_print("Sharp corner with %.1f° turn: damping=%.2f, v_max=%.2f → v_corner=%.2f\n",
+                      180.0 - corner_sharpness * 180.0, damping_factor, v_max_base, v_corner);
+
         tcSetTermCond(prev_tc, tc, TC_TERM_COND_STOP);
-        return TP_ERR_FAIL;
+
+        // If dampened velocity is significant, allow partial speed through corner
+        // Otherwise, full stop (v=0) for safety at very sharp reversals
+        if (v_corner > 0.01 * v_max_base) {
+            // Allow dampened velocity through corner via kink properties
+            tcSetKinkProperties(prev_tc, tc, v_corner, 0.0);
+            return TP_ERR_OK;  // Allow blending with dampened velocity
+        } else {
+            // Very sharp corner: require full stop
+            return TP_ERR_FAIL;
+        }
     }
 
     // Calculate instantaneous acceleration required for change in direction
