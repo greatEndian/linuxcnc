@@ -237,9 +237,25 @@ def flush_buffer(points_buf, tolerance, active_feed, last_emitted_mode, units):
         for j in range(i + 2, max_lookahead + 1):
             arc_data = fit_arc_perpbisector(points_buf[i:j+1], tolerance, units)
             if arc_data is not None:
+                # LISCIO PRINCIPLE: Conservative expansion check
+                # Reject if radius is growing too large relative to chord length
+                # This prevents greedily expanding into flat/spurious arcs
+                p_start = points_buf[i]
+                p_end = points_buf[j]
+                chord = math.sqrt((p_end[0]-p_start[0])**2 + (p_end[1]-p_start[1])**2)
+
+                # If radius > 2*chord, the arc is too flat - stop expanding
+                if arc_data['r'] > chord * 2.0:
+                    # Radius is growing too large, stop here
+                    if best_j != -1:
+                        break  # Keep the last best arc, don't expand further
+                    else:
+                        continue  # Skip this point, try next
+
                 best_j = j
                 best_arc_data = arc_data
             else:
+                # Arc fitting failed - stop expansion
                 break
 
         if best_j != -1 and best_j >= i + 2:
@@ -455,16 +471,17 @@ def is_spurious_arc(line_str, tolerance):
     Detect spurious/orbital arcs that should be suppressed.
     Returns True if arc should be rejected (replaced with G1 moves).
 
-    Heuristics:
+    Implements liscio-inspired detection:
     1. Arc with extremely large I/J (center far from segment) = orbital artifact
-    2. Arc with I or J > 100mm and chord < 30mm = likely spurious
-    3. Arc offset magnitude >> radius = numerical fitting error
+    2. Arc center far from actual chord = poorly fitting circle (Kasa LSQ failure)
+    3. Arc that crosses coordinate origin (X/Y sign change) without curvature = false positive
+    4. Unusual center position relative to segment = numerical error
     """
     # Try to parse as G2/G3 arc
     if not re.match(r'^G[23]\s', line_str.upper()):
         return False
 
-    # Extract I, J values
+    # Extract I, J, X, Y values
     i_match = re.search(r'I([-+]?\d*\.?\d+)', line_str, re.IGNORECASE)
     j_match = re.search(r'J([-+]?\d*\.?\d+)', line_str, re.IGNORECASE)
     x_match = re.search(r'X([-+]?\d*\.?\d+)', line_str, re.IGNORECASE)
@@ -484,16 +501,33 @@ def is_spurious_arc(line_str, tolerance):
     # Compute radius from offsets
     radius = math.sqrt(i_val*i_val + j_val*j_val)
 
-    # ORBITAL DETECTOR: Arc center far from segment = bad fit
-    # If |I| > 50mm or |J| > 50mm with small radius, likely spurious
+    # DETECTOR 1: Large offset with small radius = orbital artifact
     offset_mag = max(abs(i_val), abs(j_val))
-
     if offset_mag > 50.0 and radius < 100.0:
-        # Large offset, small radius = orbital artifact
         return True
 
+    # DETECTOR 2: Offset magnitude >> radius = numerical error
     if radius > 0 and offset_mag > radius * 2:
-        # Offset much larger than radius = numerical error
+        return True
+
+    # DETECTOR 3 (NEW - liscio principle): Center crossing origin
+    # If arc endpoints are on opposite sides of origin (sign change) with large offsets,
+    # it's likely a fitting error across a direction reversal
+    # Arc center would be at (x_end - i_val, y_end - j_val)
+    center_x = x_end - i_val
+    center_y = y_end - j_val
+
+    # If center is very close to origin (0,0) and endpoints are far, likely spurious
+    center_dist = math.sqrt(center_x*center_x + center_y*center_y)
+    if center_dist < 1.0 and (abs(x_end) > 30 or abs(y_end) > 30):
+        # Center near origin, but endpoints far = cross-axis arc = false positive
+        return True
+
+    # DETECTOR 4 (NEW - liscio principle): Unreasonable arc geometry
+    # If I offset is nearly equal to X endpoint (start at -X, center at ~0, end at +X),
+    # it's a degenerate arc trying to swing across the origin
+    if abs(abs(i_val) - abs(x_end)) < 1.0 and abs(x_end) > 20:
+        # Offset equals endpoint = flat crossing at origin = spurious
         return True
 
     return False
