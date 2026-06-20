@@ -1834,6 +1834,38 @@ STATIC int tpComputeOptimalVelocity(TP_STRUCT const * const tp, TC_STRUCT * cons
     tp_info_print(" prev1_tc-> fv = %f, tc->fv = %f\n",
             prev1_tc->finalvel, tc->finalvel);
 
+    // VALIDATION: Sanity checks on computed velocities and accelerations
+    // Detect velocity profile inconsistencies early to prevent motion anomalies
+    if (prev1_tc->finalvel < 0.0) {
+        rtapi_print_msg(RTAPI_MSG_WARN, "tpComputeOptimalVelocity: segment %d computed negative finalvel=%.3f, clamping to 0\n",
+                       prev1_tc->id, prev1_tc->finalvel);
+        prev1_tc->finalvel = 0.0;
+    }
+
+    if (prev1_tc->finalvel > prev1_tc->maxvel + 1e-3) {
+        rtapi_print_msg(RTAPI_MSG_WARN, "tpComputeOptimalVelocity: segment %d finalvel=%.3f exceeds maxvel=%.3f, clamping\n",
+                       prev1_tc->id, prev1_tc->finalvel, prev1_tc->maxvel);
+        prev1_tc->finalvel = prev1_tc->maxvel;
+    }
+
+    if (tc->finalvel < 0.0) {
+        rtapi_print_msg(RTAPI_MSG_WARN, "tpComputeOptimalVelocity: segment %d computed negative finalvel=%.3f, clamping to 0\n",
+                       tc->id, tc->finalvel);
+        tc->finalvel = 0.0;
+    }
+
+    if (tc->finalvel > tc->maxvel + 1e-3) {
+        rtapi_print_msg(RTAPI_MSG_WARN, "tpComputeOptimalVelocity: segment %d finalvel=%.3f exceeds maxvel=%.3f, clamping\n",
+                       tc->id, tc->finalvel, tc->maxvel);
+        tc->finalvel = tc->maxvel;
+    }
+
+    // Check acceleration reasonableness
+    if (fabs(prev1_tc->finalacc) > tcGetTangentialMaxAccel(prev1_tc) * 1.1) {
+        rtapi_print_msg(RTAPI_MSG_WARN, "tpComputeOptimalVelocity: segment %d finalacc=%.3f exceeds max by 10%%, investigating\n",
+                       prev1_tc->id, prev1_tc->finalacc);
+    }
+
     return TP_ERR_OK;
 }
 
@@ -3654,6 +3686,7 @@ STATIC int tpCompleteSegment(TP_STRUCT * const tp,
         TC_STRUCT *next_tc = tcqItem(&tp->queue, 1);
         if (next_tc) {
             double maxacc_next = tcGetTangentialMaxAccel(next_tc);
+            double maxvel_next = tcGetMaxTargetVel(next_tc, getMaxFeedScale(next_tc));
 
             // Always use tc->finalacc as starting hint for next segment
             // For S-curve, this is especially important for smooth blending
@@ -3668,6 +3701,22 @@ STATIC int tpCompleteSegment(TP_STRUCT * const tp,
             if (GET_TRAJ_PLANNER_TYPE() == 1 && tc->term_cond == TC_TERM_COND_TANGENT) {
                 next_tc->currentvel = tc->currentvel;
                 next_tc->currentjerk = tc->currentjerk;
+
+                // VALIDATION: Sanity check on carried-over velocity
+                // Ensure currentvel doesn't exceed segment's maximum safe velocity
+                if (next_tc->currentvel > maxvel_next) {
+                    tp_debug_print("tpCompleteSegment (velocity validation): clamping currentvel %.3f → %.3f (maxvel)\n",
+                                  next_tc->currentvel, maxvel_next);
+                    next_tc->currentvel = maxvel_next;
+                }
+
+                // Ensure currentvel is non-negative
+                if (next_tc->currentvel < 0.0) {
+                    rtapi_print_msg(RTAPI_MSG_WARN, "tpCompleteSegment: negative currentvel %.3f clamped to 0 (segment %d)\n",
+                                   next_tc->currentvel, next_tc->id);
+                    next_tc->currentvel = 0.0;
+                }
+
                 tp_debug_print("tpCompleteSegment (S-curve tangent handover): id %d -> id %d, vel=%f, acc=%f, jerk=%f\n",
                                tc->id, next_tc->id, next_tc->currentvel, next_tc->currentacc, next_tc->currentjerk);
             }
