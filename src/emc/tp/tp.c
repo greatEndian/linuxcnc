@@ -2050,6 +2050,41 @@ STATIC int tpRunOptimization(TP_STRUCT * const tp) {
 
 
 /**
+ * OPTIMIZATION: Helper function to consolidate motion type checking
+ * Checks both segments in a single pass to extract motion properties
+ * and reject unsupported motion types. Reduces branch mispredictions
+ * and consolidates multiple comparisons into a single function.
+ */
+STATIC void tcCheckMotionTypes(TC_STRUCT const * const tc, TC_STRUCT const * const prev_tc,
+                               int *has_rotary, int *should_reject) {
+    *has_rotary = 0;
+    *should_reject = 0;
+
+    // Single pass through motion types for both segments
+    // Check for rotary (ABC) motion - supported
+    if (tc->motion_type == TC_LINEAR) {
+        if (!tc->coords.line.abc.tmag_zero) *has_rotary = 1;
+        if (!tc->coords.line.uvw.tmag_zero) *should_reject = 1;
+    } else if (tc->motion_type == TC_CIRCULAR) {
+        if (!tc->coords.circle.abc.tmag_zero) *has_rotary = 1;
+        if (!tc->coords.circle.uvw.tmag_zero) *should_reject = 1;
+    } else if (tc->motion_type == TC_SPHERICAL) {
+        *should_reject = 1;
+    }
+
+    // Check previous segment
+    if (prev_tc->motion_type == TC_LINEAR) {
+        if (!prev_tc->coords.line.abc.tmag_zero) *has_rotary = 1;
+        if (!prev_tc->coords.line.uvw.tmag_zero) *should_reject = 1;
+    } else if (prev_tc->motion_type == TC_CIRCULAR) {
+        if (!prev_tc->coords.circle.abc.tmag_zero) *has_rotary = 1;
+        if (!prev_tc->coords.circle.uvw.tmag_zero) *should_reject = 1;
+    } else if (prev_tc->motion_type == TC_SPHERICAL) {
+        *should_reject = 1;
+    }
+}
+
+/**
  * Check for tangency between the current segment and previous segment.
  * If the current and previous segment are tangent, then flag the previous
  * segment as tangent, and limit the current segment's velocity by the sampling
@@ -2061,22 +2096,12 @@ STATIC int tpSetupTangent(TP_STRUCT const * const tp,
         tp_debug_print("missing tc or prev tc in tangent check\n");
         return TP_ERR_FAIL;
     }
-    // Note: We now handle rotary motion (ABC) in tangent blending.
-    // UVW (secondary linear) motion is still rejected as it's uncommon.
-    int has_rotary_motion = false;
-    if ((tc->motion_type == TC_LINEAR && !tc->coords.line.abc.tmag_zero) ||
-        (tc->motion_type == TC_CIRCULAR && !tc->coords.circle.abc.tmag_zero) ||
-        (prev_tc->motion_type == TC_LINEAR && !prev_tc->coords.line.abc.tmag_zero) ||
-        (prev_tc->motion_type == TC_CIRCULAR && !prev_tc->coords.circle.abc.tmag_zero)) {
-        has_rotary_motion = true;
-    }
 
-    // Reject if UVW motion is present (uncommon secondary linear axes)
-    if ((tc->motion_type == TC_LINEAR && !tc->coords.line.uvw.tmag_zero) ||
-        (tc->motion_type == TC_CIRCULAR && !tc->coords.circle.uvw.tmag_zero) ||
-        (prev_tc->motion_type == TC_LINEAR && !prev_tc->coords.line.uvw.tmag_zero) ||
-        (prev_tc->motion_type == TC_CIRCULAR && !prev_tc->coords.circle.uvw.tmag_zero) ||
-        tc->motion_type == TC_SPHERICAL || prev_tc->motion_type == TC_SPHERICAL) {
+    // OPTIMIZATION: Consolidated motion type checking in single pass
+    int has_rotary_motion, should_reject_motion;
+    tcCheckMotionTypes(tc, prev_tc, &has_rotary_motion, &should_reject_motion);
+
+    if (should_reject_motion) {
         tp_debug_print("found UVW or spherical motion, rejecting tangent blending\n");
         return TP_ERR_FAIL;
     }
@@ -2138,27 +2163,21 @@ STATIC int tpSetupTangent(TP_STRUCT const * const tp,
     if (has_rotary_motion) {
         PmCartesian prev_tan_rot, this_tan_rot;
 
-        // Extract rotary tangent vectors
-        switch (prev_tc->motion_type) {
-            case TC_LINEAR:
-                prev_tan_rot = prev_tc->coords.line.abc.uVec;
-                break;
-            case TC_CIRCULAR:
-                prev_tan_rot = prev_tc->coords.circle.abc.uVec;
-                break;
-            default:
-                memset(&prev_tan_rot, 0, sizeof(PmCartesian));
+        // OPTIMIZATION: Extract both rotary tangent vectors in consolidated motion type check
+        // Replaces two separate switch statements with single-pass logic
+        memset(&prev_tan_rot, 0, sizeof(PmCartesian));
+        memset(&this_tan_rot, 0, sizeof(PmCartesian));
+
+        if (prev_tc->motion_type == TC_LINEAR) {
+            prev_tan_rot = prev_tc->coords.line.abc.uVec;
+        } else if (prev_tc->motion_type == TC_CIRCULAR) {
+            prev_tan_rot = prev_tc->coords.circle.abc.uVec;
         }
 
-        switch (tc->motion_type) {
-            case TC_LINEAR:
-                this_tan_rot = tc->coords.line.abc.uVec;
-                break;
-            case TC_CIRCULAR:
-                this_tan_rot = tc->coords.circle.abc.uVec;
-                break;
-            default:
-                memset(&this_tan_rot, 0, sizeof(PmCartesian));
+        if (tc->motion_type == TC_LINEAR) {
+            this_tan_rot = tc->coords.line.abc.uVec;
+        } else if (tc->motion_type == TC_CIRCULAR) {
+            this_tan_rot = tc->coords.circle.abc.uVec;
         }
 
         tp_debug_print("prev tangent vector (rotary): %f %f %f\n", prev_tan_rot.x, prev_tan_rot.y, prev_tan_rot.z);
