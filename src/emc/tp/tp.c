@@ -2017,7 +2017,6 @@ STATIC int tpRunOptimization(TP_STRUCT * const tp) {
         }
         if (fabs(prev1_tc->finalvel - old_finalvel) < convergence_tol &&
             fabs(prev1_tc->finalacc - old_finalacc) < convergence_tol) {
-            tp_debug_print(" Optimization converged at depth %d, early out\n", x);
             break;
         }
 
@@ -2030,12 +2029,9 @@ STATIC int tpRunOptimization(TP_STRUCT * const tp) {
             double vel_improvement = (current_max_vel - max_vel_last_iteration) / max_vel_last_iteration;
             if (fabs(vel_improvement) < VELOCITY_PLATEAU_THRESHOLD) {
                 plateau_count++;
-                tp_debug_print(" Velocity plateau detected (improvement=%.4f%%, count=%d)\n",
-                              vel_improvement * 100.0, plateau_count);
                 // Stop after 2 plateau iterations: velocity improvements are marginal
                 if (plateau_count >= 2) {
-                    tp_debug_print(" Stopping optimization: velocity plateau after %d iterations\n", x);
-                    return TP_ERR_OK;
+                    break;
                 }
             } else {
                 plateau_count = 0;  // Reset plateau counter on significant improvement
@@ -2049,13 +2045,11 @@ STATIC int tpRunOptimization(TP_STRUCT * const tp) {
         }
         // Also stop if we hit peak velocity many times (fallback to original cutoff)
         if (hit_peaks > TP_OPTIMIZATION_CUTOFF) {
-            tp_debug_print(" Stopping optimization: hit %d peak velocities\n", hit_peaks);
-            return TP_ERR_OK;
+            break;
         }
 #endif
 
     }
-    tp_debug_print("Reached optimization depth limit\n");
     return TP_ERR_OK;
 }
 
