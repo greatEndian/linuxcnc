@@ -2484,6 +2484,22 @@ int tpAddLine(TP_STRUCT * const tp, EmcPose end, int canon_motion_type,
     if (tpErrorCheck(tp) < 0) {
         return TP_ERR_FAIL;
     }
+
+    /* CRITICAL FIX: Detect if file is being reloaded/restarted.
+     * When a file is stopped (tp->done=1) and then reloaded, the first call
+     * to tpAddLine for the new file should clear the queue to prevent mixing
+     * old segments from the previous run with new segments.
+     *
+     * Check: If motion was done (stopped) and queue is being reused, clear it.
+     * This handles the case where file is reloaded after being stopped in the
+     * same LinuxCNC session.
+     */
+    if (tp->done && tp->queueSize > 0) {
+        // Motion was stopped and queue still has segments from previous run
+        // Clear queue to prevent stale data from previous run affecting optimization
+        tpClear(tp);
+    }
+
     tp_info_print("== AddLine ==\n");
 
     // Initialize new tc struct for the line segment
