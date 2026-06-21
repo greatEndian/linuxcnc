@@ -72,6 +72,9 @@ emcmot_hal_data_t *emcmot_hal_data;
 
 #define GET_TRAJ_HOME_USE_TP() (emcmotStatus->home_use_tp)
 
+// Safety constants for velocity profile calculations
+#define VELOCITY_EPSILON 1e-8  // Allow for floating-point rounding errors
+
 //==========================================================
 // tp module interface
 // motmod function ptrs for functions called by tp:
@@ -1818,6 +1821,13 @@ STATIC int tpComputeOptimalVelocity(TP_STRUCT const * const tp, TC_STRUCT * cons
 
     //Limit tc's target velocity to avoid creating "humps" in the velocity profile
     prev1_tc->finalvel = vs_back;
+
+    // SAFETY: Clamp velocity to machine limit (prevents overflow from rounding errors)
+    if (prev1_tc->finalvel > prev1_tc->maxvel + VELOCITY_EPSILON) {
+        tp_debug_print("Warning: Clamping finalvel from %f to %f\n",
+                       prev1_tc->finalvel, prev1_tc->maxvel);
+        prev1_tc->finalvel = prev1_tc->maxvel;
+    }
 
     // Calculate transition acceleration for all planner types and transitions
     // This enables acceleration state carryover across segment boundaries
@@ -3721,6 +3731,11 @@ STATIC int tpCompleteSegment(TP_STRUCT * const tp,
 
             // For S-curve + tangent transitions, also carry velocity and jerk
             if (GET_TRAJ_PLANNER_TYPE() == 1 && tc->term_cond == TC_TERM_COND_TANGENT) {
+                // SAFETY: Clamp tc->finalvel before carryover to prevent overflow
+                if (tc->finalvel > tc->maxvel + VELOCITY_EPSILON) {
+                    tc->finalvel = tc->maxvel;
+                }
+
                 next_tc->currentvel = tc->currentvel;
                 next_tc->currentjerk = tc->currentjerk;
 
