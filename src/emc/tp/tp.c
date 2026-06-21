@@ -4561,6 +4561,25 @@ int tpRunCycle(TP_STRUCT * const tp, long period)
         return TP_ERR_STOPPED;
     }
 
+    /* CRITICAL FIX: Detect if motion is restarting from a paused state with a
+     * reloaded file. This happens when:
+     * 1. Motion was previously running (done=0)
+     * 2. Motion was stopped/paused (currentvel=0, done=1)
+     * 3. File was reloaded at row 1
+     * 4. Motion is about to restart (done flag changes)
+     *
+     * In this case, queue may contain stale segments from previous run mixed
+     * with new segments, corrupting velocity optimization. Clear the queue
+     * to force clean re-initialization of motion state.
+     */
+    static int last_done = 1;
+    if (last_done && !tp->done && emcmotStatus->current_vel == 0.0) {
+        // Transitioning from paused (done=1, vel=0) to active (done=0)
+        // This indicates file reload after stop - clear queue for clean state
+        tpClear(tp);
+    }
+    last_done = tp->done;
+
     //Return early if we have a reason to wait (i.e. not ready for motion)
     if (tpCheckAtSpeed(tp, tc) != TP_ERR_OK){
         return TP_ERR_WAITING;
