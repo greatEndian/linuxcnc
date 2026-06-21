@@ -1,17 +1,165 @@
-
 loadrt trivkins coordinates=XYZ
+loadrt [EMCMOT]EMCMOT servo_period_nsec=[EMCMOT]SERVO_PERIOD num_joints=3 num_dio=10 num_aio=10 num_spindles=1
+loadusr -W lcec_conf ethercat-conf.xml
+loadrt lcec
+initf lcec.activate servo-thread
 
-loadrt [EMCMOT]EMCMOT base_period_nsec=[EMCMOT]BASE_PERIOD servo_period_nsec=[EMCMOT]SERVO_PERIOD num_joints=3 num_dio=10 num_aio=10 num_spindles=1
-addf motion-command-handler   servo-thread
-addf motion-controller        servo-thread
+loadrt ds402			count=1
+loadrt sercos 			count=1
+loadrt not				count=1
+loadrt pid names=pid.y
 
 
-net x-pos-fb     joint.0.motor-pos-fb   <=  joint.0.motor-pos-cmd
+addf lcec.read-all 			servo-thread
+	addf 	ds402.0.read-all 			servo-thread
+	addf	sercos.0.read-all			servo-thread
+	addf 	motion-command-handler   	servo-thread
+	addf 	motion-controller        	servo-thread
+	addf	pid.y.do-pid-calcs     		servo-thread
+	addf	not.0						servo-thread
+	addf 	ds402.0.write-all 			servo-thread
+	addf	sercos.0.write-all		 	servo-thread
+addf lcec.write-all 				servo-thread
 
+#xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx_S300 - ETHERCAT_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+		setp 	ds402.0.csp-mode 						1
+		setp 	ds402.0.prBase 							20
+		setp 	ds402.0.screw-pitch 					10.
+		setp 	ds402.0.pos-scale						1.
+		setp 	ds402.0.periodTime						[TASK](CYCLE_TIME)
+		setp	ds402.0.lead-cycles						2.
+		setp	ds402.0.kff								1.
+		setp	ds402.0.k-err							0.
+		setp	ds402.0.tau								1.
+	
+	# bit resolution from TC3
+		setp	sercos.0.prBase							20							# 2^20 increments per revolution
+		setp	sercos.0.homingMethod					2							# method -2, -1, 1, 2 .. negative is at neg. edge.. pos is positive edge.. 2 is latch, 1 is straight
+	#how much mm/s and mm/s^2
+		setp	sercos.0.screw-pitch					10.							# in UU/rev
+		setp	sercos.0.homingSpeed					-15.						# need to be same direction else it will travel one dir and latch in other 
+		setp	sercos.0.homingSpeedLatch				-3.							# need to be same direction else it will travel one dir and latch in other 
+		setp	sercos.0.homingAccel					100.						# UU/s^2
+		setp	sercos.0.hommingDeccel					100.						# UU/s^2
+		setp	sercos.0.homingAccelLatch				10.							# UU/s^2
+		setp	sercos.0.hommingDeccelLatch				10.							# UU/s^2
+		setp	sercos.0.homeSwitchNoConfig				0							# 0 == NC probe signal, 1 == NO probe signal
+		#position offset is in relative coordinates !!!
+		setp	sercos.0.homeFinalOffset				[JOINT_1](HOME_OFFSET)		# UU
+		setp	sercos.0.periodTime						[TASK](CYCLE_TIME)			# nanoseconds
+		setp	sercos.0.lead-cycles					2.							# times of cycle .. 2 common
+		setp	sercos.0.kff							1.							# FF
+		setp	sercos.0.k-err							0.							# last error weight
 
-net y1-pos-fb     joint.1.motor-pos-fb   <=  joint.1.motor-pos-cmd
+	#x
+	net 	x_Control				lcec.0.x-s343.target-controlword				ds402.0.controlword
+	net 	x_Status				lcec.0.x-s343.actual-statusword					ds402.0.statusword
+	net 	x_OpModeCommand			lcec.0.x-s343.target-internal-opmode			ds402.0.opmode
+	net 	x_OpModeDisplay			lcec.0.x-s343.actual-internal-opmode			ds402.0.opmode-display 
+	net 	x_statusRegister		lcec.0.x-s343.status-register					ds402.0.status-register
+	net 	x_analogIn1				lcec.0.x-s343.actual-analog-input-1-mV			ds402.0.drv-actual-analog-input-1-mV
+	net 	x_analogIn2				lcec.0.x-s343.actual-analog-input-2-mV			ds402.0.drv-actual-analog-input-2-mV
+		
+	net		machine-on				joint.1.amp-enable-out							sercos.0.drive-enable								pid.y.enable
+	net		machine-estop			halui.estop.is-activated						sercos.0.estop
+	net		y_Control				lcec.0.Drive-1-AX520-0.Master-control-0			sercos.0.controlword
+	net		y_Status				lcec.0.Drive-1-AX520-0.Drive-status-wo-6		sercos.0.statusword
+	net		y-PosFeedbackInc		lcec.0.Drive-1-AX520-0.Position-feedba-7		sercos.0.drv-actual-position-incremental
+	net		y-ActualPos				sercos.0.pos-fb									joint.1.motor-pos-fb								pid.y.feedback
+	net		y-CmdPos				joint.1.motor-pos-cmd							sercos.0.pos-cmd									pid.y.command
+	#net		y-CmdVel				joint.1.vel-cmd									sercos.0.vel-cmd			
+	net		y-CmdOutVel				pid.y.output									sercos.0.vel-cmd
+	net		y-PosCmdInc				sercos.0.drv-target-position-incremental		lcec.0.Drive-1-AX520-0.Position-comman-1
+	net		y-CmdVelInc				sercos.0.drv-target-velocity-incremental		lcec.0.Drive-1-AX520-0.Velocity-comman-2
+	net		y-probeEdge				lcec.0.Drive-1-AX520-0.Probe-value-1-p-8		sercos.0.drv-probe-edge
+	net		y-probeEdgeNeg			lcec.0.Drive-1-AX520-0.Probe-value-1-n-9		sercos.0.drv-probe-edgeNeg
+	#net		y-probeCmd				sercos.0.probe-on								lcec.0.Drive-1-AX520-0.Probe-1-enable
+	net		y-digitalStatus			lcec.0.Drive-1-AX520-0.Digital-inputs-11		sercos.0.drv-actual-digital-inputs
+	net		y-homeCmd				joint.1.index-enable							sercos.0.home										pid.y.index-enable
+	net		y-home-switch			sercos.0.stat-di-1								sercos.0.homeSwitch
+	net		y_CmdAcc				joint.1.acc-cmd									sercos.0.acc-cmd
+	
+	setp   pid.y.Pgain     					[JOINT_1]P
+	setp   pid.y.Igain     					[JOINT_1]I
+	setp   pid.y.Dgain     					[JOINT_1]D
+	setp   pid.y.bias      					[JOINT_1]BIAS
+	setp   pid.y.FF0       					[JOINT_1]FF0
+	setp   pid.y.FF1       					[JOINT_1]FF1
+	setp   pid.y.FF2       					[JOINT_1]FF2
+	setp   pid.y.deadband  					[JOINT_1]DEADBAND
+	setp   pid.y.maxoutput					[JOINT_1]MAX_OUTPUT
+	setp   pid.y.error-previous-target		true
+	
+	#y
+	#net y_Control				lcec.0.y-s346.target-controlword			ds402.1.controlword
+	#net y_Status				lcec.0.y-s346.actual-statusword				ds402.1.statusword
+	#net y_OpModeCommand			lcec.0.y-s346.target-internal-opmode		ds402.1.opmode
+	#net y_OpModeDisplay			lcec.0.y-s346.actual-internal-opmode		ds402.1.opmode-display 
+	#net y_statusRegister		lcec.0.y-s346.status-register				ds402.1.status-register
+	#net y_analogIn1				lcec.0.y-s346.actual-analog-input-1-mV		ds402.1.drv-actual-analog-input-1-mV
+	#net y_analogIn2				lcec.0.y-s346.actual-analog-input-2-mV		ds402.1.drv-actual-analog-input-2-mV
+	#z
+	#net z_Control				lcec.0.z-s346.target-controlword			ds402.2.controlword
+	#net z_Status				lcec.0.z-s346.actual-statusword				ds402.2.statusword
+	#net z_OpModeCommand			lcec.0.z-s346.target-internal-opmode		ds402.2.opmode
+	#net z_OpModeDisplay			lcec.0.z-s346.actual-internal-opmode		ds402.2.opmode-display 
+	#net z_statusRegister		lcec.0.z-s346.status-register				ds402.2.status-register
+	#net z_analogIn1				lcec.0.z-s346.actual-analog-input-1-mV		ds402.2.drv-actual-analog-input-1-mV
+	#net z_analogIn2				lcec.0.z-s346.actual-analog-input-2-mV		ds402.2.drv-actual-analog-input-2-mV
 
+	#xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxdrive feedbacksxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+	#x
+	net x_PosFeedbackInc		lcec.0.x-s343.actaul-position-inc			ds402.0.drv-actual-position-incremental
+	net x_PosFeedbackIncDro		lcec.0.x-s343.actaul-position-inc-dro		ds402.0.drv-actual-position-incremental-dro
+	net	x_ActualPos				ds402.0.pos-fb-from-incremental				joint.0.motor-pos-fb
+	net x_ActualVelocityInc		lcec.0.x-s343.actual-velocity-inc			ds402.0.drv-actual-velocity-incremental
+	net	x_CmdPos				joint.0.motor-pos-cmd						ds402.0.pos-cmd
+	net	x_CmdVel				joint.0.vel-cmd								ds402.0.vel-cmd
+	net	x_CmdAcc				joint.0.acc-cmd								ds402.0.acc-cmd
+	#y 
+	#net y_PosFeedbackInc		lcec.0.y-s346.actaul-position-inc			ds402.1.drv-actual-position-incremental
+	#net y_PosFeedbackIncDro		lcec.0.y-s346.actaul-position-inc-dro		ds402.1.drv-actual-position-incremental-dro
+	#net	y_ActualPos				ds402.1.pos-fb-from-incremental			joint.1.motor-pos-fb
+	#net y_ActualVelocityInc		lcec.0.y-s346.actual-velocity-inc			ds402.1.drv-actual-velocity-incremental
+	#net	y_CmdPos				joint.1.motor-pos-cmd						ds402.1.pos-cmd
+	#z
+	#net z_PosFeedbackInc		lcec.0.z-s346.actaul-position-inc			ds402.2.drv-actual-position-incremental
+	#net z_PosFeedbackIncDro		lcec.0.z-s346.actaul-position-inc-dro		ds402.2.drv-actual-position-incremental-dro
+	#net	z_ActualPos				ds402.2.pos-fb-from-incremental				joint.2.motor-pos-fb
+	#net z_ActualVelocityInc		lcec.0.z-s346.actual-velocity-inc			ds402.2.drv-actual-velocity-incremental
+	#net	z_CmdPos				joint.2.motor-pos-cmd						ds402.2.pos-cmd
+	#xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxdrive commandsxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+	#x
+	net x_PosCmdInc				ds402.0.drv-target-position-incremental		lcec.0.x-s343.target-position-inc
+	net x_VeloCmdInc			ds402.0.drv-target-velocity-incremental		lcec.0.x-s343.target-velocity-inc
+	#y
+	#net y_CmdVelo				joint.1.vel-cmd								ds402.1.velocity-cmd
+	#net y_PosCmdInc				ds402.1.drv-target-position-incremental		lcec.0.y-s346.target-position-inc
+	#net y_VeloCmdInc			ds402.1.drv-target-velocity-incremental		lcec.0.y-s346.target-velocity-inc 
+	#z
+	#net z_CmdVelo				joint.2.vel-cmd								ds402.2.velocity-cmd
+	#net z_PosCmdInc				ds402.2.drv-target-position-incremental		lcec.0.z-s346.target-position-inc
+	#net z_VeloCmdInc			ds402.2.drv-target-velocity-incremental		lcec.0.z-s346.target-velocity-inc
+	#xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxother necessary signalsxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+	#x
+	net x_Error					ds402.0.drv-fault 						joint.0.amp-fault-in
+	net x_FollowingError		joint.0.f-error-lim							ds402.0.following-error
+	net x_Enable				joint.0.amp-enable-out						ds402.0.enable
+	net x_HomeEnable			joint.0.index-enable						ds402.0.home
+	#y 
+	#net y_Error					ds402.1.drv-fault 						joint.1.amp-fault-in
+	#net y_FollowingError		joint.1.f-error-lim							ds402.1.following-error
+	#net y_Enable				joint.1.amp-enable-out						ds402.1.enable
+	#net y_HomeEnable			joint.1.index-enable						ds402.1.home
+	#z
+	#net z_Error					ds402.2.drv-fault 						joint.2.amp-fault-in
+	#net z_FollowingError		joint.2.f-error-lim							ds402.2.following-error
+	#net z_Enable				joint.2.amp-enable-out						ds402.2.enable
+	#net z_HomeEnable			joint.2.index-enable						ds402.2.home
+#xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx_S300 - ETHERCAT_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 
+#net x-pos-fb     joint.0.motor-pos-fb   <=  joint.0.motor-pos-cmd
+#net y1-pos-fb     joint.1.motor-pos-fb   <=  joint.1.motor-pos-cmd
 net z-pos-fb     joint.2.motor-pos-fb   <=  joint.2.motor-pos-cmd 
 
 setp iocontrol.0.emc-enable-in 1

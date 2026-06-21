@@ -18,6 +18,7 @@
  ********************************************************************/
 
 #include <stddef.h>
+#include <string.h>
 
 #include "tcq.h"
 
@@ -94,6 +95,13 @@ int tcqDelete(TC_QUEUE_STRUCT * const tcq)
 int tcqInit(TC_QUEUE_STRUCT * const tcq)
 {
     if (tcqCheck(tcq)) return -1;
+
+    // CRITICAL FIX: Zero out entire queue data array to prevent stale data carryover
+    // The static queue buffer is reused across multiple G-code file loads in the same
+    // session. Without clearing the array, old TC_STRUCT data from the previous run
+    // persists and can corrupt the next run's velocity optimization.
+    // This must happen BEFORE resetting metadata pointers.
+    memset(tcq->queue, 0, tcq->size * sizeof(TC_STRUCT));
 
     tcq->_len = 0;
     tcq->start = tcq->end = 0;
