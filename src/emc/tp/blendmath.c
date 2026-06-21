@@ -587,8 +587,8 @@ int blendGeom3Init(BlendGeom3 * const geom,
         TC_STRUCT const * const prev_tc,
         TC_STRUCT const * const tc)
 {
-    geom->v_max1 = prev_tc->maxvel;
-    geom->v_max2 = tc->maxvel;
+    geom->v_max1 = prev_tc->hot.maxvel;
+    geom->v_max2 = tc->hot.maxvel;
 
     // Get tangent unit vectors to each arc at the intersection point
     int res_u1 = tcGetEndTangentUnitVector(prev_tc, &geom->u_tan1);
@@ -682,8 +682,8 @@ int blendParamKinematics(BlendGeom3 * const geom,
     double phi_effective = fmin(param->phi, PM_PI * 0.49);
 
     // Copy over maximum velocities, clipping velocity to place altitude within base
-    double v_max1 = fmin(prev_tc->maxvel, tc->maxvel / cos(phi_effective));
-    double v_max2 = fmin(tc->maxvel, prev_tc->maxvel / cos(phi_effective));
+    double v_max1 = fmin(prev_tc->hot.maxvel, tc->hot.maxvel / cos(phi_effective));
+    double v_max2 = fmin(tc->hot.maxvel, prev_tc->hot.maxvel / cos(phi_effective));
 
     tp_debug_print("v_max1 = %f, v_max2 = %f\n", v_max1, v_max2);
 
@@ -797,7 +797,7 @@ int blendInit3FromLineArc(BlendGeom3 * const geom, BlendParameters * const param
 
     param->phi = (PM_PI - param->theta * 2.0);
 
-    param->L1 = fmin(prev_tc->target, prev_tc->nominal_length / 2.0);
+    param->L1 = fmin(prev_tc->hot.target, prev_tc->nominal_length / 2.0);
 
     if (param->convex2) {
         //use half of the length of the chord
@@ -1085,8 +1085,8 @@ int blendInit3FromLineLine(BlendGeom3 * const geom, BlendParameters * const para
     blendGeom3Print(geom);
 
     //Nominal length restriction prevents gobbling too much of parabolic blends
-    param->L1 = fmin(prev_tc->target, prev_tc->nominal_length * BLEND_DIST_FRACTION);
-    param->L2 = tc->target * BLEND_DIST_FRACTION;
+    param->L1 = fmin(prev_tc->hot.target, prev_tc->nominal_length * BLEND_DIST_FRACTION);
+    param->L2 = tc->hot.target * BLEND_DIST_FRACTION;
     tp_debug_print("prev. nominal length = %f, next nominal_length = %f\n",
             prev_tc->nominal_length, tc->nominal_length);
     tp_debug_print("L1 = %f, L2 = %f\n", param->L1, param->L2);
@@ -1253,7 +1253,7 @@ int blendCheckConsume(BlendParameters * const param,
     }
 
     //Check for segment length limits
-    double L_prev = prev_tc->target - points->trim1;
+    double L_prev = prev_tc->hot.target - points->trim1;
     double prev_seg_time = L_prev / param->v_plan;
 
     bool can_consume = tcCanConsume(prev_tc);

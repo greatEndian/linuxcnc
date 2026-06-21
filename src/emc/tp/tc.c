@@ -56,12 +56,12 @@ double tcGetMaxTargetVel(TC_STRUCT const * const tc,
         case TC_SYNC_POSITION:
             // Assume no spindle override during blend target
         default:
-            v_max_target = tc->maxvel;
+            v_max_target = tc->hot.maxvel;
             break;
     }
 
     // Clip maximum velocity by the segment's own maximum velocity
-    return fmin(v_max_target, tc->maxvel);
+    return fmin(v_max_target, tc->hot.maxvel);
 }
 
 double tcGetOverallMaxAccel(const TC_STRUCT *tc)
@@ -331,7 +331,7 @@ int tcGetEndTangentUnitVector(TC_STRUCT const * const tc, PmCartesian * const ou
 
 /**
  * Calculate the unit tangent vector at the current progress position of a move.
- * This gives the accurate direction at tc->progress, important for accurate jerk output.
+ * This gives the accurate direction at tc->hot.progress, important for accurate jerk output.
  */
 int tcGetCurrentTangentUnitVector(TC_STRUCT const * const tc, PmCartesian * const out) {
     switch (tc->motion_type) {
@@ -339,7 +339,7 @@ int tcGetCurrentTangentUnitVector(TC_STRUCT const * const tc, PmCartesian * cons
             *out = tc->coords.line.xyz.uVec;
             break;
         case TC_RIGIDTAP:
-            if (tc->progress > 0.5 * tc->target) {
+            if (tc->hot.progress > 0.5 * tc->hot.target) {
                 // Returning from tap, direction is reversed
                 pmCartScalMult(&tc->coords.rigidtap.xyz.uVec, -1.0, out);
             } else {
@@ -350,13 +350,13 @@ int tcGetCurrentTangentUnitVector(TC_STRUCT const * const tc, PmCartesian * cons
             {
                 // Calculate current angle based on progress
                 PmCircle const * const circle = &tc->coords.circle.xyz;
-                double angle = tc->progress / circle->radius;
+                double angle = tc->hot.progress / circle->radius;
                 // Handle spiral (radius varies)
                 if (circle->spiral != 0.0) {
                     // For spiral, use approximation
                     double r_ratio = circle->spiral * angle / (2.0 * PM_PI);
                     double avg_radius = circle->radius * (1.0 + r_ratio / 2.0);
-                    angle = tc->progress / avg_radius;
+                    angle = tc->hot.progress / avg_radius;
                 }
                 pmCircleTangentVector(circle, angle, out);
             }
@@ -369,7 +369,7 @@ int tcGetCurrentTangentUnitVector(TC_STRUCT const * const tc, PmCartesian * cons
                 // Calculate progress fraction (0 to 1)
                 double total_length = arc->radius * arc->angle + arc->line_length;
                 double progress_frac = (total_length > DOUBLE_FUZZ) ?
-                                       tc->progress / total_length : 0.0;
+                                       tc->hot.progress / total_length : 0.0;
 
                 // Use endpoint tangent as approximation based on progress
                 // (arcTangent only supports at_end=0 or 1)
@@ -390,7 +390,7 @@ int tcGetCurrentTangentUnitVector(TC_STRUCT const * const tc, PmCartesian * cons
  */
 double tcGetDistanceToGo(TC_STRUCT const * const tc, int direction)
 {
-    double distance = tcGetTarget(tc, direction) - tc->progress;
+    double distance = tcGetTarget(tc, direction) - tc->hot.progress;
     if (direction == TC_DIR_REVERSE) {
         distance *=-1.0;
     }
@@ -399,7 +399,7 @@ double tcGetDistanceToGo(TC_STRUCT const * const tc, int direction)
 
 double tcGetTarget(TC_STRUCT const * const tc, int direction)
 {
-    return (direction == TC_DIR_REVERSE) ? 0.0 : tc->target;
+    return (direction == TC_DIR_REVERSE) ? 0.0 : tc->hot.target;
 }
 
 
@@ -408,7 +408,7 @@ double tcGetTarget(TC_STRUCT const * const tc, int direction)
  * \brief This function calculates the machine position along the motion's path.
  *
  * As we move along a TC, from zero to its length, we call this function repeatedly,
- * with an increasing tc->progress.
+ * with an increasing tc->hot.progress.
  * This function calculates the machine position along the motion's path
  * corresponding to the current progress.
  * It gets called at the end of tpRunCycle()
@@ -442,10 +442,10 @@ int tcGetPosReal(TC_STRUCT const * const tc, int of_point, EmcPose * const pos)
 
     switch (of_point) {
         case TC_GET_PROGRESS:
-            progress = tc->progress;
+            progress = tc->hot.progress;
             break;
         case TC_GET_ENDPOINT:
-            progress = tc->target;
+            progress = tc->hot.target;
             break;
         case TC_GET_STARTPOINT:
             progress = 0.0;
@@ -470,13 +470,13 @@ int tcGetPosReal(TC_STRUCT const * const tc, int of_point, EmcPose * const pos)
             break;
         case TC_LINEAR:
             pmCartLinePoint(&tc->coords.line.xyz,
-                    progress * tc->coords.line.xyz.tmag / tc->target,
+                    progress * tc->coords.line.xyz.tmag / tc->hot.target,
                     &xyz);
             pmCartLinePoint(&tc->coords.line.uvw,
-                    progress * tc->coords.line.uvw.tmag / tc->target,
+                    progress * tc->coords.line.uvw.tmag / tc->hot.target,
                     &uvw);
             pmCartLinePoint(&tc->coords.line.abc,
-                    progress * tc->coords.line.abc.tmag / tc->target,
+                    progress * tc->coords.line.abc.tmag / tc->hot.target,
                     &abc);
             break;
         case TC_CIRCULAR:
@@ -487,10 +487,10 @@ int tcGetPosReal(TC_STRUCT const * const tc, int of_point, EmcPose * const pos)
                     angle,
                     &xyz);
             pmCartLinePoint(&tc->coords.circle.abc,
-                    progress * tc->coords.circle.abc.tmag / tc->target,
+                    progress * tc->coords.circle.abc.tmag / tc->hot.target,
                     &abc);
             pmCartLinePoint(&tc->coords.circle.uvw,
-                    progress * tc->coords.circle.uvw.tmag / tc->target,
+                    progress * tc->coords.circle.uvw.tmag / tc->hot.target,
                     &uvw);
             break;
         case TC_SPHERICAL:
@@ -554,9 +554,9 @@ int tcConnectBlendArc(TC_STRUCT * const prev_tc, TC_STRUCT * const tc,
         //Have prev line, need to shorten it
         pmCartLineInit(&prev_tc->coords.line.xyz,
                 &prev_tc->coords.line.xyz.start, circ_start);
-        tp_debug_print("Old target = %f\n", prev_tc->target);
-        prev_tc->target = prev_tc->coords.line.xyz.tmag;
-        tp_debug_print("Target = %f\n",prev_tc->target);
+        tp_debug_print("Old target = %f\n", prev_tc->hot.target);
+        prev_tc->hot.target = prev_tc->coords.line.xyz.tmag;
+        tp_debug_print("Target = %f\n",prev_tc->hot.target);
         //Setup tangent blending constraints
         tcSetTermCond(prev_tc, tc, TC_TERM_COND_TANGENT);
         tp_debug_print(" L1 end  : %f %f %f\n",prev_tc->coords.line.xyz.end.x,
@@ -569,9 +569,9 @@ int tcConnectBlendArc(TC_STRUCT * const prev_tc, TC_STRUCT * const tc,
     //Shorten next line
     pmCartLineInit(&tc->coords.line.xyz, circ_end, &tc->coords.line.xyz.end);
 
-    tp_info_print(" L2: old target = %f\n", tc->target);
-    tc->target = tc->coords.line.xyz.tmag;
-    tp_info_print(" L2: new target = %f\n", tc->target);
+    tp_info_print(" L2: old target = %f\n", tc->hot.target);
+    tc->hot.target = tc->coords.line.xyz.tmag;
+    tp_info_print(" L2: new target = %f\n", tc->hot.target);
     tp_debug_print(" L2 start  : %f %f %f\n",tc->coords.line.xyz.start.x,
             tc->coords.line.xyz.start.y,
             tc->coords.line.xyz.start.z);
@@ -594,7 +594,7 @@ int tcConnectBlendArc(TC_STRUCT * const prev_tc, TC_STRUCT * const tc,
 int tcIsBlending(TC_STRUCT * const tc) {
     //FIXME Disabling blends for rigid tap cycle until changes can be verified.
     int is_blending_next = (tc->term_cond == TC_TERM_COND_PARABOLIC ) &&
-        tc->on_final_decel && (tc->currentvel < tc->blend_vel) &&
+        tc->on_final_decel && (tc->hot.currentvel < tc->blend_vel) &&
         tc->motion_type != TC_RIGIDTAP;
 
     //Latch up the blending_next status here, so that even if the prev conditions
@@ -712,7 +712,7 @@ int tcInit(TC_STRUCT * const tc,
     tc->ruckig_planner = NULL;
     tc->ruckig_trajectory_time = 0.0;
     tc->ruckig_planned = 0;
-    tc->finalacc = 0.0;
+    tc->hot.finalacc = 0.0;
     tc->ruckig_last_maxaccel = 0.0;
     tc->ruckig_last_maxjerk = 0.0;
     tc->ruckig_last_target_vel = 0.0;
@@ -742,7 +742,7 @@ int tcSetupMotion(TC_STRUCT * const tc,
     tc->maxjerk = ini_maxjerk;
     tc->blend_maxjerk = ini_maxjerk;  // default equals maxjerk, look-ahead adjusts as needed
 
-    tc->maxvel = ini_maxvel;
+    tc->hot.maxvel = ini_maxvel;
 
     tc->reqvel = vel;
     // To be computed by velocity optimization / spindle-sync calculations
@@ -868,12 +868,12 @@ int tcUpdateArcLimits(TC_STRUCT * tc)
     double a_n_max_cutoff = BLEND_ACC_RATIO_NORMAL * a_max;
 
     // Find the acceleration necessary to reach the maximum velocity
-    double a_n_vmax = pmSq(tc->maxvel) / radius;
+    double a_n_vmax = pmSq(tc->hot.maxvel) / radius;
 
     // Find the maximum velocity that still obeys our desired normal/total acceleration ratio
     double v_max_cutoff = pmSqrt(a_n_max_cutoff * radius);
 
-    double v_max_actual = tc->maxvel;
+    double v_max_actual = tc->hot.maxvel;
     double acc_ratio_tan = BLEND_ACC_RATIO_TANGENTIAL;
 
     if (a_n_vmax > a_n_max_cutoff) {
@@ -926,11 +926,11 @@ int tcUpdateArcLimits(TC_STRUCT * tc)
         }
     }
 
-    tc->maxvel = v_max_actual;
+    tc->hot.maxvel = v_max_actual;
     tc->acc_ratio_tan = acc_ratio_tan;
 
     tp_debug_print("tcUpdateArcLimits: final v_max=%f acc_ratio_tan=%f\n",
-                   tc->maxvel, tc->acc_ratio_tan);
+                   tc->hot.maxvel, tc->acc_ratio_tan);
 
     return 0;
 }
@@ -974,9 +974,9 @@ int tcClampVelocityByLength(TC_STRUCT * const tc)
 
     //Reduce max velocity to match sample rate
     //Assume that cycle time is valid here
-    double sample_maxvel = tc->target / tc->cycle_time;
+    double sample_maxvel = tc->hot.target / tc->cycle_time;
     tp_debug_print("sample_maxvel = %f\n",sample_maxvel);
-    tc->maxvel = fmin(tc->maxvel, sample_maxvel);
+    tc->hot.maxvel = fmin(tc->hot.maxvel, sample_maxvel);
     return TP_ERR_OK;
 }
 
@@ -993,7 +993,7 @@ int tcUpdateTargetFromCircle(TC_STRUCT * const tc)
     pmCartMagSq(&tc->coords.circle.xyz.rHelix, &h2);
     double helical_length = pmSqrt(pmSq(tc->coords.circle.fit.total_planar_length) + h2);
 
-    tc->target = helical_length;
+    tc->hot.target = helical_length;
     return TP_ERR_OK;
 }
 
@@ -1074,7 +1074,7 @@ int tcSetCircleXYZ(TC_STRUCT * const tc, PmCircle const * const circ)
 
     // compute the new total arc length using the fit and store as new
     // target distance
-    tc->target = pmCircle9Target(&tc->coords.circle);
+    tc->hot.target = pmCircle9Target(&tc->coords.circle);
 
     return TP_ERR_OK;
 }

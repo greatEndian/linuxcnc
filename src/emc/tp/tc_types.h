@@ -118,100 +118,92 @@ typedef struct {
 } PmRigidTap;
 
 typedef struct {
+    // ====================================================================
+    // HOT DATA: Frequently accessed during optimization (single L1 cache line)
+    // Fields are ordered to fit within 64 bytes for single cache line
+    // ====================================================================
+    struct {
+        double target;           // actual segment length
+        double progress;         // where are we in the segment? 0..target
+        double finalvel;         // velocity to aim for at end of segment
+        double finalacc;         // acceleration to aim for at end of segment
+        double maxvel;           // max possible vel (feed override stops here)
+        double currentvel;       // keep track of current step (vel * cycle_time)
+        double currentacc;       // current acceleration for S-curve planning
+        // Total: 56 bytes (fits in one 64-byte L1 cache line)
+    } hot;
+
+    // ====================================================================
+    // COLD DATA: Infrequently accessed (regular top-level members)
+    // ====================================================================
     double cycle_time;
-    //Position stuff
-    double target;          // actual segment length
-    double progress;        // where are we in the segment?  0..target
     double nominal_length;
-
-    //Velocity
-    double reqvel;          // vel requested by F word, calc'd by task
-    double target_vel;      // velocity to actually track, limited by other factors
-    double maxvel;          // max possible vel (feed override stops here)
-    double currentvel;      // keep track of current step (vel * cycle_time)
-    double last_move_length;// last move length
-    double finalvel;        // velocity to aim for at end of segment
-    double finalacc;        // acceleration to aim for at end of segment
-    double term_vel;        // actual velocity at termination of segment
-    double kink_vel;        // Temporary way to store our calculation of maximum velocity we can handle if this segment is declared tangent with the next
-    double kink_accel_reduce_prev; // How much to reduce the allowed tangential acceleration to account for the extra acceleration at an approximate tangent intersection.
-    double kink_accel_reduce; // How much to reduce the allowed tangential acceleration to account for the extra acceleration at an approximate tangent intersection.
-
+    double reqvel;           // vel requested by F word, calc'd by task
+    double target_vel;       // velocity to actually track, limited by other factors
+    double last_move_length; // last move length
+    double term_vel;         // actual velocity at termination of segment
+    double kink_vel;         // Temp storage for max velocity for tangent declaration
+    double kink_accel_reduce_prev; // Accel reduction for approximate tangent
+    double kink_accel_reduce;      // Accel reduction for approximate tangent
     double factor;
-
     double targetvel;
     double vt;
-
-    //Jerk
-    double maxjerk;                // max jerk for S-curve motion
-    double blend_maxjerk;          // max jerk during blend (set by look-ahead)
-    double currentjerk;            // current jerk for S-curve planning
-    double currentacc;             // current acceleration for S-curve planning
+    double maxjerk;          // max jerk for S-curve motion
+    double blend_maxjerk;    // max jerk during blend (set by look-ahead)
+    double currentjerk;      // current jerk for S-curve planning
     double lastacc;
+    double maxaccel;         // accel calc'd by task
+    double acc_ratio_tan;    // ratio between normal and tangential accel
+    double blend_vel;        // velocity below which we should start blending
+    double tolerance;        // distance tolerance during blend
+    double uu_per_rev;       // for sync, user units per rev
+    double vel_at_blend_start;
+    double ruckig_trajectory_time;  // current trajectory time
+    double ruckig_last_maxaccel;    // max acceleration used in last planning
+    double ruckig_last_maxjerk;     // max jerk used in last planning
+    double ruckig_last_target_vel;  // target velocity used in last planning
+    double ruckig_last_final_vel;   // final velocity used in last planning
+    double ruckig_last_final_acc;   // final acceleration used in last planning
+    double ruckig_last_target_pos;  // target position used in last planning
+    double ruckig_last_req_pos;     // last req_pos value (for velocity control)
+    double ruckig_last_feed_override; // feed override at last planning
 
-    //Acceleration
-    double maxaccel;        // accel calc'd by task
-    double acc_ratio_tan;// ratio between normal and tangential accel
+    int id;                  // segment's serial number
+    struct state_tag_t tag;  // state tag corresponding to running motion
 
-    int id;                 // segment's serial number
-    struct state_tag_t tag; // state tag corresponding to running motion
-
-    union {                 // describes the segment's start and end positions
+    union {                  // describes the segment's start and end positions
         PmLine9 line;
         PmCircle9 circle;
         PmRigidTap rigidtap;
         Arc9 arc;
     } coords;
 
-    int motion_type;       // TC_LINEAR (coords.line) or
-                            // TC_CIRCULAR (coords.circle) or
-                            // TC_RIGIDTAP (coords.rigidtap)
-    int active;            // this motion is being executed
-    int canon_motion_type;  // this motion is due to which canon function?
-    int term_cond;          // gcode requests continuous feed at the end of
-                            // this segment (g64 mode)
+    int motion_type;         // TC_LINEAR/CIRCULAR/RIGIDTAP
+    int active;              // this motion is being executed
+    int canon_motion_type;   // this motion is due to which canon function?
+    int term_cond;           // gcode requests continuous feed at end
 
-    int blending_next;      // segment is being blended into following segment
-    double blend_vel;       // velocity below which we should start blending
-    double tolerance;       // during the blend at the end of this move,
-                            // stay within this distance from the path.
-    int synchronized;       // spindle sync state
-    double uu_per_rev;      // for sync, user units per rev (e.g. 0.0625 for 16tpi)
-    double vel_at_blend_start;
-    int sync_accel;         // we're accelerating up to sync with the spindle
-    unsigned char enables;  // Feed scale, etc, enable bits for this move
-    int atspeed;           // wait for the spindle to be at-speed before starting this move
-    syncdio_t syncdio;      // synched DIO's for this move. what to turn on/off
-    int indexer_jnum;  // which joint to unlock (for a locking indexer) to make this move, -1 for none
-    int optimization_state;             // At peak velocity during blends)
+    int blending_next;       // segment is being blended into following segment
+    int synchronized;        // spindle sync state
+    int sync_accel;          // we're accelerating up to sync with the spindle
+    unsigned char enables;   // Feed scale, etc, enable bits for this move
+    int atspeed;             // wait for spindle to be at-speed
+    syncdio_t syncdio;       // synched DIO's for this move
+    int indexer_jnum;        // which joint to unlock (locking indexer), -1 for none
+    int optimization_state;  // At peak velocity during blends
     int on_final_decel;
     int blend_prev;
     int accel_mode;
-    int splitting;          // the segment is less than 1 cycle time
-                            // away from the end.
-    int remove;             // Flag to remove the segment from the queue
-    int active_depth;       /* Active depth (i.e. how many segments
-                            * after this will it take to slow to zero
-                            * speed) */
+    int splitting;           // segment is < 1 cycle time from end
+    int remove;              // Flag to remove segment from queue
+    int active_depth;        // how many segments until zero speed
     int finalized;
 
-    // Temporary status flags (reset each cycle)
-    int is_blending;
+    int is_blending;         // Temporary status flag (reset each cycle)
 
-    // Ruckig trajectory planner support
-    void *ruckig_planner;              // Ruckig planner handle (opaque pointer)
-    double ruckig_trajectory_time;     // current trajectory time (seconds from trajectory start)
-    int ruckig_planned;                // whether Ruckig planning completed (1=planned, 0=not)
-    // Store last planning parameters for detecting parameter changes
-    double ruckig_last_maxaccel;       // max acceleration used in last planning
-    double ruckig_last_maxjerk;        // max jerk used in last planning
-    double ruckig_last_target_vel;     // target velocity used in last planning
-    double ruckig_last_final_vel;      // final velocity used in last planning
-    double ruckig_last_final_acc;      // final acceleration used in last planning
-    double ruckig_last_target_pos;     // target position used in last planning
-    int ruckig_last_use_velocity_control;  // control mode used in last planning (1=velocity, 0=position)
-    double ruckig_last_req_pos;        // last req_pos value from Ruckig (for velocity control incremental calc)
-    double ruckig_last_feed_override;  // feed override value at last planning (for debug and change detection)
+    void *ruckig_planner;    // Ruckig planner handle (opaque pointer)
+    int ruckig_planned;      // whether Ruckig planning completed
+    int ruckig_last_use_velocity_control; // control mode (1=velocity, 0=position)
 } TC_STRUCT;
 
 #endif				/* TC_TYPES_H */
