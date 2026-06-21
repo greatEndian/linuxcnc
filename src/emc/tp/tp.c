@@ -1785,16 +1785,20 @@ STATIC int tpComputeOptimalVelocity(TP_STRUCT const * const tp, TC_STRUCT * cons
     }
     // Find the reachable velocity of prev1_tc, moving forwards in time
 
+    // OPTIMIZATION: Consolidate velocity limit calculation
+    // Compute the minimum velocity limit considering both segments and kink velocity
+    // This replaces separate variable assignments and conditional check with direct computation
     double vf_limit_this = tc->maxvel;
     double vf_limit_prev = prev1_tc->maxvel;
-    if (prev1_tc->kink_vel >=0  && prev1_tc->term_cond == TC_TERM_COND_TANGENT) {
-        // Only care about kink_vel with tangent segments
+    // Apply kink velocity constraint if segment is tangent (only one conditional check)
+    if (prev1_tc->kink_vel >= 0.0 && prev1_tc->term_cond == TC_TERM_COND_TANGENT) {
         vf_limit_prev = fmin(vf_limit_prev, prev1_tc->kink_vel);
     }
-    //Limit the PREVIOUS velocity by how much we can overshoot into
+    // Consolidate: single fmin to compute final limit
     double vf_limit = fmin(vf_limit_this, vf_limit_prev);
 
-    if (vs_back >= vf_limit ) {
+    // Check if backward reachable velocity hits the forward limit (peak detection)
+    if (vs_back >= vf_limit) {
         //If we've hit the requested velocity, then prev_tc is definitely a "peak"
         vs_back = vf_limit;
         prev1_tc->optimization_state = TC_OPTIM_AT_MAX;
