@@ -2022,14 +2022,31 @@ STATIC int tpRunOptimization(TP_STRUCT * const tp) {
 
         tc->active_depth = x - 2 - hit_peaks;
 
-        // Early-out if the velocity profile did not change (converged)
-        // convergence_tolerance is tunable via HAL pin motion.convergence-tolerance (default 1e-6)
+        // PHASE 3B: Adaptive Convergence Detection
+        // Use adaptive relative tolerance instead of fixed absolute tolerance
+        // Accounts for velocity/acceleration magnitude and percentage changes
+        double vel_change = fabs(prev1_tc->hot.finalvel - old_finalvel);
+        double acc_change = fabs(prev1_tc->hot.finalacc - old_finalacc);
+
+        // Get base convergence tolerance (tunable via HAL, default 1e-6)
         double convergence_tol = 1e-6;
         if (emcmot_hal_data && emcmot_hal_data->convergence_tolerance) {
             convergence_tol = *(emcmot_hal_data->convergence_tolerance);
         }
-        if (fabs(prev1_tc->hot.finalvel - old_finalvel) < convergence_tol &&
-            fabs(prev1_tc->hot.finalacc - old_finalacc) < convergence_tol) {
+
+        // Adaptive threshold: scale based on magnitude + minimum threshold for precision
+        // For high velocities, use relative change; for low velocities, use absolute minimum
+        double vel_magnitude = fabs(prev1_tc->hot.finalvel) + 1e-9;
+        double vel_threshold = fmax(convergence_tol, vel_magnitude * convergence_tol);
+
+        // Same for acceleration
+        double acc_magnitude = fabs(prev1_tc->hot.finalacc) + 1e-9;
+        double acc_threshold = fmax(convergence_tol, acc_magnitude * convergence_tol);
+
+        // Converged when both velocity and acceleration changes are below thresholds
+        if (vel_change < vel_threshold && acc_change < acc_threshold) {
+            tp_debug_print("Converged: vel_change=%.2e (threshold=%.2e), acc_change=%.2e (threshold=%.2e)\n",
+                    vel_change, vel_threshold, acc_change, acc_threshold);
             break;
         }
 
