@@ -708,11 +708,19 @@ int tcInit(TC_STRUCT * const tc,
 
     tc->acc_ratio_tan = BLEND_ACC_RATIO_TANGENTIAL;
 
+    // Initialize HOT fields (frequently accessed during optimization)
+    tc->hot.target = 0.0;
+    tc->hot.progress = 0.0;
+    tc->hot.finalvel = 0.0;
+    tc->hot.finalacc = 0.0;
+    tc->hot.maxvel = 0.0;
+    tc->hot.currentvel = 0.0;
+    tc->hot.currentacc = 0.0;
+
     // Initialize Ruckig planner fields
     tc->ruckig_planner = NULL;
     tc->ruckig_trajectory_time = 0.0;
     tc->ruckig_planned = 0;
-    tc->hot.finalacc = 0.0;
     tc->ruckig_last_maxaccel = 0.0;
     tc->ruckig_last_maxjerk = 0.0;
     tc->ruckig_last_target_vel = 0.0;
