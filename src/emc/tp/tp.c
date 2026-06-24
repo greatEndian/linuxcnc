@@ -471,6 +471,32 @@ int tpClearDIOs(TP_STRUCT * const tp) {
 }
 
 /**
+ * Release any Ruckig planners still borrowed by queued segments back to the
+ * pool. MUST run before any queue reset (tcqInit), which wipes the queue slots
+ * (memset) without going through tpCompleteSegment. Without releasing first,
+ * the active segment's pooled planner is stranded (its pool slot stays
+ * in_use forever). Repeated aborts/clears then exhaust the fixed-size pool,
+ * forcing a live ruckig_create() per segment inside the servo cycle, which
+ * reintroduces the per-cycle allocation latency the pool exists to avoid.
+ *
+ * Safe on an empty or uninitialized queue: tcqLen() returns <= 0 so the loop
+ * is skipped, and tcCleanupRuckig() ignores a NULL planner. Only the live
+ * range [start, start+len) is walked; segments in the reverse history were
+ * already released by tpCompleteSegment before being popped.
+ */
+STATIC void tpReleaseQueuedPlanners(TP_STRUCT * const tp)
+{
+    int n = tcqLen(&tp->queue);
+    int i;
+    for (i = 0; i < n; i++) {
+        TC_STRUCT *tc = tcqItem(&tp->queue, i);
+        if (tc) {
+            tcCleanupRuckig(tc);
+        }
+    }
+}
+
+/**
  *    "Soft initialize" the trajectory planner tp.
  *    This is a "soft" initialization in that TP_STRUCT configuration
  *    parameters (cycleTime, vMax, and aMax) are left alone, but the queue is
@@ -481,6 +507,7 @@ int tpClearDIOs(TP_STRUCT * const tp) {
  */
 int tpClear(TP_STRUCT * const tp)
 {
+    tpReleaseQueuedPlanners(tp);
     tcqInit(&tp->queue);
     tp->queueSize = 0;
     tp->goalPos = tp->currentPos;
@@ -3685,6 +3712,7 @@ STATIC void tpUpdateBlend(TP_STRUCT * const tp, TC_STRUCT * const tc,
 STATIC void tpHandleEmptyQueue(TP_STRUCT * const tp)
 {
 
+    tpReleaseQueuedPlanners(tp);
     tcqInit(&tp->queue);
     tp->goalPos = tp->currentPos;
     tp->done = 1;
@@ -3833,6 +3861,7 @@ STATIC tp_err_t tpHandleAbort(TP_STRUCT * const tp, TC_STRUCT * const tc,
     if( MOTION_ID_VALID(tp->spindle.waiting_for_index) ||
             MOTION_ID_VALID(tp->spindle.waiting_for_atspeed) ||
             (tc->hot.currentvel == 0.0 && (!nexttc || nexttc->hot.currentvel == 0.0))) {
+        tpReleaseQueuedPlanners(tp);
         tcqInit(&tp->queue);
         tp->goalPos = tp->currentPos;
         tp->done = 1;
