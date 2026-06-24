@@ -3783,53 +3783,16 @@ STATIC int tpCompleteSegment(TP_STRUCT * const tp,
     // Clean up Ruckig planner resources
     tcCleanupRuckig(tc);
 
-    // Carry over acceleration state to the next segment for all planners and transitions
-    // This maintains acceleration continuity and reduces jerk at segment boundaries
-    if (!tp->reverse_run) {
-        TC_STRUCT *next_tc = tcqItem(&tp->queue, 1);
-        if (next_tc) {
-            double maxacc_next = tcGetTangentialMaxAccel(next_tc);
-            double maxvel_next = tcGetMaxTargetVel(next_tc, getMaxFeedScale(next_tc));
-
-            // Always use tc->hot.finalacc as starting hint for next segment
-            // For S-curve, this is especially important for smooth blending
-            // For trapezoidal, this helps avoid sudden acceleration changes
-            if (tc->hot.finalacc != 0.0) {
-                next_tc->hot.currentacc = saturate(tc->hot.finalacc, maxacc_next);
-                tp_debug_print("tpCompleteSegment (finalacc carryover): id %d -> id %d, finalacc=%f -> currentacc=%f (limited by %f)\n",
-                               tc->id, next_tc->id, tc->hot.finalacc, next_tc->hot.currentacc, maxacc_next);
-            }
-
-            // For S-curve + tangent transitions, also carry velocity and jerk
-            if (GET_TRAJ_PLANNER_TYPE() == 1 && tc->term_cond == TC_TERM_COND_TANGENT) {
-                // SAFETY: Clamp tc->hot.finalvel before carryover to prevent overflow
-                if (tc->hot.finalvel > tc->hot.maxvel + VELOCITY_EPSILON) {
-                    tc->hot.finalvel = tc->hot.maxvel;
-                }
-
-                next_tc->hot.currentvel = tc->hot.currentvel;
-                next_tc->currentjerk = tc->currentjerk;
-
-                // VALIDATION: Sanity check on carried-over velocity
-                // Ensure currentvel doesn't exceed segment's maximum safe velocity
-                if (next_tc->hot.currentvel > maxvel_next) {
-                    tp_debug_print("tpCompleteSegment (velocity validation): clamping currentvel %.3f → %.3f (maxvel)\n",
-                                  next_tc->hot.currentvel, maxvel_next);
-                    next_tc->hot.currentvel = maxvel_next;
-                }
-
-                // Ensure currentvel is non-negative
-                if (next_tc->hot.currentvel < 0.0) {
-                    rtapi_print_msg(RTAPI_MSG_WARN, "tpCompleteSegment: negative currentvel %.3f clamped to 0 (segment %d)\n",
-                                   next_tc->hot.currentvel, next_tc->id);
-                    next_tc->hot.currentvel = 0.0;
-                }
-
-                tp_debug_print("tpCompleteSegment (S-curve tangent handover): id %d -> id %d, vel=%f, acc=%f, jerk=%f\n",
-                               tc->id, next_tc->id, next_tc->hot.currentvel, next_tc->hot.currentacc, next_tc->currentjerk);
-            }
-        }
-    }
+    // NOTE: deliberately NO acceleration/jerk carryover into the next segment
+    // here. Force-seeding next_tc->currentacc from tc->hot.finalacc (added in
+    // 48342898e2) makes the next segment's per-segment Ruckig solve start from
+    // an acceleration it must immediately decelerate away from -> overshoot/
+    // ring -> velocity peaking that compounds across tangent boundaries
+    // (confirmed by bisect: 1f2e772e62 without this block is smooth; adding it
+    // peaks). The finalacc->Ruckig *target*-acceleration feed in
+    // tpCalculateSCurveAccel (with its 0.0 fallback) is kept -- that part is
+    // stable. Velocity continuity at a tangent boundary is handled in the
+    // TC_TERM_COND_TANGENT split, as in the clean baseline.
 
     //TODO make progress to match target?
     // done with this move
@@ -4468,7 +4431,8 @@ STATIC int tpHandleSplitCycle(TP_STRUCT * const tp, TC_STRUCT * const tc,
                 // Important for line-to-arc transitions where arc has lower tangential accel
                 double maxacc_next = tcGetTangentialMaxAccel(nexttc);
                 nexttc->hot.currentacc = saturate(tc->hot.currentacc, maxacc_next);
-                nexttc->currentjerk = tc->currentjerk;
+                // no jerk carryover here -- the smooth pre-carryover baseline
+                // (1f2e772e62) inherited only vel+acc at the tangent split.
                 tp_debug_print("Doing tangent split (S-curve): vel=%f, acc=%f (limited by %f), jerk=%f\n",
                               nexttc->hot.currentvel, nexttc->hot.currentacc, maxacc_next, nexttc->currentjerk);
             } else {
