@@ -204,6 +204,10 @@ typedef struct {
     void *ruckig_planner;    // Ruckig planner handle (opaque pointer)
     int ruckig_planned;      // whether Ruckig planning completed
     int ruckig_last_use_velocity_control; // control mode (1=velocity, 0=position)
+    int ruckig_fail_logged;  // 1 once a plan failure has been logged for this
+                             // segment, so a segment Ruckig can never solve
+                             // logs ONCE instead of every servo cycle (1kHz)
+                             // -> avoids a multi-GB log flood on long soak runs
 } TC_STRUCT;
 
 #endif				/* TC_TYPES_H */
