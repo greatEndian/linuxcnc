@@ -2282,19 +2282,56 @@ STATIC int tpSetupTangent(TP_STRUCT const * const tp,
         }
     }
 
-    // NOTE: a "soft tangent" fast-path used to live here: for any corner within
-    // tolerance_deg it forced a tangent blend at full v_max with 0.0 accel
-    // reduction (tcSetKinkProperties(prev_tc, tc, v_max, 0.0)) and returned
-    // immediately. That bypassed the kink-velocity limiter below and let the
-    // velocity vector rotate by up to tolerance_deg in one servo cycle at full
-    // speed -> per-axis accel of 2*v*sin(theta/2)/servo_period, tens of times
-    // over [AXIS_*]MAX_ACCELERATION at every corner. The kink calculation below
-    // already IS a correct soft tangent: it allows a full-speed tangent blend
-    // when the geometry fits within ARC_BLEND_KINK_RATIO, and reduces kink_vel
-    // otherwise, so no separate fast-path is needed. (Removed to fix corner
-    // accel peaking; was masked-but-present in both follower and Ruckig modes.)
-    (void)is_tangent_linear;
-    (void)is_tangent_rotary;
+    // Soft-tangent fast-path (OPTION 2): for any corner within tolerance_deg,
+    // prefer a tangent blend -- but, unlike the original fast-path, limit the
+    // corner velocity so the direction-change (kink) acceleration stays within
+    // the per-axis bound. The original forced full v_max with 0.0 accel
+    // reduction, which let the velocity vector rotate by up to tolerance_deg in
+    // one servo cycle at full speed -> per-axis accel 2*v*sin(theta/2)/
+    // servo_period, tens of x over [AXIS_*]MAX_ACCELERATION at every corner.
+    //
+    // This uses the same kink-acceleration model as the general path below, but
+    // ALWAYS commits to a tangent blend (the general path bails to an arc blend
+    // when the kink exceeds the budget), trading a slower corner for keeping
+    // dense contours tangent.
+    if (is_tangent_linear && is_tangent_rotary) {
+        double v_max1 = tcGetMaxTargetVel(prev_tc, getMaxFeedScale(prev_tc));
+        double v_max2 = tcGetMaxTargetVel(tc, getMaxFeedScale(tc));
+        double v_max = fmin(v_max1, v_max2);
+
+        // Kink acceleration this corner would demand at v_max: decelerate to a
+        // stop on prev and simultaneously accelerate up on this within a cycle.
+        double a_inst = v_max / tp->cycleTime + tc->maxaccel;
+        PmCartesian acc1, acc2, acc_diff;
+        pmCartScalMult(&prev_tan, a_inst, &acc1);
+        pmCartScalMult(&this_tan, a_inst, &acc2);
+        pmCartCartSub(&acc2, &acc1, &acc_diff);
+
+        PmCartesian acc_bound, acc_scale;
+        tpGetMachineAccelBounds(&acc_bound);
+        findAccelScale(&acc_diff, &acc_bound, &acc_scale);
+        double acc_scale_max = pmCartAbsMax(&acc_scale);
+        if (prev_tc->motion_type == TC_CIRCULAR || tc->motion_type == TC_CIRCULAR) {
+            acc_scale_max /= BLEND_ACC_RATIO_TANGENTIAL;
+        }
+
+        const double kink_ratio = tpGetTangentKinkRatio();
+        tcSetTermCond(prev_tc, tc, TC_TERM_COND_TANGENT);
+        if (acc_scale_max < kink_ratio) {
+            // Kink fits within the accel budget -> full speed through the corner.
+            tp_debug_print(" Soft Tangent: angle within %f deg, kink fits (%f<%f), v_max=%f\n",
+                           tolerance_deg, acc_scale_max, kink_ratio, v_max);
+            tcSetKinkProperties(prev_tc, tc, v_max, acc_scale_max);
+        } else {
+            // Reduce corner velocity so the direction-change accel stays within
+            // the per-axis bound, but still blend tangentially.
+            double v_kink = v_max * kink_ratio / acc_scale_max;
+            tp_debug_print(" Soft Tangent: angle within %f deg, kink reduced (%f>=%f), v_kink=%f\n",
+                           tolerance_deg, acc_scale_max, kink_ratio, v_kink);
+            tcSetKinkProperties(prev_tc, tc, v_kink, kink_ratio);
+        }
+        return TP_ERR_OK;
+    }
 
     // OPTIMIZATION: Check for sharp corners using dot product instead of pmCartCartAntiParallel
     // Use cached thresholds (computed at function entry to avoid redundant calculations)
