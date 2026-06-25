@@ -189,6 +189,7 @@ libtp_dep = declare_dependency(include_directories : tp_inc,
 
 tp_test_files = [
   'test_blendmath',
+  'test_scurve_follower',
   ]
 foreach n : tp_test_files
   

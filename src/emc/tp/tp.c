@@ -75,6 +75,17 @@ emcmot_hal_data_t *emcmot_hal_data;
 // Safety constants for velocity profile calculations
 #define VELOCITY_EPSILON 1e-8  // Allow for floating-point rounding errors
 
+// SCURVE_FOLLOWER (experimental, default OFF): when 1, the S-curve execution
+// uses a jerk-limited velocity-profile follower (tpCalculateSCurveFollowerAccel)
+// for normal position-control motion instead of re-solving a per-segment Ruckig
+// trajectory every cycle. The follower has no per-segment replan loop, so it
+// cannot enter the accel limit-cycle that makes the Ruckig path ring on dense
+// micro-segment cusps. Pause/abort/feed-hold/spindle-sync/reverse always use
+// the Ruckig path. The shipping default is the Ruckig path (which is already
+// ring-free thanks to the acceleration-carryover removal); the follower is an
+// opt-in alternative pending real-cut validation. Set to 1 + rebuild to enable.
+#define SCURVE_FOLLOWER 0
+
 //==========================================================
 // tp module interface
 // motmod function ptrs for functions called by tp:
@@ -3164,6 +3175,85 @@ STATIC int tcUpdateDistFromSCurveAccel(TC_STRUCT *const tc, double acc, double j
 }
 
 
+#if SCURVE_FOLLOWER
+/**
+ * Jerk-limited velocity-profile FOLLOWER (experimental, Phase 1).
+ *
+ * Drop-in alternative to the per-segment Ruckig replan in tpCalculateSCurveAccel.
+ * Each cycle it tracks a single velocity goal
+ *     v_goal = min(v_cruise, v_decel)
+ * with one jerk-limited step (nextSpeed), where v_decel is the closed-form max
+ * speed that can still decelerate to finalvel over the remaining distance
+ * (findSCurveMaxStartSpeed). There is no per-segment trajectory re-solve, so it
+ * cannot enter the marginally-stable accel limit-cycle that makes the Ruckig
+ * path ring on dense micro-segment / high-curvature cusps. Velocity is
+ * continuous across segment boundaries because it integrates the live
+ * currentvel/currentacc. Uses trapezoidal position integration (req_pos = -1).
+ *
+ * Phase 1 scope: normal position-control motion + simple pause/abort (goal
+ * velocity 0). Spindle-sync / rigid-tap / reverse-run are not specially handled
+ * yet (validate before relying on them).
+ */
+int tpCalculateSCurveFollowerAccel(TP_STRUCT const * const tp, TC_STRUCT * const tc, TC_STRUCT const * const nexttc,
+        double * const acc, double * const jerk, double * const vel_desired, double * const pos_error, int blend, double * const req_pos)
+{
+    *pos_error = 0;
+    *req_pos = -1.0;   // trapezoidal integration in tcUpdateDistFromSCurveAccel
+
+    double maxjerk = fmin(tc->maxjerk, emcmotStatus->jerk);
+    if (maxjerk <= 1) {
+        // No usable jerk limit -> let the caller fall back to trapezoidal,
+        // exactly as the Ruckig path does.
+        return TP_SCURVE_ACCEL_ERROR;
+    }
+
+    double dt = tc->cycle_time;
+    if (!blend && dt < TP_TIME_EPSILON) {
+        *acc = tc->hot.currentacc;
+        *vel_desired = tc->hot.currentvel;
+        *jerk = tc->currentjerk;
+        return TP_SCURVE_ACCEL_ACCEL;
+    }
+
+    double maxaccel = tcGetTangentialMaxAccel(tc);
+    double v_cruise = tpGetRealTargetVel(tp, tc);
+    double v_final  = tpGetRealFinalVel(tp, tc, nexttc);
+    double dx       = tcGetDistanceToGo(tc, tp->reverse_run);
+
+    bool is_pausing  = tp->pausing && (tc->synchronized == TC_SYNC_NONE || tc->synchronized == TC_SYNC_VELOCITY);
+    bool is_aborting = tp->aborting;
+
+    double v_goal;
+    int dec;
+    if (is_pausing || is_aborting) {
+        v_goal = 0.0;
+        dec = TP_SCURVE_ACCEL_DECEL;
+    } else {
+        // Max speed we can be going NOW and still slow to v_final by the end of
+        // the remaining distance, under accel+jerk limits. Recomputed every
+        // cycle, so as dx shrinks v_decel tracks the deceleration curve down.
+        double v_decel = v_cruise;
+        if (findSCurveMaxStartSpeed(dx, v_final, maxaccel, maxjerk, &v_decel) != 1) {
+            v_decel = v_cruise;   // closed-form solve failed -> no decel limit this cycle
+        }
+        v_goal = fmin(v_cruise, v_decel);
+        dec = (v_goal < v_cruise - VELOCITY_EPSILON) ? TP_SCURVE_ACCEL_DECEL
+                                                     : TP_SCURVE_ACCEL_ACCEL;
+    }
+
+    double new_v = tc->hot.currentvel;
+    double new_a = tc->hot.currentacc;
+    double new_j = tc->currentjerk;
+    nextSpeed(tc->hot.currentvel, tc->hot.currentacc, dt, v_goal, maxaccel, maxjerk,
+              &new_v, &new_a, &new_j);
+
+    *acc = new_a;
+    *jerk = new_j;
+    *vel_desired = new_v;
+    return dec;
+}
+#endif // SCURVE_FOLLOWER
+
 /**
  * Compute updated position and velocity for a timestep based on a s-curve
  * motion profile.
@@ -3176,6 +3266,29 @@ STATIC int tcUpdateDistFromSCurveAccel(TC_STRUCT *const tc, double acc, double j
 int tpCalculateSCurveAccel(TP_STRUCT const * const tp, TC_STRUCT * const tc, TC_STRUCT const * const nexttc,
         double * const acc, double * const jerk, double * const vel_desired, double * const pos_error, int blend, double * const req_pos)
 {
+#if SCURVE_FOLLOWER
+    // Experimental: use the jerk-limited follower for NORMAL position-control
+    // motion only (smooth cusps, no per-segment Ruckig replan). Pause / abort /
+    // feed-hold (feed override -> 0) and spindle-synchronised moves MUST fall
+    // through to the Ruckig path below, which owns the stop/velocity-control
+    // state machine. The follower's simple ramp-to-zero does not drive
+    // currentvel to exactly 0.0, so tpHandleAbort (which waits for
+    // currentvel == 0.0) would never finalise -> motion frozen, task wedged
+    // ("EMC_TASK_PLAN_SYNCH ... interpreter idle").
+    {
+        const int follower_velctl =
+            (tp->pausing && (tc->synchronized == TC_SYNC_NONE ||
+                             tc->synchronized == TC_SYNC_VELOCITY)) ||
+            tp->aborting ||
+            tp->reverse_run ||
+            (emcmotStatus->net_feed_scale <= TP_VEL_EPSILON);
+        if (!follower_velctl && tc->synchronized == TC_SYNC_NONE) {
+            return tpCalculateSCurveFollowerAccel(tp, tc, nexttc, acc, jerk,
+                                                  vel_desired, pos_error, blend, req_pos);
+        }
+        // else: fall through to the Ruckig path for the velocity-control cases
+    }
+#endif
     tc_debug_print("using s-curve acceleration with Ruckig\n");
 
     double maxjerk = fmin(tc->maxjerk, emcmotStatus->jerk);
