@@ -96,13 +96,18 @@ int tcqInit(TC_QUEUE_STRUCT * const tcq)
 {
     if (tcqCheck(tcq)) return -1;
 
-    // CRITICAL FIX: Zero out entire queue data array to prevent stale data carryover
-    // The static queue buffer is reused across multiple G-code file loads in the same
-    // session. Without clearing the array, old TC_STRUCT data from the previous run
-    // persists and can corrupt the next run's velocity optimization.
-    // This must happen BEFORE resetting metadata pointers.
-    memset(tcq->queue, 0, tcq->size * sizeof(TC_STRUCT));
-
+    // NOTE: deliberately do NOT memset the whole queue buffer here. Every slot
+    // is fully overwritten when a segment is added (tpAddLine zero-inits a
+    // local TC_STRUCT and tcqPut copies it into the slot), and only the live
+    // range [start, end) is ever read -- so stale bytes in unused slots are
+    // never observed. Zeroing the entire DEFAULT_TC_QUEUE_SIZE (2000) *
+    // sizeof(TC_STRUCT) buffer cost ~1-2 MB of memset on every program
+    // start/stop (tcqInit runs from tcqCreate and tpClear/tpHandleAbort, not on
+    // pause), which showed up as a ~0.5 ms servo-thread spike at program
+    // start/stop -- unacceptable for sub-250us servo periods. The "stale
+    // carryover" this used to guard against was actually the canon-units and
+    // acceleration-carryover bugs, both since fixed properly. Just reset the
+    // bookkeeping (O(1)), matching upstream.
     tcq->_len = 0;
     tcq->start = tcq->end = 0;
     tcq->rend = 0;
