@@ -743,6 +743,10 @@ Suggestion: Split this in to an Error and a Status flag register..
         double maxFeedScale;
         int inhibit_probe_jog_error;
         int inhibit_probe_home_error;
+        int scurveFollower;	/* 1 = use jerk-limited S-curve velocity follower
+				   instead of per-segment Ruckig replan (S-curve
+				   only). Set from the motmod scurve_follower param
+				   (-> [TRAJ]SCURVE_FOLLOWER). Default 0. */
     } emcmot_config_t;
 
 /* error structure - lockfree MPSC ring buffer. See emcmotutil.c. */

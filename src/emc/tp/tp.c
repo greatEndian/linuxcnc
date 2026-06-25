@@ -75,16 +75,16 @@ emcmot_hal_data_t *emcmot_hal_data;
 // Safety constants for velocity profile calculations
 #define VELOCITY_EPSILON 1e-8  // Allow for floating-point rounding errors
 
-// SCURVE_FOLLOWER (experimental, default OFF): when 1, the S-curve execution
-// uses a jerk-limited velocity-profile follower (tpCalculateSCurveFollowerAccel)
-// for normal position-control motion instead of re-solving a per-segment Ruckig
+// S-curve velocity FOLLOWER (experimental, opt-in, runtime-selectable):
+// when emcmotConfig->scurveFollower is set, the S-curve execution uses a
+// jerk-limited velocity-profile follower (tpCalculateSCurveFollowerAccel) for
+// normal position-control motion instead of re-solving a per-segment Ruckig
 // trajectory every cycle. The follower has no per-segment replan loop, so it
 // cannot enter the accel limit-cycle that makes the Ruckig path ring on dense
 // micro-segment cusps. Pause/abort/feed-hold/spindle-sync/reverse always use
-// the Ruckig path. The shipping default is the Ruckig path (which is already
-// ring-free thanks to the acceleration-carryover removal); the follower is an
-// opt-in alternative pending real-cut validation. Set to 1 + rebuild to enable.
-#define SCURVE_FOLLOWER 0
+// the Ruckig path. Default OFF (Ruckig path, already ring-free thanks to the
+// acceleration-carryover removal). Enabled via the motmod scurve_follower
+// param, e.g. in the HAL:  loadrt motmod ... scurve_follower=[TRAJ]SCURVE_FOLLOWER
 
 //==========================================================
 // tp module interface
@@ -3175,7 +3175,6 @@ STATIC int tcUpdateDistFromSCurveAccel(TC_STRUCT *const tc, double acc, double j
 }
 
 
-#if SCURVE_FOLLOWER
 /**
  * Jerk-limited velocity-profile FOLLOWER (experimental, Phase 1).
  *
@@ -3252,7 +3251,6 @@ int tpCalculateSCurveFollowerAccel(TP_STRUCT const * const tp, TC_STRUCT * const
     *vel_desired = new_v;
     return dec;
 }
-#endif // SCURVE_FOLLOWER
 
 /**
  * Compute updated position and velocity for a timestep based on a s-curve
@@ -3266,16 +3264,16 @@ int tpCalculateSCurveFollowerAccel(TP_STRUCT const * const tp, TC_STRUCT * const
 int tpCalculateSCurveAccel(TP_STRUCT const * const tp, TC_STRUCT * const tc, TC_STRUCT const * const nexttc,
         double * const acc, double * const jerk, double * const vel_desired, double * const pos_error, int blend, double * const req_pos)
 {
-#if SCURVE_FOLLOWER
-    // Experimental: use the jerk-limited follower for NORMAL position-control
-    // motion only (smooth cusps, no per-segment Ruckig replan). Pause / abort /
+    // Opt-in (runtime, [TRAJ]SCURVE_FOLLOWER via the motmod scurve_follower
+    // param): use the jerk-limited follower for NORMAL position-control motion
+    // only (smooth cusps, no per-segment Ruckig replan). Pause / abort /
     // feed-hold (feed override -> 0) and spindle-synchronised moves MUST fall
     // through to the Ruckig path below, which owns the stop/velocity-control
     // state machine. The follower's simple ramp-to-zero does not drive
     // currentvel to exactly 0.0, so tpHandleAbort (which waits for
     // currentvel == 0.0) would never finalise -> motion frozen, task wedged
     // ("EMC_TASK_PLAN_SYNCH ... interpreter idle").
-    {
+    if (emcmotConfig->scurveFollower) {
         const int follower_velctl =
             (tp->pausing && (tc->synchronized == TC_SYNC_NONE ||
                              tc->synchronized == TC_SYNC_VELOCITY)) ||
@@ -3288,7 +3286,6 @@ int tpCalculateSCurveAccel(TP_STRUCT const * const tp, TC_STRUCT * const tc, TC_
         }
         // else: fall through to the Ruckig path for the velocity-control cases
     }
-#endif
     tc_debug_print("using s-curve acceleration with Ruckig\n");
 
     double maxjerk = fmin(tc->maxjerk, emcmotStatus->jerk);
@@ -3487,7 +3484,10 @@ int tpCalculateSCurveAccel(TP_STRUCT const * const tp, TC_STRUCT * const tc, TC_
                                           maxjerk);              // max jerk
 
             if (plan_result != 0 && fabs(planned_target_acc) > 1e-6) {
-                rtapi_print_msg(RTAPI_MSG_INFO, "tpCalculateSCurveAccel: ruckig_plan_position failed with target_acc = %.6f, trying with 0.0\n", planned_target_acc);
+                // Expected: the speculative nonzero-target-accel plan is often
+                // rejected on short/tangent segments; fall back to 0.0 (which
+                // succeeds and produces the motion). DBG level -- not an error.
+                rtapi_print_msg(RTAPI_MSG_DBG, "tpCalculateSCurveAccel: ruckig_plan_position rejected target_acc=%.6f, retrying with 0.0\n", planned_target_acc);
                 planned_target_acc = 0.0;
                 plan_result = ruckig_plan_position(tc->ruckig_planner,
                                           replan_pos,
@@ -4398,13 +4398,20 @@ STATIC int tpCheckEndCondition(TP_STRUCT const * const tp, TC_STRUCT * const tc,
     double dx = tcGetDistanceToGo(tc, tp->reverse_run);
     tc_debug_print("tpCheckEndCondition: dx = %e\n",dx);
 
-    if (dx <= TP_POS_EPSILON) {
+    // Also treat an already-splitting segment as done: a split was committed on
+    // a previous cycle (cycle_time reduced to the computed split_time), so it
+    // must finish now. With an exact-position executor (Ruckig req_pos) dx lands
+    // under TP_POS_EPSILON, but the follower integrates trapezoidally and can
+    // leave a sub-cycle residual (e.g. dx ~ 1e-9 mm) that is physically done yet
+    // above the femtometer-scale TP_POS_EPSILON. Finishing here absorbs that
+    // residual instead of re-splitting (which trips "already splitting on id").
+    if (dx <= TP_POS_EPSILON || tc->splitting) {
         //If the segment is close to the target position, then we assume that it's done.
-        tp_debug_print("close to target, dx = %.12f\n",dx);
+        tp_debug_print("close to target, dx = %.12f (splitting=%d)\n", dx, tc->splitting);
         //Force progress to land exactly on the target to prevent numerical errors.
         tc->hot.progress = tcGetTarget(tc, tp->reverse_run);
 
-        if (!tp->reverse_run) {
+        if (!tp->reverse_run && !tc->splitting) {
             tcSetSplitCycle(tc, 0.0, tc->hot.currentvel);
         }
         if (tc->term_cond == TC_TERM_COND_STOP || tc->term_cond == TC_TERM_COND_EXACT || tp->reverse_run) {

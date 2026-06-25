@@ -1,5 +1,5 @@
 loadrt trivkins coordinates=XYZ
-loadrt [EMCMOT]EMCMOT servo_period_nsec=[EMCMOT]SERVO_PERIOD num_joints=3 num_dio=10 num_aio=10 num_spindles=1
+loadrt [EMCMOT]EMCMOT servo_period_nsec=[EMCMOT]SERVO_PERIOD num_joints=3 num_dio=10 num_aio=10 num_spindles=1 scurve_follower=[TRAJ]SCURVE_FOLLOWER
 
 addf 	motion-command-handler   	servo-thread
 addf 	motion-controller        	servo-thread

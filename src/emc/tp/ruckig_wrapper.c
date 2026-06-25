@@ -147,6 +147,14 @@ int ruckig_pool_init(double cycle_time) {
         ruckig_pool[i].planner = ruckig_create(cycle_time);
         ruckig_pool[i].in_use  = 0;
         if (ruckig_pool[i].planner) {
+            /* The execution path speculatively plans with a nonzero target
+             * acceleration (tc->hot.finalacc) and falls back to 0.0 when Ruckig
+             * rejects it -- on dense tangent paths that first attempt fails on
+             * most segments BY DESIGN. Disable this planner's internal logging
+             * so those expected "invalid input parameters" rejections don't spam
+             * the log every cycle (genuine fallback failures are still reported
+             * by tpCalculateSCurveAccel). Mirrors sp_scurve_init's cached_planner. */
+            ruckig_set_logging(ruckig_pool[i].planner, 0);
             ok++;
         }
     }

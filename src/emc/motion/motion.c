@@ -60,6 +60,9 @@ RTAPI_MP_INT(num_joints, "number of joints used in kinematics");
 static int num_extrajoints = 0;	/* default number of extra joints present */
 RTAPI_MP_INT(num_extrajoints, "number of extra joints (not used in kinematics)");
 
+static int scurve_follower = 0;	/* 0 = Ruckig S-curve path (default), 1 = follower */
+RTAPI_MP_INT(scurve_follower, "use jerk-limited S-curve velocity follower instead of per-segment Ruckig replan (0/1)");
+
 static int num_dio = NOT_INITIALIZED;
 RTAPI_MP_INT(num_dio, "number of digital inputs/outputs");
 static char *names_din[EMCMOT_MAX_DIO] = {0,};
@@ -961,6 +964,13 @@ static int init_comm_buffers(void)
     SET_MOTION_ENABLE_FLAG(0);
     /* record the kinematics type of the machine */
     emcmotConfig->kinType = kinematicsType();
+    /* opt-in jerk-limited S-curve velocity follower (motmod scurve_follower
+     * param, typically wired to [TRAJ]SCURVE_FOLLOWER); default 0 = Ruckig */
+    emcmotConfig->scurveFollower = scurve_follower;
+    if (scurve_follower) {
+        rtapi_print_msg(RTAPI_MSG_INFO,
+            "motion: S-curve velocity FOLLOWER enabled (scurve_follower=1)\n");
+    }
     emcmot_config_change();
 
     for (spindle_num = 0; spindle_num < EMCMOT_MAX_SPINDLES; spindle_num++){
