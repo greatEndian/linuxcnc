@@ -2282,17 +2282,19 @@ STATIC int tpSetupTangent(TP_STRUCT const * const tp,
         }
     }
 
-    // Blend allowed if BOTH linear AND rotary are within tolerance (most conservative)
-    if (is_tangent_linear && is_tangent_rotary) {
-        double v_max1 = tcGetMaxTargetVel(prev_tc, getMaxFeedScale(prev_tc));
-        double v_max2 = tcGetMaxTargetVel(tc, getMaxFeedScale(tc));
-        double v_max = fmin(v_max1, v_max2);
-        tp_debug_print(" Soft Tangent: angle %f deg is within tolerance %f deg. Forcing tangent blend at v_max = %f\n",
-                       angle_deg, tolerance_deg, v_max);
-        tcSetTermCond(prev_tc, tc, TC_TERM_COND_TANGENT);
-        tcSetKinkProperties(prev_tc, tc, v_max, 0.0);
-        return TP_ERR_OK;
-    }
+    // NOTE: a "soft tangent" fast-path used to live here: for any corner within
+    // tolerance_deg it forced a tangent blend at full v_max with 0.0 accel
+    // reduction (tcSetKinkProperties(prev_tc, tc, v_max, 0.0)) and returned
+    // immediately. That bypassed the kink-velocity limiter below and let the
+    // velocity vector rotate by up to tolerance_deg in one servo cycle at full
+    // speed -> per-axis accel of 2*v*sin(theta/2)/servo_period, tens of times
+    // over [AXIS_*]MAX_ACCELERATION at every corner. The kink calculation below
+    // already IS a correct soft tangent: it allows a full-speed tangent blend
+    // when the geometry fits within ARC_BLEND_KINK_RATIO, and reduces kink_vel
+    // otherwise, so no separate fast-path is needed. (Removed to fix corner
+    // accel peaking; was masked-but-present in both follower and Ruckig modes.)
+    (void)is_tangent_linear;
+    (void)is_tangent_rotary;
 
     // OPTIMIZATION: Check for sharp corners using dot product instead of pmCartCartAntiParallel
     // Use cached thresholds (computed at function entry to avoid redundant calculations)
