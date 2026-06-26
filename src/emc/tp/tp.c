@@ -3102,25 +3102,36 @@ int tpCalculateSCurveAccel(TP_STRUCT const * const tp, TC_STRUCT * const tc, TC_
                                           maxjerk);              // max jerk
 
             if (plan_result != 0) {
-                rtapi_print_msg(RTAPI_MSG_INFO, "tpCalculateSCurveAccel: ruckig_plan_position failed with result %d\n", plan_result);
                 if (tc->ruckig_planned) {
                     // Keep using previous trajectory
+                    if (!tc->ruckig_fail_logged) {
+                        tc->ruckig_fail_logged = 1;
+                        rtapi_print_msg(RTAPI_MSG_INFO, "tpCalculateSCurveAccel: ruckig_plan_position failed with result %d (segment %d, reported once)\n", plan_result, tc->id);
+                    }
                 } else {
-                    // First planning attempt failed, fall back
-                    rtapi_print_msg(RTAPI_MSG_ERR,
-                        "Ruckig planning failed (first attempt), Back to tp 0\n"
-                        "  feed_override: %.6f \n"
-                        "  max_vel: %.6f\n"
-                        "  cpos: %.6f, tpos: %.6f, dx: %.6f\n"
-                        "  cvel: %.6f, tvel: %.6f\n"
-                        "  cacc: %.6f\n"
-                        "  maxa: %.6f, maxj: %.6f\n",
-                        tp->net_feed_scale,
-                        effective_max_vel,
-                        replan_pos, target_pos, dx,
-                        replan_vel, effective_target_vel,
-                        replan_acc,
-                        maxaccel, maxjerk);
+                    // First planning attempt failed, fall back to trapezoidal.
+                    // Guarded so a segment Ruckig can never solve logs ONCE, not
+                    // every servo cycle (the retry loop re-enters here each cycle
+                    // until ruckig_planned flips). The flag is cleared by tcInit
+                    // on every new segment, so each distinct failure still logs.
+                    if (!tc->ruckig_fail_logged) {
+                        tc->ruckig_fail_logged = 1;
+                        rtapi_print_msg(RTAPI_MSG_ERR,
+                            "Ruckig planning failed (first attempt), Back to tp 0 (segment %d, reported once)\n"
+                            "  feed_override: %.6f \n"
+                            "  max_vel: %.6f\n"
+                            "  cpos: %.6f, tpos: %.6f, dx: %.6f\n"
+                            "  cvel: %.6f, tvel: %.6f\n"
+                            "  cacc: %.6f\n"
+                            "  maxa: %.6f, maxj: %.6f\n",
+                            tc->id,
+                            tp->net_feed_scale,
+                            effective_max_vel,
+                            replan_pos, target_pos, dx,
+                            replan_vel, effective_target_vel,
+                            replan_acc,
+                            maxaccel, maxjerk);
+                    }
                     return TP_SCURVE_ACCEL_ERROR;
                 }
             } else {
