@@ -372,6 +372,35 @@ static int initSocket()
 	struct sockaddr_in6 address = {};
 
 	sockfd = socket(AF_INET6, SOCK_STREAM, 0);
+	if (sockfd < 0 && errno == EAFNOSUPPORT) {
+		/* IPv6-disabled system (e.g. kernel booted with ipv6.disable=1,
+		 * common on RT-tuned machines): fall back to an IPv4 listener. */
+		struct sockaddr_in address4 = {};
+		sockfd = socket(AF_INET, SOCK_STREAM, 0);
+		if (sockfd < 0) {
+			xperror("socket()");
+			return -1;
+		}
+		setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, &optval, sizeof(optval));
+		address4.sin_family = AF_INET;
+		address4.sin_addr.s_addr = htonl(INADDR_ANY);
+		address4.sin_port = htons(port);
+		err = bind(sockfd, reinterpret_cast<struct sockaddr *>(&address4), sizeof(address4));
+		if (err) {
+			close(sockfd);
+			xperror("bind()");
+			return -1;
+		}
+		err = listen(sockfd, 5);
+		if (err) {
+			close(sockfd);
+			xperror("listen()");
+			return -1;
+		}
+		set_nonblock(sockfd);	/* match the IPv6 path: the poll loop
+					   expects a non-blocking listen socket */
+		return sockfd;
+	}
 	if (sockfd < 0) {
 		xperror("socket()");
 		return -1;
@@ -3493,7 +3522,7 @@ static int sockMain(int svrfd)
 		} else if (pfds[0].revents & POLLIN) {
 			// POLLIN on a listen socket means new connection available
 			int cfd;
-			struct sockaddr_in6 csa;
+			struct sockaddr_storage csa;	/* holds an IPv4 or IPv6 peer */
 			socklen_t csal = sizeof(csa);
 			cfd = accept(svrfd, reinterpret_cast<struct sockaddr *>(&csa), &csal);
 			if (cfd < 0) {
@@ -3538,8 +3567,15 @@ static int sockMain(int svrfd)
 					//cr.timestamp= true;
 					clients.push_back(cr);
 					char addr[INET6_ADDRSTRLEN] = {};
-					inet_ntop(AF_INET6, &csa.sin6_addr, addr, sizeof(addr));
-					info("New connection from %s:%d", addr, ntohs(csa.sin6_port));
+					if (csa.ss_family == AF_INET) {
+						struct sockaddr_in *s4 = reinterpret_cast<struct sockaddr_in *>(&csa);
+						inet_ntop(AF_INET, &s4->sin_addr, addr, sizeof(addr));
+						info("New connection from %s:%d", addr, ntohs(s4->sin_port));
+					} else {
+						struct sockaddr_in6 *s6 = reinterpret_cast<struct sockaddr_in6 *>(&csa);
+						inet_ntop(AF_INET6, &s6->sin6_addr, addr, sizeof(addr));
+						info("New connection from %s:%d", addr, ntohs(s6->sin6_port));
+					}
 				} else {
 					close(cfd);
 				}
