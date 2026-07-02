@@ -687,6 +687,10 @@ int main(int argc, char* argv[]) {
                 log_print("SET_JOINT_COMP\n");
                 break;
 
+            case EMCMOT_SET_SWITCHKINS_TYPE:
+                log_print("SET_SWITCHKINS_TYPE type=%d\n", c->switchkins_type);
+                break;
+
             case EMCMOT_SET_OFFSET:
                 log_print(
                     "SET_OFFSET x=%.6g, y=%.6g, z=%.6g, a=%.6g, b=%.6g, c=%.6g u=%.6g, v=%.6g, w=%.6g\n",
