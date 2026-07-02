@@ -12,7 +12,7 @@
 ********************************************************************/
 #include <rtapi.h>              /* rtapi_print_msg */
 #include <rtapi_math.h>
-#include <string.h>             /* memset */
+#include <rtapi_string.h>       /* memset */
 #include <posemath.h>           /* Geometry types & functions */
 #include <emcpose.h>
 #include <motion_types.h>
