@@ -143,6 +143,12 @@ setup::setup() :
     orient_offset (0.0),
     g43_with_zero_offset(false),
 
+    tcp_vector_mode(0),
+    tcp_orient_axes(0),
+    tcp_conventional_directions(0),
+    tcp_no_switch(0),
+    tcp_kinstype(1),
+
     defining_sub(0),
     sub_name(NULL),
     doing_continue(0),
