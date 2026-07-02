@@ -1649,6 +1649,13 @@ It is an error if:
 NOTE: at the orientation singularity (tool parallel to the spindle Z axis) the
 rotary "spin" axis is undefined and is left unchanged.
 
+NOTE: the tool vector is only recognized on a `G0`/`G1` line. A subsequent
+`G2`/`G3` arc's I/J/K words are always the arc center, never a tool vector --
+the tool orientation set by the last vector move stays fixed through the arc.
+To reorient the tool while cutting an arc, give explicit rotary words (A/B/C)
+on the `G2`/`G3` line itself, exactly as on any other multi-axis arc move;
+G43.5 does not currently interpolate the tool vector along an arc.
+
 [[gcode:g49]]
 == G49 Cancel Tool Length Compensation(((G49 Cancel Tool Length Offset)))
 
