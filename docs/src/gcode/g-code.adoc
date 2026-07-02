@@ -1618,8 +1618,10 @@ The `BCHT` (maxkins) module is permanently full-kinematics and not switchable,
 so it requires <<sub:ini:sec:rs274ngc,`[RS274NGC]TCP_NO_SWITCH = 1`>>; G43.5 then
 solves the tool vector into B/C words without requesting a kinematics switch.
 The tool vector is interpreted relative to the part (the C table reorients the
-part under the head).  Non-zero B/C work offsets are not yet supported with a
-`BCHT` tool vector.
+part under the head). Rotary work offsets are supported: a `B` offset is a
+plain angle shift (the head never touches the part), while a `C` offset
+rotates the part frame relative to the machine and is compensated
+automatically.
 
 .G43.5 Example
 [source,ngc]

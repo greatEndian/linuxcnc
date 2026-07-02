@@ -5690,15 +5690,27 @@ int Interp::convert_straight(int move,   //!< either G_0 or G_1
            * con matches the maxkins conventional-directions pin (selected by
            * TCP_CONVENTIONAL_DIRECTIONS).  maxkins is permanently full-kinematics
            * and non-switchable, so this topology requires
-           * [RS274NGC]TCP_NO_SWITCH=1. */
+           * [RS274NGC]TCP_NO_SWITCH=1.
+           *
+           * Rotary work offsets: B is head-mounted and never touches the part,
+           * so a B offset is a plain angle shift with no frame-rotation effect
+           * (handled below exactly like the other topologies' offsets, via
+           * off_b in b_ref/b_prog). C carries the part, though, so a nonzero
+           * C offset rotates the part frame relative to the machine: part
+           * frame -> table frame is v_table = Rz(off_c)*v (unlike AC/BC's
+           * own C offset, this Z-rotation is NOT con-scaled, matching how the
+           * forward formula above uses a plain Rz(C), with con only inside
+           * u(B)). */
           const double con = settings->tcp_conventional_directions ? 1.0 : -1.0;
           double off_b = settings->BB_origin_offset + settings->BB_axis_offset;
           double off_c = settings->CC_origin_offset + settings->CC_axis_offset;
-          /* Rotary work offsets would rotate the part frame relative to the
-           * machine; the head-table offset transform is not yet derived, so
-           * refuse them rather than emit a wrong orientation. */
-          CHKS((!vec_machine_frame && (fabs(off_b) > 1e-9 || fabs(off_c) > 1e-9)),
-               (_("G43.5 (BCHT): rotary work offsets on B/C are not supported with a tool vector")));
+          if (!vec_machine_frame && fabs(off_c) > 1e-9) {
+              double soc = sin(off_c * M_PI / 180.0), coc = cos(off_c * M_PI / 180.0);
+              double rx = coc * vi - soc * vj;
+              double ry = soc * vi + coc * vj;
+              vi = rx;
+              vj = ry;
+          }
           double tilt = hypot(vi, vj);
           double b_ref = settings->BB_current + off_b;
           double c_ref = settings->CC_current + off_c;
