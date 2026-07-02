@@ -45,7 +45,7 @@ on LINUXCNC upstream + PR #4154 base. Updated 2026-06-15.
   D4  HEAD-TABLE mixed                                           ~2-3 days [feat]
   D5  con=+1 conventional-directions variant (all topologies)   ~0.5 day  [fix]
   D6  Real-machine commissioning (AB/AC/BC)                      hw-gated  [future]
-  D7  Refinements: dual-solution nearest-travel, kinstype knob,
+  D7  Refinements: dual-solution nearest-travel, kinstype knob [DONE],
       G43.5-with-arcs review                                     ~1 day    [polish]
 
   RECOMMENDATION: most common family (trunnion) is DONE. Highest value next =
@@ -206,3 +206,20 @@ fork-upstream 5fd05e549a + multichannel-upstream 74481bb829. Sim assets:
   head-table (BCHT/maxkins) = all three industrial 5-axis families DONE+sim.
   REMAINING: refinements only (dual-solution nearest-travel, kinstype knob,
   G43.5 on arcs, BCHT rotary-offset transform).
+
+================================================================================
+## 2026-06-15 UPDATE — TCP_KINSTYPE knob DONE (D7 partial)
+================================================================================
+G43.4/G43.5 hard-coded a request for switchkins type 1 (the standard
+identityfirst layout: type 0 = identity, type 1 = TCP). Added
+[RS274NGC]TCP_KINSTYPE (default 1) so TCP can live at a different switchkins
+type (e.g. a user kinematics module at type 2). G49 still always selects
+identity (type 0). Ignored when TCP_NO_SWITCH=1 (nothing to switch there).
+Default 1 keeps every existing config (AB/AC/BC/BCHEAD/BCHT) bit-identical.
+
+VERIFIED: rs274 emits SET_SWITCHKINS_TYPE(1) by default and (2) with
+TCP_KINSTYPE=2, solved angles unchanged; gate basic/tlo/abort/mdi-queue 8/8.
+Community docs updated (ini-config.adoc). fork-upstream 5bf87199ec.
+
+  D7 REMAINING: dual-solution nearest-travel, G43.5-with-arcs review, BCHT
+  rotary-offset transform (non-zero B/C work offsets still refused).
