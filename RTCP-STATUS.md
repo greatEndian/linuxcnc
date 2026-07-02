@@ -45,8 +45,8 @@ on LINUXCNC upstream + PR #4154 base. Updated 2026-06-15.
   D4  HEAD-TABLE mixed                                           ~2-3 days [feat]
   D5  con=+1 conventional-directions variant (all topologies)   ~0.5 day  [fix]
   D6  Real-machine commissioning (AB/AC/BC)                      hw-gated  [future]
-  D7  Refinements: dual-solution nearest-travel, kinstype knob [DONE],
-      G43.5-with-arcs review                                     ~1 day    [polish]
+  D7  Refinements: dual-solution nearest-travel [DONE], kinstype knob
+      [DONE], G43.5-with-arcs review                              ~1 day    [polish]
 
   RECOMMENDATION: most common family (trunnion) is DONE. Highest value next =
   D1 (finish AC/BC to AB's bar, cheap) then D2 (head-head swivel) or D3 (generic).
@@ -223,3 +223,37 @@ Community docs updated (ini-config.adoc). fork-upstream 5bf87199ec.
 
   D7 REMAINING: dual-solution nearest-travel, G43.5-with-arcs review, BCHT
   rotary-offset transform (non-zero B/C work offsets still refused).
+
+================================================================================
+## 2026-07-02 UPDATE — dual-solution nearest-travel DONE (D7 partial)
+================================================================================
+Every 2-DOF tilt+rotary orientation mechanism has two mathematically valid
+solutions for any tool-axis vector. For the atan2(hypot(i,j),k)-based
+topologies (AC/BC/BCHEAD/BCHT), (tilt, rotary) and (-tilt, rotary+180) reach
+the identical physical orientation; for AB's dual-rotary table, the identity
+is (a,b) and (a+180, 180-b). All five solvers only ever computed the
+canonical branch (non-negative tilt, or asin's principal value for AB), so a
+target near the branch boundary could force a needless large swing on one
+axis when the other branch was already close to the current position.
+
+Added tcp_pick_nearest_branch(): given both candidates unwrapped near the
+current position, pick whichever has the smaller combined travel across
+both rotary joints. Applied to all five topologies (interp_convert.cc).
+
+VERIFIED: rs274 for each of AB/AC/BC/BCHEAD/BCHT with a vector whose current
+position sits exactly at the alternate-branch solution -- confirmed the
+solver now picks it (zero net travel) instead of the canonical branch
+(which would need 120-180+ degrees of needless swing). Full tests/interp
+suite: 77/80 pass, unchanged from before this change (3 pre-existing
+failures, see below). fork-upstream 44c3e55c3e.
+
+  NOTE: found 3 pre-existing tests/interp failures unrelated to this work
+  (g10/g10-l1-l10, g71-endless-loop, inside-corners) -- caused by the
+  TCP_KINSTYPE commit (5bf87199ec) making G49 emit a new
+  SET_SWITCHKINS_TYPE(0) canon call; those 3 tests' expected files predate
+  it and haven't been refreshed. Confirmed pre-existing (fails identically
+  on a clean checkout without today's change) -- small separate cleanup,
+  not blocking.
+
+  D7 REMAINING: G43.5-with-arcs review, BCHT rotary-offset transform
+  (non-zero B/C work offsets still refused).
