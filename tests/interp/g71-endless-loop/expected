@@ -9,6 +9,7 @@
  N..... USE_LENGTH_UNITS(CANON_UNITS_MM)
  N..... COMMENT("interpreter: continuing to use same coordinate system")
  N..... COMMENT("G49 cancel tool length offset")
+ N..... SET_SWITCHKINS_TYPE(0)
  N..... USE_TOOL_LENGTH_OFFSET(0.0000 0.0000 0.0000, 0.0000 0.0000 0.0000, 0.0000 0.0000 0.0000)
  N..... COMMENT("G90 abs dist mode, G92.1 Reset coord sys offset")
  N..... SET_G92_OFFSET(0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000)
