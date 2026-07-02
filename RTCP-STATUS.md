@@ -46,8 +46,9 @@ on LINUXCNC upstream + PR #4154 base. Updated 2026-06-15.
   D5  con=+1 conventional-directions variant (all topologies)   ~0.5 day  [fix]
   D6  Real-machine commissioning (AB/AC/BC)                      hw-gated  [future]
   D7  Refinements: dual-solution nearest-travel [DONE], kinstype knob
-      [DONE], G43.5-with-arcs review [DONE]                        ~1 day    [polish]
-      -- only item left: BCHT rotary-offset transform
+      [DONE], G43.5-with-arcs review [DONE], BCHT rotary-offset
+      transform [DONE]                                              ~1 day    [polish]
+      -- D7 COMPLETE, all sub-items done
 
   RECOMMENDATION: most common family (trunnion) is DONE. Highest value next =
   D1 (finish AC/BC to AB's bar, cheap) then D2 (head-head swivel) or D3 (generic).
@@ -282,3 +283,51 @@ separate, larger feature). fork-upstream 334976fdbf.
 
   D7 REMAINING: BCHT rotary-offset transform only (non-zero B/C work
   offsets still refused -- the last open D7 item).
+
+================================================================================
+## 2026-07-02 UPDATE — BCHT rotary-offset transform DONE — D7 COMPLETE
+================================================================================
+Derived and implemented the last open D7 item. BCHT (maxkins head-table)
+refused any nonzero B/C rotary work offset with a G43.5 tool vector, since
+the offset transform hadn't been derived.
+
+B is head-mounted and never touches the part, so a B offset is a plain
+angle shift with no frame-rotation implication -- the existing additive
+off_b handling already covered it correctly, no change needed. C carries
+the part, so a nonzero C offset rotates the part frame relative to the
+machine; derived from first principles (a body-fixed part frame
+calibrated at machine-C=0 vs one calibrated at machine-C=off_c differ by
+exactly that rotation) that part frame -> table frame is
+v_table = Rz(off_c) * v_prog -- unlike AC/BC's own C-offset transform,
+this rotation is NOT con-scaled, matching how the BCHT forward formula
+uses a plain Rz(C) with con only inside u(B).
+
+VERIFIED:
+- New offline C test (maxkins_offset_test.c, same methodology as the
+  existing maxkins_inv_test.c): grid + 2,000,000 random vectors x random
+  offsets, both con, worst error 2.3e-15.
+- New automated rs274 -g test (bcht_offset_rs274_test.py): 200 random
+  cases, each verified by feeding the solved program angles back through
+  forward kinematics + the inverse offset rotation to confirm the
+  original target vector is reproduced; worst error 1.9e-6 (limited by
+  rs274 -g's 4-decimal text output, not the math).
+- Confirmed the offset correctly interacts with the pre-existing
+  dual-solution nearest-travel logic (an offset can shift which branch
+  has less combined travel; both branches independently verified to
+  reproduce the identical physical vector).
+- Full tests/interp suite: 80/80 pass, unchanged.
+
+Docs updated (g-code.adoc: removed the "not yet supported" caveat).
+fork-upstream 4bbb69cf61.
+
+  D7 IS NOW FULLY COMPLETE: dual-solution nearest-travel, kinstype knob,
+  G43.5-with-arcs review, and BCHT rotary-offset transform are all done.
+
+  NOTE: the "5-AXIS RTCP COVERAGE MAP" table and "OPEN" list near the top
+  of this file still show D2 (head-head) and D4 (head-table) as [OPEN] --
+  that's stale; both were completed by the BCHEAD (2026-06-15) and BCHT
+  (2026-06-15) work documented further down. The genuinely remaining open
+  items are: D3 (5axiskins generic head/table -- a broader, config-driven
+  case beyond BCHEAD's specific swivel-head derivation) and D6
+  (real-machine commissioning, hw-gated). Worth a top-of-file cleanup
+  pass at some point, not done here to stay in scope.
