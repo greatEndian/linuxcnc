@@ -46,7 +46,8 @@ on LINUXCNC upstream + PR #4154 base. Updated 2026-06-15.
   D5  con=+1 conventional-directions variant (all topologies)   ~0.5 day  [fix]
   D6  Real-machine commissioning (AB/AC/BC)                      hw-gated  [future]
   D7  Refinements: dual-solution nearest-travel [DONE], kinstype knob
-      [DONE], G43.5-with-arcs review                              ~1 day    [polish]
+      [DONE], G43.5-with-arcs review [DONE]                        ~1 day    [polish]
+      -- only item left: BCHT rotary-offset transform
 
   RECOMMENDATION: most common family (trunnion) is DONE. Highest value next =
   D1 (finish AC/BC to AB's bar, cheap) then D2 (head-head swivel) or D3 (generic).
@@ -248,12 +249,36 @@ suite: 77/80 pass, unchanged from before this change (3 pre-existing
 failures, see below). fork-upstream 44c3e55c3e.
 
   NOTE: found 3 pre-existing tests/interp failures unrelated to this work
-  (g10/g10-l1-l10, g71-endless-loop, inside-corners) -- caused by the
-  TCP_KINSTYPE commit (5bf87199ec) making G49 emit a new
-  SET_SWITCHKINS_TYPE(0) canon call; those 3 tests' expected files predate
-  it and haven't been refreshed. Confirmed pre-existing (fails identically
-  on a clean checkout without today's change) -- small separate cleanup,
-  not blocking.
+  (g10/g10-l1-l10, g71-endless-loop, inside-corners) -- caused by an
+  earlier commit (6c1972a17d, not TCP_KINSTYPE as first suspected) making
+  G49 emit a new SET_SWITCHKINS_TYPE(0) canon call; those 3 tests' expected
+  files predate it (2026-05-04 vs 2026-06-16) and were never refreshed.
+  Confirmed pre-existing (fails identically on a clean checkout without
+  today's change). FIXED below.
 
   D7 REMAINING: G43.5-with-arcs review, BCHT rotary-offset transform
   (non-zero B/C work offsets still refused).
+
+================================================================================
+## 2026-07-02 UPDATE — stale tests fixed + G43.5-with-arcs review DONE (D7 partial)
+================================================================================
+Fixed the 3 pre-existing test failures noted above: regenerated
+g10-l1-l10, g71-endless-loop, and inside-corners's expected files to
+include G49's SET_SWITCHKINS_TYPE(0) (no code change -- the tests were
+just stale since 6c1972a17d). tests/interp/ now 80/80 (was 77/80).
+fork-upstream ee6a379d67.
+
+Reviewed the G43.5-with-arcs interaction (D7). convert_arc() never checks
+tcp_vector_mode, so I/J/K on a G2/G3 line are always the arc center, never
+a tool vector -- verified via rs274: an arc's I/J/K solves as normal arc
+geometry with no ambiguity while G43.5 is active, and the tool orientation
+set by the last G1-with-vector holds fixed through the arc (A/B/C stay
+unchanged in the ARC_FEED canon call). Explicit A/B/C words on the G2/G3
+line still work normally to reorient during the arc, independent of
+vector mode. Conclusion: no bug, no guard needed, just non-obvious --
+documented in g-code.adoc so users don't assume G43.5 continuously
+interpolates the tool vector along an arc (it doesn't; that would be a
+separate, larger feature). fork-upstream 334976fdbf.
+
+  D7 REMAINING: BCHT rotary-offset transform only (non-zero B/C work
+  offsets still refused -- the last open D7 item).
