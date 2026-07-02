@@ -1,7 +1,7 @@
 # RTCP / 5-axis TCP — status (fork: G43.4 / G43.5)
 
 Native Fanuc-style RTCP in this fork. Branch: fork-upstream (production RTCP),
-on LINUXCNC upstream + PR #4154 base. Updated 2026-06-15.
+on LINUXCNC upstream + PR #4154 base. Updated 2026-07-02.
 
 ================================================================================
 ## 5-AXIS RTCP COVERAGE MAP
@@ -13,45 +13,66 @@ on LINUXCNC upstream + PR #4154 base. Updated 2026-06-15.
    both rotaries in the table B+C  [BC]    most common       [DONE]       0
    head fixed                 A+B  [AB]    med/aero/auto     [DONE]       0
   ----------------------------------------------------------------------------
-  HEAD-HEAD (swivel head)     B+C          ###    #2         [OPEN]       ~1 day
+  HEAD-HEAD (swivel head)     B+C          ###    #2         [DONE]       0
    both rotaries in spindle   A+C          Europe / large    [OPEN]       ~1 day
   ----------------------------------------------------------------------------
-  HEAD-TABLE (mixed)          head+table   ##     #3         [OPEN]       ~2-3 days
+  HEAD-TABLE (mixed)          head+table   ##     #3         [DONE]       0
   NUTATING (45 deg spindle)   special      .      niche      [skip]       --
   ----------------------------------------------------------------------------
-  GENERIC  5axiskins (head/table configurable, one case)    [OPEN]       ~2-3 days
-  con=+1   conventional-directions variant (applies to all) [OPEN]       ~0.5 day
+  GENERIC  5axiskins config-driven case beyond BCHEAD's B+C  [OPEN]       ~2-3 days
+  con=+1   conventional-directions variant (applies to all) [DONE]       0
 
-  COVERAGE:  [##########--------]  most-common family DONE; head/mixed open
-             3 topologies live (AB/AC/BC) ; G43.4 TCP on/off also DONE
+  COVERAGE:  [##################--]  all three industrial families DONE+sim
+             (AB/AC/BC/BCHEAD/BCHT); G43.4 TCP on/off, con=+1, D7 refinements
+             also DONE. Remaining: 5axiskins GENERIC case (D3), A+C head-head
+             (2nd HEAD-HEAD variant, part of D2), hw commissioning (D6).
 
 ================================================================================
 ## DONE  (built / gated 9/9 / D7 / verified)
 ================================================================================
   - G43.4 / G49  TCP on/off (switchkins; defer-until-idle; guards). Sim-validated.
-  - G43.5 vector TCP (tool-axis IJK -> rotary angles):
-      AB (xyzab_tdr) sim-validated ; AC (xyzac-trt) , BC (xyzbc-trt) offline
-      proof (2M+ vectors, |dv| 1.5e-15) + rs274 matrix (normal/singularity/G53).
-  - [RS274NGC]TCP_ORIENT_AXES = AB | AC | BC. Per-topology: part->table offset
-    transform, C-singularity guard, unwrap-near, G53 one-shot, G91 delta.
-  - Verify assets: rtcp-dev/g435_trt_test.c , g435-acbc/ , g435fix-tests/.
+  - G43.5 vector TCP (tool-axis IJK -> rotary angles), all three industrial
+    5-axis families, each offline-proved (2M+ random vectors, 1.5e-15 or
+    better) + rs274 matrix + live headless sim:
+      AB   (xyzab_tdr, table-table, head fixed)
+      AC   (xyzac-trt, table-table trunnion)
+      BC   (xyzbc-trt, table-table trunnion)
+      BCHEAD (5axiskins, head-head swivel head, B+C variant)
+      BCHT (maxkins, head-table mixed, B-head + C-table)
+  - [RS274NGC]TCP_ORIENT_AXES = AB | AC | BC | BCHEAD | BCHT. Per-topology
+    part->table offset transform, singularity guard, unwrap-near, G53
+    one-shot, G91 delta -- all five now support rotary work offsets.
+  - [RS274NGC]TCP_CONVENTIONAL_DIRECTIONS (con=+1 variant, D5) for AC/BC/BCHT.
+  - [RS274NGC]TCP_NO_SWITCH (BCHT/maxkins: permanently full-kinematics,
+    no switchkins request needed) and [RS274NGC]TCP_KINSTYPE (switchkins
+    type G43.4/G43.5 request, configurable away from the default 1).
+  - D7 refinements: dual-solution nearest-travel (all 5 topologies pick
+    whichever of the two valid solutions needs less combined joint travel),
+    G43.5-with-arcs reviewed (safe, documented), BCHT rotary-offset
+    transform (last item, closed D7).
+  - Verify assets: rtcp-dev/g435_trt_test.c, g435_con_test.c,
+    maxkins_inv_test.c, maxkins_offset_test.c, bcht_offset_rs274_test.py,
+    g435-acbc/, g435fix-tests/, bchead-sim/, bcht-sim/, xyzac-trt-dev/.
 
 ================================================================================
 ## OPEN  (choose direction)
 ================================================================================
-  D1  Live-sim validate AC/BC on vismach xyzac-trt/xyzbc-trt    ~0.5 day  [val]
-  D2  HEAD-HEAD swivel (B+C, then A+C) - 2nd most common         ~1 day ea [feat]
-  D3  5axiskins generic head/table (broad coverage in one)      ~2-3 days [feat]
-  D4  HEAD-TABLE mixed                                           ~2-3 days [feat]
-  D5  con=+1 conventional-directions variant (all topologies)   ~0.5 day  [fix]
-  D6  Real-machine commissioning (AB/AC/BC)                      hw-gated  [future]
-  D7  Refinements: dual-solution nearest-travel [DONE], kinstype knob
-      [DONE], G43.5-with-arcs review [DONE], BCHT rotary-offset
-      transform [DONE]                                              ~1 day    [polish]
-      -- D7 COMPLETE, all sub-items done
+  D1  Live-sim validate AC/BC on vismach xyzac-trt/xyzbc-trt    [DONE]    0
+  D2  HEAD-HEAD swivel: B+C [DONE, via BCHEAD/5axiskins];       ~1 day    [feat]
+      A+C variant (Europe/large machines) still open
+  D3  5axiskins generic head/table (broad, config-driven        ~2-3 days [feat]
+      coverage beyond BCHEAD's specific swivel-head derivation)
+  D4  HEAD-TABLE mixed                                           [DONE]    0
+      (via BCHT/maxkins, TCP_NO_SWITCH decouple, not a switchkins add)
+  D5  con=+1 conventional-directions variant (all topologies)   [DONE]    0
+  D6  Real-machine commissioning (AB/AC/BC/BCHEAD/BCHT)          hw-gated  [future]
+  D7  Refinements: dual-solution nearest-travel, kinstype knob, [DONE]    0
+      G43.5-with-arcs review, BCHT rotary-offset transform
 
-  RECOMMENDATION: most common family (trunnion) is DONE. Highest value next =
-  D1 (finish AC/BC to AB's bar, cheap) then D2 (head-head swivel) or D3 (generic).
+  RECOMMENDATION: the three industrial 5-axis families (table-table,
+  head-head B+C, head-table) are all DONE+sim-validated, plus D5 and D7.
+  Remaining open work is narrower: D2's A+C head-head variant, D3's
+  generic 5axiskins case, and D6 (gated on real hardware access).
 
 ================================================================================
 ## FULL NATIVE KINEMATICS INVENTORY — RTCP relevance
@@ -64,12 +85,17 @@ only where the machine has 2 orientation DOF that tilt the TOOL vs the PART
   xyzab_tdr-kins   AB  table dual-rotary      switchkins   [DONE]
   xyzac-trt-kins   AC  trunnion tilt+rotary   switchkins   [DONE]
   xyzbc-trt-kins   BC  trunnion tilt+rotary   switchkins   [DONE]
-  5axiskins        generic head/table         switchkins   [OPEN D3]
-  maxkins          XYZBC head-table 5ax mill  NO-switchkins[OPEN *NEEDS RTCP*]
-                   ^ Chris Radek's 'max' - a real 5-axis mill (B head + C table,
-                     = the concrete HEAD-TABLE case). Needs switchkins support
-                     ADDED first, then a G43.5 topology case. Effort ~2 days
-                     (switchkins wrap + derive B/C from its fwd + verify).
+  5axiskins        BCHEAD swivel head (B+C)   switchkins   [DONE]; generic
+                                                            config-driven case
+                                                            still open (D3)
+  maxkins          XYZBC head-table 5ax mill  NO-switchkins[DONE, as BCHT]
+                   ^ Chris Radek's 'max' - a real 5-axis mill (B head + C
+                     table = the concrete HEAD-TABLE case). Turned out NOT
+                     to need switchkins support added: maxkins is
+                     permanently full-kinematics, so BCHT decouples via
+                     [RS274NGC]TCP_NO_SWITCH=1 instead (skips the
+                     switchkins-type request entirely) rather than adding
+                     switching capability to the kins module.
 
   -- ORIENTATION-CAPABLE, but TCP is inherent to the kins (RTCP optional) ---
   genhexkins       hexapod 6-DOF              switchkins   parallel; kins does
@@ -84,13 +110,14 @@ only where the machine has 2 orientation DOF that tilt the TOOL vs the PART
   rotarydeltakins (3-DOF translation), userkins (template).
 
 --------------------------------------------------------------------------------
-## THE ADDITIONAL ONE THAT NEEDS RTCP:  maxkins
+## maxkins — DONE (was "the additional one that needs RTCP")
 --------------------------------------------------------------------------------
-maxkins is the only remaining NATIVE 5-axis MILL not RTCP-covered. It is a
-HEAD-TABLE machine (B-axis tilt on the head + C-axis rotary table), so it
-doubles as the concrete D4 (head-table) target. Caveat: it is NOT switchkins-
-capable today, so RTCP needs switchkins support wrapped around it first
-(unlike AC/BC/AB which were already switchkins). Effort ~2 days.
+maxkins was the only remaining NATIVE 5-axis MILL not RTCP-covered. It is a
+HEAD-TABLE machine (B-axis tilt on the head + C-axis rotary table), the
+concrete D4 (head-table) target -- now DONE as topology BCHT. It turned out
+NOT to need switchkins support added (it's permanently full-kinematics);
+BCHT instead decouples via [RS274NGC]TCP_NO_SWITCH=1, skipping the
+switchkins-type request rather than adding switching capability.
 
 The parallel (genhex/penta) and robot (genser/puma/scorbot) kins are
 orientation-capable but already produce Cartesian+orientation from their own
@@ -98,7 +125,7 @@ kins - they use tool-frame programming, not the mill RTCP switchkins paradigm,
 so RTCP there is optional/non-standard.
 
 ================================================================================
-## VISUAL OVERVIEW — RTCP effort by kinematics (2026-06-15)
+## VISUAL OVERVIEW — RTCP effort by kinematics (2026-07-02)
 ================================================================================
 
  GROUP 1 — RTCP-RELEVANT  (2-DOF tool orientation = mill paradigm; G43.4/.5 fit)
@@ -108,11 +135,13 @@ so RTCP there is optional/non-standard.
  │ xyzab_tdr  │ AB  table dual-rotary  │   yes    │ DONE ✅ │ ·····  0        │
  │ xyzac-trt  │ AC  trunnion tilt+rot  │   yes    │ DONE ✅ │ ·····  0        │
  │ xyzbc-trt  │ BC  trunnion tilt+rot  │   yes    │ DONE ✅ │ ·····  0        │
- │ 5axiskins  │ generic head/table     │   yes    │ OPEN ▢  │ ███··  ~2-3 day │
- │ maxkins    │ BC  head-table mill    │ NO (add) │ OPEN ▢  │ ███··  ~2 day   │
+ │ 5axiskins  │ BCHEAD swivel head B+C │   yes    │ DONE ✅ │ ·····  0        │
+ │ 5axiskins  │ generic (any B/C combo)│   yes    │ OPEN ▢  │ ███··  ~2-3 day │
+ │ maxkins    │ BCHT head-table mixed  │ NO (kept)│ DONE ✅ │ ·····  0        │
  └────────────┴────────────────────────┴──────────┴─────────┴─────────────────┘
-   side items:  AC/BC live-sim validate  █····  ~0.5d   |  con=+1 variant █····  ~0.5d
-   >>> finish ALL mill RTCP (5axiskins + maxkins): ~4-5 days total <<<
+   side items:  AC/BC live-sim validate  DONE ✅  |  con=+1 variant  DONE ✅  |
+                D7 refinements (nearest-travel, kinstype, arcs, BCHT offset) DONE ✅
+   >>> remaining mill RTCP: 5axiskins GENERIC case only, ~2-3 days <<<
 
  GROUP 2 — ORIENTATION-CAPABLE, RTCP OPTIONAL (kins already emits Cart+orient)
  ┌────────────┬────────────────────────┬──────────┬──────────┬────────────────┐
