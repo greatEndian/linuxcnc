@@ -5379,6 +5379,32 @@ static double tcp_unwrap_near(double angle_deg, double ref_deg)
     return angle_deg;
 }
 
+/* G43_5_VECTOR: a 2-DOF tilt+rotary orientation mechanism always has two
+ * mathematically valid solutions for any tool-axis vector -- (tilt, rotary)
+ * and (-tilt, rotary+180) reach the identical physical orientation (tilt the
+ * other way, add a half-turn to the rotary axis to compensate). The AC/BC/
+ * BCHEAD/BCHT solvers below only ever compute the canonical tilt>=0 branch;
+ * left alone, a target near the branch boundary can force a needless large
+ * swing on one axis when the other branch was already close by.
+ *
+ * Given both candidates already unwrapped near the current position, pick
+ * whichever has the smaller combined tilt+rotary travel. */
+static void tcp_pick_nearest_branch(
+        double tilt_a, double rotary_a, double tilt_b, double rotary_b,
+        double tilt_cur, double rotary_cur,
+        double *tilt_out, double *rotary_out)
+{
+    double travel_a = fabs(tilt_a - tilt_cur) + fabs(rotary_a - rotary_cur);
+    double travel_b = fabs(tilt_b - tilt_cur) + fabs(rotary_b - rotary_cur);
+    if (travel_b < travel_a) {
+        *tilt_out = tilt_b;
+        *rotary_out = rotary_b;
+    } else {
+        *tilt_out = tilt_a;
+        *rotary_out = rotary_a;
+    }
+}
+
 int Interp::convert_straight(int move,   //!< either G_0 or G_1
                             block_pointer block,        //!< pointer to a block of RS274 instructions
                             setup_pointer settings)     //!< pointer to machine settings
@@ -5456,14 +5482,25 @@ int Interp::convert_straight(int move,   //!< either G_0 or G_1
           if (bi >  1.0) bi =  1.0;
           if (bi < -1.0) bi = -1.0;
           /* solved MACHINE angles, unwrapped near the current machine pose */
-          double b_mach = tcp_unwrap_near(asin(bi) * 180.0 / M_PI,
-                                          settings->BB_current + off_b);
+          double a_ref = settings->AA_current + off_a;
+          double b_ref = settings->BB_current + off_b;
+          double b1 = tcp_unwrap_near(asin(bi) * 180.0 / M_PI, b_ref);
           bool a_defined = !(fabs(vj) < 1e-9 && fabs(vk) < 1e-9);
           /* at the singularity (tool horizontal, cos b = 0) A is undefined;
            * keep the current A angle (do not emit an A word). */
-          double a_mach = a_defined ? tcp_unwrap_near(atan2(-vj, vk) * 180.0 / M_PI,
-                                                      settings->AA_current + off_a)
-                                    : 0.0;
+          double a_mach, b_mach;
+          if (a_defined) {
+              /* (a, b) and (a+180, 180-b) are the same physical orientation
+               * (see the dual-rotary-table identity in the docstring above) --
+               * pick whichever needs less combined A+B travel. */
+              double a1 = tcp_unwrap_near(atan2(-vj, vk) * 180.0 / M_PI, a_ref);
+              double a2 = tcp_unwrap_near(a1 + 180.0, a_ref);
+              double b2 = tcp_unwrap_near(180.0 - b1, b_ref);
+              tcp_pick_nearest_branch(a1, b1, a2, b2, a_ref, b_ref, &a_mach, &b_mach);
+          } else {
+              a_mach = 0.0;
+              b_mach = b1;
+          }
           if (vec_machine_frame) {
               /* G53 one-shot: machine words, absolute by G53's own nature */
               block->b_number = b_mach;
@@ -5511,12 +5548,22 @@ int Interp::convert_straight(int move,   //!< either G_0 or G_1
               vk = rz;
           }
           double tilt = hypot(vi, vj);
-          double a_mach = tcp_unwrap_near(atan2(tilt, vk) * 180.0 / M_PI,
-                                          settings->AA_current + off_a);
+          double a_ref = settings->AA_current + off_a;
+          double c_ref = settings->CC_current + off_c;
+          double a1 = tcp_unwrap_near(atan2(tilt, vk) * 180.0 / M_PI, a_ref);
           bool c_defined = (tilt > 1e-9);
-          double c_mach = c_defined ? tcp_unwrap_near(atan2(vi, -con * vj) * 180.0 / M_PI,
-                                                      settings->CC_current + off_c)
-                                    : 0.0;
+          double a_mach, c_mach;
+          if (c_defined) {
+              /* (a, c) and (-a, c+180) are the same physical orientation --
+               * pick whichever needs less combined A+C travel. */
+              double c1 = tcp_unwrap_near(atan2(vi, -con * vj) * 180.0 / M_PI, c_ref);
+              double a2 = tcp_unwrap_near(-a1, a_ref);
+              double c2 = tcp_unwrap_near(c1 + 180.0, c_ref);
+              tcp_pick_nearest_branch(a1, c1, a2, c2, a_ref, c_ref, &a_mach, &c_mach);
+          } else {
+              a_mach = a1;
+              c_mach = 0.0;
+          }
           if (vec_machine_frame) {
               block->a_number = a_mach; block->a_flag = true;
               if (c_defined) { block->c_number = c_mach; block->c_flag = true; }
@@ -5556,12 +5603,22 @@ int Interp::convert_straight(int move,   //!< either G_0 or G_1
               vk = rz;
           }
           double tilt = hypot(vi, vj);
-          double b_mach = tcp_unwrap_near(atan2(tilt, vk) * 180.0 / M_PI,
-                                          settings->BB_current + off_b);
+          double b_ref = settings->BB_current + off_b;
+          double c_ref = settings->CC_current + off_c;
+          double b1 = tcp_unwrap_near(atan2(tilt, vk) * 180.0 / M_PI, b_ref);
           bool c_defined = (tilt > 1e-9);
-          double c_mach = c_defined ? tcp_unwrap_near(atan2(vj, con * vi) * 180.0 / M_PI,
-                                                      settings->CC_current + off_c)
-                                    : 0.0;
+          double b_mach, c_mach;
+          if (c_defined) {
+              /* (b, c) and (-b, c+180) are the same physical orientation --
+               * pick whichever needs less combined B+C travel. */
+              double c1 = tcp_unwrap_near(atan2(vj, con * vi) * 180.0 / M_PI, c_ref);
+              double b2 = tcp_unwrap_near(-b1, b_ref);
+              double c2 = tcp_unwrap_near(c1 + 180.0, c_ref);
+              tcp_pick_nearest_branch(b1, c1, b2, c2, b_ref, c_ref, &b_mach, &c_mach);
+          } else {
+              b_mach = b1;
+              c_mach = 0.0;
+          }
           if (vec_machine_frame) {
               block->b_number = b_mach; block->b_flag = true;
               if (c_defined) { block->c_number = c_mach; block->c_flag = true; }
@@ -5589,12 +5646,22 @@ int Interp::convert_straight(int move,   //!< either G_0 or G_1
           double off_b = settings->BB_origin_offset + settings->BB_axis_offset;
           double off_c = settings->CC_origin_offset + settings->CC_axis_offset;
           double tilt = hypot(vi, vj);
-          double b_mach = tcp_unwrap_near(atan2(tilt, vk) * 180.0 / M_PI,
-                                          settings->BB_current + off_b);
+          double b_ref = settings->BB_current + off_b;
+          double c_ref = settings->CC_current + off_c;
+          double b1 = tcp_unwrap_near(atan2(tilt, vk) * 180.0 / M_PI, b_ref);
           bool c_defined = (tilt > 1e-9);
-          double c_mach = c_defined ? tcp_unwrap_near(atan2(-vj, -vi) * 180.0 / M_PI,
-                                                      settings->CC_current + off_c)
-                                    : 0.0;
+          double b_mach, c_mach;
+          if (c_defined) {
+              /* (b, c) and (-b, c+180) are the same physical orientation --
+               * pick whichever needs less combined B+C travel. */
+              double c1 = tcp_unwrap_near(atan2(-vj, -vi) * 180.0 / M_PI, c_ref);
+              double b2 = tcp_unwrap_near(-b1, b_ref);
+              double c2 = tcp_unwrap_near(c1 + 180.0, c_ref);
+              tcp_pick_nearest_branch(b1, c1, b2, c2, b_ref, c_ref, &b_mach, &c_mach);
+          } else {
+              b_mach = b1;
+              c_mach = 0.0;
+          }
           if (vec_machine_frame) {
               block->b_number = b_mach; block->b_flag = true;
               if (c_defined) { block->c_number = c_mach; block->c_flag = true; }
@@ -5633,12 +5700,22 @@ int Interp::convert_straight(int move,   //!< either G_0 or G_1
           CHKS((!vec_machine_frame && (fabs(off_b) > 1e-9 || fabs(off_c) > 1e-9)),
                (_("G43.5 (BCHT): rotary work offsets on B/C are not supported with a tool vector")));
           double tilt = hypot(vi, vj);
-          double b_mach = tcp_unwrap_near(atan2(con * tilt, vk) * 180.0 / M_PI,
-                                          settings->BB_current + off_b);
+          double b_ref = settings->BB_current + off_b;
+          double c_ref = settings->CC_current + off_c;
+          double b1 = tcp_unwrap_near(atan2(con * tilt, vk) * 180.0 / M_PI, b_ref);
           bool c_defined = (tilt > 1e-9);
-          double c_mach = c_defined ? tcp_unwrap_near(atan2(vj, vi) * 180.0 / M_PI,
-                                                      settings->CC_current + off_c)
-                                    : 0.0;
+          double b_mach, c_mach;
+          if (c_defined) {
+              /* (b, c) and (-b, c+180) are the same physical orientation --
+               * pick whichever needs less combined B+C travel. */
+              double c1 = tcp_unwrap_near(atan2(vj, vi) * 180.0 / M_PI, c_ref);
+              double b2 = tcp_unwrap_near(-b1, b_ref);
+              double c2 = tcp_unwrap_near(c1 + 180.0, c_ref);
+              tcp_pick_nearest_branch(b1, c1, b2, c2, b_ref, c_ref, &b_mach, &c_mach);
+          } else {
+              b_mach = b1;
+              c_mach = 0.0;
+          }
           if (vec_machine_frame) {
               block->b_number = b_mach; block->b_flag = true;
               if (c_defined) { block->c_number = c_mach; block->c_flag = true; }
