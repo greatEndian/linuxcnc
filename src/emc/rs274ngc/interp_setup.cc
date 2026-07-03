@@ -116,6 +116,7 @@ setup::setup() :
     plane(CANON_PLANE::XY),
     probe_flag(0),
     input_flag(0),
+    waitm_flag(false),
     toolchange_flag(0),
     input_index(0),
     input_digital(0),
@@ -143,9 +144,6 @@ setup::setup() :
     tool_table{},
     traverse_rate (0.0),
     orient_offset (0.0),
-
-    waitm_flag(false),
-
     g43_with_zero_offset(false),
 
     tcp_vector_mode(0),

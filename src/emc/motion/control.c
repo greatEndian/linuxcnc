@@ -23,6 +23,7 @@
 
 #include <rtapi.h>
 #include <rtapi_math.h>
+#include <rtapi_string.h> /* memcpy, mchan_update_status() status snapshot */
 #include <hal.h>
 #include <posemath.h>
 #include <kinematics.h>  //for kinematicsSwitchable()
