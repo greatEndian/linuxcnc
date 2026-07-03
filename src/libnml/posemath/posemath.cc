@@ -824,6 +824,14 @@ int PM_CIRCLE::point(double angle, PM_POSE * point)
     toCircle(*this, &_circle);
 
     retval = pmCirclePoint(&_circle, angle, &_point.tran);
+    /* a point on a circular arc alone has no inherent orientation --
+     * unlike PM_LINE::point() (which interpolates rot between the line's
+     * start/end poses), pmCirclePoint() only fills in .tran, so .rot must
+     * be given a sane default here or it's read uninitialized by toPose(). */
+    _point.rot.s = 1.0;
+    _point.rot.x = 0.0;
+    _point.rot.y = 0.0;
+    _point.rot.z = 0.0;
 
     toPose(_point, point);
 

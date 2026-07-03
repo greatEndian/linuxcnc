@@ -143,7 +143,16 @@ setup::setup() :
     tool_table{},
     traverse_rate (0.0),
     orient_offset (0.0),
+
+    waitm_flag(false),
+
     g43_with_zero_offset(false),
+
+    tcp_vector_mode(0),
+    tcp_orient_axes(0),
+    tcp_conventional_directions(0),
+    tcp_no_switch(0),
+    tcp_kinstype(1),
 
     defining_sub(0),
     sub_name(NULL),

@@ -160,6 +160,10 @@ typedef enum {
 typedef enum { rtOk = 0, rtError } cmdResponseType;
 
 
+// cppcheck-suppress ctuOneDefinitionRuleViolation
+// schedrmt.cc (a separate, unrelated binary that is never linked with this
+// one) happens to declare its own unrelated local struct with the same
+// typedef name; not an actual ODR violation.
 typedef struct {
 	int sock;						// Client socket
 	std::vector<std::string> toks;	// Tokenized command

@@ -1635,6 +1635,11 @@ static int build_data_frame(hm2_modbus_inst_t *inst)
 
 static int test_bytecount(const hm2_modbus_inst_t *inst, const rtapi_u8 *bytes, unsigned pkt_len, unsigned mini, unsigned maxi)
 {
+	// cppcheck-suppress ctuArrayIndex
+	// bytes always points into a stack rtapi_u8[MAX_PKT_LEN] populated up to
+	// rxcount>=5 (guarded before any caller reaches this function), so
+	// bytes[2] is always in range; the CTU checker can't see that through
+	// the plain pointer parameter.
 	if(bytes[2] < mini || bytes[2] > maxi) {
 		MSG_ERR("%s: error: Invalid byte count %u in received PDU not in [%u, %u], cmd %u\n", inst->name, bytes[2], mini, maxi, bytes[1]);
 		return -1;

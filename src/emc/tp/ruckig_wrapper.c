@@ -262,6 +262,10 @@ static void backup_trajectory(const CRuckigTrajectory *traj, struct TrajectoryBa
 }
 
 static void restore_trajectory(CRuckigTrajectory *traj, const struct TrajectoryBackup *bk) {
+    // cppcheck-suppress ctuuninitvar -- callers only reach here (via
+    // handle_result) when had_previous_plan is true, the same condition
+    // under which backup_trajectory() populated *bk; CTU can't correlate
+    // the flag across the call boundary.
     traj->duration = bk->duration;
     if (traj->profiles)
         traj->profiles[0] = bk->profile;
