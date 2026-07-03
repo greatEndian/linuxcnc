@@ -125,10 +125,15 @@ int compute_jfwd(go_link * link_params,
     int row, col;
 
     /* init matrices to possibly smaller size */
+    // cppcheck-suppress uninitvar -- go_matrix_init() populates the .stg storage; cppcheck can't see through the macro
     go_matrix_init(Jv, Jvstg, 3, link_number);
+    // cppcheck-suppress uninitvar -- go_matrix_init() populates the .stg storage; cppcheck can't see through the macro
     go_matrix_init(Jw, Jwstg, 3, link_number);
+    // cppcheck-suppress uninitvar -- go_matrix_init() populates the .stg storage; cppcheck can't see through the macro
     go_matrix_init(R_i_ip1, R_i_ip1stg, 3, 3);
+    // cppcheck-suppress uninitvar -- go_matrix_init() populates the .stg storage; cppcheck can't see through the macro
     go_matrix_init(scratch, scratchstg, 3, link_number);
+    // cppcheck-suppress uninitvar -- go_matrix_init() populates the .stg storage; cppcheck can't see through the macro
     go_matrix_init(R_inv, R_invstg, 3, 3);
 
     Jv.el[0][0] = 0, Jv.el[1][0] = 0, Jv.el[2][0] = (GO_QUANTITY_LENGTH == link_params[0].quantity ? 1 : 0);
@@ -212,7 +217,9 @@ int compute_jinv(go_matrix * Jfwd, go_matrix * Jinv)
         /* JT(JJT)inv */
         GO_MATRIX_DECLARE(JJT, JJTstg, 6, 6);
 
+        // cppcheck-suppress uninitvar -- go_matrix_init() populates the .stg storage; cppcheck can't see through the macro
         go_matrix_init(JT, JTstg, Jfwd->cols, Jfwd->rows);
+        // cppcheck-suppress uninitvar -- go_matrix_init() populates the .stg storage; cppcheck can't see through the macro
         go_matrix_init(JJT, JJTstg, Jfwd->rows, Jfwd->rows);
         go_matrix_transpose(Jfwd, &JT);
         go_matrix_matrix_mult(Jfwd, &JT, &JJT);
@@ -226,6 +233,7 @@ int compute_jinv(go_matrix * Jfwd, go_matrix * Jinv)
         GO_MATRIX_DECLARE(JTJ, JTJstg, GENSER_MAX_JOINTS, GENSER_MAX_JOINTS);
 
         go_matrix_init(JT, JTstg, Jfwd->cols, Jfwd->rows);
+        // cppcheck-suppress uninitvar -- go_matrix_init() populates the .stg storage; cppcheck can't see through the macro
         go_matrix_init(JTJ, JTJstg, Jfwd->cols, Jfwd->cols);
         go_matrix_transpose(Jfwd, &JT);
         go_matrix_matrix_mult(&JT, Jfwd, &JTJ);
@@ -252,7 +260,9 @@ int genser_kin_jac_inv(void *kins,
     int link;
     int retval;
 
+    // cppcheck-suppress uninitvar -- go_matrix_init() populates the .stg storage; cppcheck can't see through the macro
     go_matrix_init(Jfwd, Jfwd_stg, 6, genser->link_num);
+    // cppcheck-suppress uninitvar -- go_matrix_init() populates the .stg storage; cppcheck can't see through the macro
     go_matrix_init(Jinv, Jinv_stg, GENSER_MAX_JOINTS, 6);
 
     for (link = 0; link < genser->link_num; link++) {
@@ -292,6 +302,7 @@ int genser_kin_jac_fwd(void *kins,
     int link;
     int retval;
 
+    // cppcheck-suppress uninitvar -- go_matrix_init() populates the .stg storage; cppcheck can't see through the macro
     go_matrix_init(Jfwd, Jfwd_stg, 6, genser->link_num);
 
     for (link = 0; link < genser->link_num; link++) {
@@ -463,7 +474,9 @@ int genserKinematicsInverse(const EmcPose * world,
     haldata->pos->tran.y = world->tran.y;
     haldata->pos->tran.z = world->tran.z;
 
+    // cppcheck-suppress uninitvar -- go_matrix_init() populates the .stg storage; cppcheck can't see through the macro
     go_matrix_init(Jfwd, Jfwd_stg, 6, genser->link_num);
+    // cppcheck-suppress uninitvar -- go_matrix_init() populates the .stg storage; cppcheck can't see through the macro
     go_matrix_init(Jinv, Jinv_stg, genser->link_num, 6);
 
     /* jest[] is a copy of joints[], which is the joint estimate */
@@ -610,6 +623,7 @@ int genserKinematicsSetup(const int comp_id,
     if (!haldata) {goto error;}
 
     // allow for pass through joints 6,7,8 u,v,w
+    // cppcheck-suppress ctuuninitvar -- ugenserkins.c initializes kp.max_joints/allow_duplicates before this call; CTU false positive
     total_joints = kp->max_joints;
 
     // only the first 6 joints have A,ALPHA,D,unrotate pins

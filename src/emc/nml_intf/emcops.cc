@@ -95,6 +95,9 @@ EMC_TRAJ_STAT::EMC_TRAJ_STAT()
     feed_override_enabled(OFF),
     adaptive_feed_enabled(OFF),
     feed_hold_enabled(OFF),
+    waitm_num(-1),
+    waitm_released(0),
+    waitm_blockers(0),
     tag()
 {
 }
