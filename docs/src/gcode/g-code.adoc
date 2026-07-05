@@ -1607,6 +1607,7 @@ The machine's rotary topology is selected with the
 |`AC`     |tilting-rotary table (xyzac-trt-kins): A tilt, C rotary
 |`BC`     |tilting-rotary table (xyzbc-trt-kins): B tilt, C rotary
 |`BCHEAD` |swivel head (5axiskins): B and C in the spindle head
+|`ACHEAD` |swivel head (5axiskins `sparm=tiltA`): A and C in the spindle head
 |`BCHT`   |head-table "mixed" (maxkins): B tilting head + C rotary table
 |====
 

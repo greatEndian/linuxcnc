@@ -50,6 +50,10 @@
 // non-required coordinates (A,U,V) can be set by using
 // the module coordinates parameter
 #define REQUIRED_COORDINATES "XYZBCW"
+// sparm=tiltA variant: the swivel head tilts about X (A) instead of Y (B) --
+// same spherical head with the azimuth phase-shifted 90 deg,
+// r = s2r(R, C+90, 180-A).  B becomes the optional letter instead of A.
+#define REQUIRED_COORDINATES_TILTA "XYZACW"
 
 #define DEFAULT_PIVOT_LENGTH 250
 
@@ -67,6 +71,7 @@ struct haldata {
     hal_float_t *pivot_length;
 } *haldata;
 static int fiveaxis_max_joints;
+static int fiveaxis_tilt_is_a; // sparm=tiltA: tilt axis is A (about X), not B
 
 static PmCartesian s2r(double r, double t, double p) {
     // s2r: spherical coordinates to cartesian coordinates
@@ -103,7 +108,11 @@ static int fiveaxis_KinematicsForward(const double *joints,
 {
     (void)fflags;
     (void)iflags;
-    PmCartesian r = s2r(*(haldata->pivot_length) + joints[JW],
+    PmCartesian r = fiveaxis_tilt_is_a
+                  ? s2r(*(haldata->pivot_length) + joints[JW],
+                        joints[JC] + 90.0,
+                        180.0 - joints[JA])
+                  : s2r(*(haldata->pivot_length) + joints[JW],
                         joints[JC],
                         180.0 - joints[JB]);
 
@@ -111,12 +120,18 @@ static int fiveaxis_KinematicsForward(const double *joints,
     pos->tran.x = joints[JX] + r.x;
     pos->tran.y = joints[JY] + r.y;
     pos->tran.z = joints[JZ] + *(haldata->pivot_length) + r.z;
-    pos->b      = joints[JB];
     pos->c      = joints[JC];
     pos->w      = joints[JW];
 
+    if (fiveaxis_tilt_is_a) {
+        pos->a = joints[JA];
+        pos->b = (JB != -1)? joints[JB] : 0;
+    } else {
+        pos->b = joints[JB];
+        pos->a = (JA != -1)? joints[JA] : 0;
+    }
+
     // optional letters (specify with coordinates module parameter)
-    pos->a = (JA != -1)? joints[JA] : 0;
     pos->u = (JU != -1)? joints[JU] : 0;
     pos->v = (JV != -1)? joints[JV] : 0;
 
@@ -130,7 +145,11 @@ static int fiveaxis_KinematicsInverse(const EmcPose * pos,
 {
     (void)iflags;
     (void)fflags;
-    PmCartesian r = s2r(*(haldata->pivot_length) + pos->w,
+    PmCartesian r = fiveaxis_tilt_is_a
+                  ? s2r(*(haldata->pivot_length) + pos->w,
+                        pos->c + 90.0,
+                        180.0 - pos->a)
+                  : s2r(*(haldata->pivot_length) + pos->w,
                         pos->c,
                         180.0 - pos->b);
 
@@ -139,12 +158,18 @@ static int fiveaxis_KinematicsInverse(const EmcPose * pos,
     P.tran.y = pos->tran.y - r.y;
     P.tran.z = pos->tran.z - *(haldata->pivot_length) - r.z;
 
-    P.b = pos->b;
     P.c = pos->c;
     P.w = pos->w;
 
+    if (fiveaxis_tilt_is_a) {
+        P.a = pos->a;
+        P.b = (JB != -1)? pos->b : 0;
+    } else {
+        P.b = pos->b;
+        P.a = (JA != -1)? pos->a : 0;
+    }
+
     // optional letters (specify with coordinates module parameter)
-    P.a = (JA != -1)? pos->a : 0;
     P.u = (JU != -1)? pos->u : 0;
     P.v = (JV != -1)? pos->v : 0;
 
@@ -241,9 +266,16 @@ int switchkinsSetup(kparms* kp,
 {
     kp->kinsname    = "5axiskins"; // !!! must agree with filename
     kp->halprefix   = "5axiskins"; // hal pin names
-    kp->required_coordinates = REQUIRED_COORDINATES;
+    fiveaxis_tilt_is_a = (kp->sparm && strstr(kp->sparm, "tiltA")) ? 1 : 0;
+    kp->required_coordinates = fiveaxis_tilt_is_a ? REQUIRED_COORDINATES_TILTA
+                                                  : REQUIRED_COORDINATES;
     kp->allow_duplicates     = 1;
     kp->max_joints           = EMCMOT_MAX_JOINTS;
+
+    if (fiveaxis_tilt_is_a) {
+        rtapi_print("\n!!! %s sparm=tiltA: swivel head tilts about X (A axis)\n",
+                    kp->kinsname);
+    }
 
     if (kp->sparm && strstr(kp->sparm,"identityfirst")) {
         rtapi_print("\n!!! switchkins-type 0 is IDENTITY\n");

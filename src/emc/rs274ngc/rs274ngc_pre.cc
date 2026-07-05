@@ -889,6 +889,8 @@ int Interp::init()
            *  "BC" = tilting-rotary table (xyzbc-trt-kins): B tilt, C rotary.
            *  "BCHEAD" = swivel HEAD (5axiskins, XYZBC spherical): B,C in the
            *             spindle (head-head). Part fixed -> no part-frame xform.
+           *  "ACHEAD" = swivel HEAD, A tilt + C rotary in the spindle
+           *             (5axiskins sparm=tiltA). Part fixed, like BCHEAD.
            * Unset/unknown -> G43.5 is refused. */
           {
               std::string topo = inifile.findStringV("TCP_ORIENT_AXES", "RS274NGC", "");
@@ -899,7 +901,8 @@ int Interp::init()
                   else if (!strcasecmp(topo.c_str(), "BC"))     _setup.tcp_orient_axes = 3;
                   else if (!strcasecmp(topo.c_str(), "BCHEAD")) _setup.tcp_orient_axes = 4;
                   else if (!strcasecmp(topo.c_str(), "BCHT"))   _setup.tcp_orient_axes = 5;
-                  else fprintf(stderr, "rs274ngc: [RS274NGC]TCP_ORIENT_AXES=%s not supported (AB/AC/BC/BCHEAD/BCHT) - G43.5 disabled\n", topo.c_str());
+                  else if (!strcasecmp(topo.c_str(), "ACHEAD")) _setup.tcp_orient_axes = 6;
+                  else fprintf(stderr, "rs274ngc: [RS274NGC]TCP_ORIENT_AXES=%s not supported (AB/AC/BC/BCHEAD/BCHT/ACHEAD) - G43.5 disabled\n", topo.c_str());
               }
           }
           /* TCP_CONVENTIONAL_DIRECTIONS selects the rotary direction sense used

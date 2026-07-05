@@ -5743,6 +5743,50 @@ int Interp::convert_straight(int move,   //!< either G_0 or G_1
           }
           break;
       }
+      case 6: {
+          /* ACHEAD - swivel HEAD, A tilt + C rotary in the spindle (5axiskins
+           * loaded with sparm=tiltA: same spherical head as BCHEAD with the
+           * azimuth phase-shifted 90 deg, r = s2r(R, C+90, 180-A)).  The
+           * tool-axis (tip->holder, +Z at A=0) is
+           *   v = Rz(C)*Rx(A)*z = ( sin A sin C, -sin A cos C, cos A ).
+           * Inverse:  A = atan2(hypot(i,j), k);  C = atan2(i, -j)
+           * (C undefined when the tool is parallel to Z, sin A = 0).
+           * HEAD machine: the part is FIXED, so the vector is already in the
+           * machine frame - NO part->table transform (like BCHEAD). Only the
+           * A/C angle OFFSETS map machine<->program. */
+          double off_c = settings->CC_origin_offset + settings->CC_axis_offset;
+          double tilt = hypot(vi, vj);
+          double a_ref = settings->AA_current + off_a;
+          double c_ref = settings->CC_current + off_c;
+          double a1 = tcp_unwrap_near(atan2(tilt, vk) * 180.0 / M_PI, a_ref);
+          bool c_defined = (tilt > 1e-9);
+          double a_mach, c_mach;
+          if (c_defined) {
+              /* (a, c) and (-a, c+180) are the same physical orientation --
+               * pick whichever needs less combined A+C travel. */
+              double c1 = tcp_unwrap_near(atan2(vi, -vj) * 180.0 / M_PI, c_ref);
+              double a2 = tcp_unwrap_near(-a1, a_ref);
+              double c2 = tcp_unwrap_near(c1 + 180.0, c_ref);
+              tcp_pick_nearest_branch(a1, c1, a2, c2, a_ref, c_ref, &a_mach, &c_mach);
+          } else {
+              a_mach = a1;
+              c_mach = 0.0;
+          }
+          if (vec_machine_frame) {
+              block->a_number = a_mach; block->a_flag = true;
+              if (c_defined) { block->c_number = c_mach; block->c_flag = true; }
+          } else {
+              double a_prog = a_mach - off_a;
+              block->a_number = vec_incremental ? a_prog - settings->AA_current : a_prog;
+              block->a_flag = true;
+              if (c_defined) {
+                  double c_prog = c_mach - off_c;
+                  block->c_number = vec_incremental ? c_prog - settings->CC_current : c_prog;
+                  block->c_flag = true;
+              }
+          }
+          break;
+      }
       default:
           ERS(_("G43.5: unsupported TCP_ORIENT_AXES topology"));
       }
