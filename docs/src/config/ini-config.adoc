@@ -646,14 +646,35 @@ The maximum number of `USER_M_PATH` directories is defined at compile time (typ:
 * `TCP_ORIENT_AXES = AB` - (((TCP ORIENT AXES)))
   Selects the rotary-axis topology used by <<gcode:g43.5,G43.5>> (Tool Center
   Point Control with tool vector) when it solves a tool-axis I/J/K vector into
-  rotary positions. One of `AB`, `AC`, `BC`, `BCHEAD`, `ACHEAD` or `BCHT`
+  rotary positions. One of `AB`, `AC`, `BC`, `BCHEAD`, `ACHEAD`, `BCHT` or
+  `GENERIC`
   (case-insensitive). `AB`/`AC`/`BC` are tilting/dual-rotary tables; `BCHEAD` and
   `ACHEAD` are swivel spindle heads (B or A tilt axis respectively, C rotary,
   both in the head; `ACHEAD` matches 5axiskins loaded with `sparm=tiltA`);
   `BCHT` is a head-table "mixed" machine (B tilting head +
-  C rotary table, e.g. maxkins). There is no default: G43.5 errors if this is
+  C rotary table, e.g. maxkins); `GENERIC` describes the two rotaries with the
+  `TCP_GENERIC_*` keys below. There is no default: G43.5 errors if this is
   unset. Not used by G43.4 (which takes rotary positions directly from A/B/C
   words).
+* `TCP_GENERIC_OUTER = C` / `TCP_GENERIC_INNER = B` - (((TCP GENERIC OUTER)))
+  Only with `TCP_ORIENT_AXES = GENERIC`: the letters (`A`, `B` or `C`,
+  distinct; optional leading `-` to flip that rotary's direction sense) of the
+  machine's two orientation rotaries. "Outer" is the rotary nearer the machine
+  frame in its kinematic chain, "inner" the one nearer the tool (head chain)
+  or the part (table chain); for a mixed head+table pair the order does not
+  matter. A rotary's letter also states its rotation axis (A about X, B about
+  Y, C about Z).
+* `TCP_GENERIC_OUTER_MOUNT = HEAD` / `TCP_GENERIC_INNER_MOUNT = TABLE` - (((TCP GENERIC MOUNT)))
+  Where each `GENERIC` rotary is mounted: `HEAD` (it rotates the tool) or
+  `TABLE` (it rotates the part). Head-mounted rotary work offsets are plain
+  additive angle shifts; table-mounted offsets additionally rotate the part
+  frame and are compensated automatically. Some combinations cannot orient the
+  tool (the rotation applied to the tool axis first must actually tilt it, so
+  `C` may not be the inner rotary of a head-head pair, the outer rotary of a
+  table-table pair, or the head rotary of a mixed pair) - these are rejected
+  at startup with G43.5 disabled. `GENERIC` ignores
+  `TCP_CONVENTIONAL_DIRECTIONS`; direction senses are given per rotary with
+  the `-` prefix instead.
 * `TCP_CONVENTIONAL_DIRECTIONS = 0` (bool, Default: 0) - (((TCP CONVENTIONAL DIRECTIONS)))
   Only meaningful with `TCP_ORIENT_AXES = AC`, `BC` or `BCHT`. It selects the
   rotary direction sense used when <<gcode:g43.5,G43.5>> solves a tool vector

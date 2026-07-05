@@ -145,6 +145,12 @@ setup::setup() :
 
     tcp_vector_mode(0),
     tcp_orient_axes(0),
+    tcp_gen_outer_letter(0),
+    tcp_gen_outer_sign(1),
+    tcp_gen_outer_table(0),
+    tcp_gen_inner_letter(0),
+    tcp_gen_inner_sign(1),
+    tcp_gen_inner_table(0),
     tcp_conventional_directions(0),
     tcp_no_switch(0),
     tcp_kinstype(1),

@@ -5787,6 +5787,150 @@ int Interp::convert_straight(int move,   //!< either G_0 or G_1
           }
           break;
       }
+      case 7: {
+          /* GENERIC - config-driven topology (TCP_GENERIC_OUTER/INNER +
+           * *_MOUNT).  Every solvable 2-rotary orientation mechanism reduces
+           * to  v = R_a(alpha) * R_b(beta) * z  in the part frame, where R_b
+           * (the factor applied to the tool axis first) must tilt it (axis X
+           * or Y, enforced at INI parse) and R_a is about any other principal
+           * axis.  How the two configured rotaries map onto (alpha, beta):
+           *   head-head:   tool axis in machine = R_outer(s_o*t_o) *
+           *                R_inner(s_i*t_i) * z; part frame == machine frame,
+           *                so  alpha = s_o*t_o (outer),  beta = s_i*t_i.
+           *   table-table: part->machine = R_outer(s_o*t_o)*R_inner(s_i*t_i);
+           *                the part sees the fixed tool axis through the
+           *                transpose, so  alpha = -s_i*t_i (INNER),
+           *                beta = -s_o*t_o (outer).
+           *   mixed:       v = R_table(t)^T * R_head(h) * z, so
+           *                alpha = -s_t*t_t (table),  beta = s_h*t_h (head).
+           * The six fixed topologies are exact instances of this (e.g.
+           * AC con-1 = outer A/TABLE + inner C/TABLE; BCHEAD = outer C/HEAD +
+           * inner -B/HEAD; BCHT = outer -C/TABLE + inner B/HEAD), which is
+           * how this case is cross-verified.
+           *
+           * Work offsets follow one uniform rule that reproduces all the
+           * per-topology special cases: rotate the programmed vector through
+           * the SAME R_a()*R_b() expression evaluated at the offset angles,
+           * keeping only the table-mounted factors (a head-mounted rotary's
+           * offset is a plain additive angle shift and never rotates the
+           * part frame). */
+          int La, Lb;          /* letter (0=A,1=B,2=C) of the R_a / R_b factor */
+          double ca, cb;       /* alpha = ca * theta_La,  beta = cb * theta_Lb */
+          bool La_table, Lb_table;
+          {
+              int ol = settings->tcp_gen_outer_letter, il = settings->tcp_gen_inner_letter;
+              int os = settings->tcp_gen_outer_sign,   is = settings->tcp_gen_inner_sign;
+              int ot = settings->tcp_gen_outer_table,  it = settings->tcp_gen_inner_table;
+              if (!ot && !it)      { La = ol; ca =  os; Lb = il; cb =  is; }
+              else if (ot && it)   { La = il; ca = -is; Lb = ol; cb = -os; }
+              else if (ot)         { La = ol; ca = -os; Lb = il; cb =  is; } /* outer=table, inner=head */
+              else                 { La = il; ca = -is; Lb = ol; cb =  os; } /* outer=head, inner=table */
+              La_table = (La == ol) ? (ot != 0) : (it != 0);
+              Lb_table = (Lb == ol) ? (ot != 0) : (it != 0);
+          }
+          /* letter index == rotation axis index: A about X, B about Y, C about Z */
+          const int a_axis = La, b_axis = Lb;
+          double off_c = settings->CC_origin_offset + settings->CC_axis_offset;
+          const double off_l[3] = { off_a, off_b, off_c };
+          const double cur_l[3] = { settings->AA_current + off_a,
+                                    settings->BB_current + off_b,
+                                    settings->CC_current + off_c };
+
+          auto rot_apply = [](int axis, double deg, double *x, double *y, double *z) {
+              double s = sin(deg * M_PI / 180.0), c = cos(deg * M_PI / 180.0);
+              double nx = *x, ny = *y, nz = *z;
+              switch (axis) {
+              case 0: ny = c * *y - s * *z; nz = s * *y + c * *z; break;
+              case 1: nx = c * *x + s * *z; nz = -s * *x + c * *z; break;
+              case 2: nx = c * *x - s * *y; ny = s * *x + c * *y; break;
+              }
+              *x = nx; *y = ny; *z = nz;
+          };
+          if (!vec_machine_frame) {
+              /* part frame -> solve frame: table-mounted factors at their
+               * offset angles, in the same order as the solve expression
+               * (R_b first, then R_a) */
+              if (Lb_table && fabs(off_l[Lb]) > 1e-12)
+                  rot_apply(b_axis, cb * off_l[Lb], &vi, &vj, &vk);
+              if (La_table && fabs(off_l[La]) > 1e-12)
+                  rot_apply(a_axis, ca * off_l[La], &vi, &vj, &vk);
+          }
+
+          /* solve v = R_a(alpha)*R_b(beta)*z, canonical + dual branch */
+          double alpha1, beta1, alpha2, beta2;
+          bool alpha_defined;
+          if (a_axis == 2) {
+              /* (Z,X): v = ( sinB sinA, -sinB cosA, cosB )
+               * (Z,Y): v = ( sinB cosA,  sinB sinA, cosB ) */
+              double tilt = hypot(vi, vj);
+              beta1 = atan2(tilt, vk) * 180.0 / M_PI;
+              alpha_defined = (tilt > 1e-9);
+              alpha1 = !alpha_defined ? 0.0 :
+                       (b_axis == 0 ? atan2(vi, -vj) : atan2(vj, vi)) * 180.0 / M_PI;
+              alpha2 = alpha1 + 180.0;
+              beta2 = -beta1;
+          } else if (a_axis == 0) {
+              /* (X,Y): v = ( sinB, -sinA cosB, cosA cosB ) */
+              double bi = vi;
+              if (bi >  1.0) bi =  1.0;
+              if (bi < -1.0) bi = -1.0;
+              beta1 = asin(bi) * 180.0 / M_PI;
+              alpha_defined = (hypot(vj, vk) > 1e-9);
+              alpha1 = alpha_defined ? atan2(-vj, vk) * 180.0 / M_PI : 0.0;
+              alpha2 = alpha1 + 180.0;
+              beta2 = 180.0 - beta1;
+          } else {
+              /* (Y,X): v = ( sinA cosB, -sinB, cosA cosB ) */
+              double bj = -vj;
+              if (bj >  1.0) bj =  1.0;
+              if (bj < -1.0) bj = -1.0;
+              beta1 = asin(bj) * 180.0 / M_PI;
+              alpha_defined = (hypot(vi, vk) > 1e-9);
+              alpha1 = alpha_defined ? atan2(vi, vk) * 180.0 / M_PI : 0.0;
+              alpha2 = alpha1 + 180.0;
+              beta2 = 180.0 - beta1;
+          }
+
+          /* map solve-frame angles back to the rotary letters (ca/cb are
+           * +-1, so dividing == multiplying), unwrap near the current
+           * machine pose, pick the branch with less combined travel */
+          double a_ref = cur_l[La], b_ref = cur_l[Lb];
+          double t_a1 = tcp_unwrap_near(alpha1 * ca, a_ref);
+          double t_b1 = tcp_unwrap_near(beta1  * cb, b_ref);
+          double a_mach, b_mach;
+          if (alpha_defined) {
+              double t_a2 = tcp_unwrap_near(alpha2 * ca, a_ref);
+              double t_b2 = tcp_unwrap_near(beta2  * cb, b_ref);
+              tcp_pick_nearest_branch(t_a1, t_b1, t_a2, t_b2, a_ref, b_ref,
+                                      &a_mach, &b_mach);
+          } else {
+              a_mach = 0.0;   /* not emitted: at the singularity the R_a
+                                 rotary is free; hold its current angle */
+              b_mach = t_b1;
+          }
+
+          auto write_word = [&](int L, double mach) {
+              double val;
+              if (vec_machine_frame) {
+                  val = mach;
+              } else {
+                  double prog = mach - off_l[L];
+                  double cur_prog = (L == 0) ? settings->AA_current :
+                                    (L == 1) ? settings->BB_current :
+                                               settings->CC_current;
+                  val = vec_incremental ? prog - cur_prog : prog;
+              }
+              switch (L) {
+              case 0: block->a_number = val; block->a_flag = true; break;
+              case 1: block->b_number = val; block->b_flag = true; break;
+              case 2: block->c_number = val; block->c_flag = true; break;
+              }
+          };
+          write_word(Lb, b_mach);
+          if (alpha_defined)
+              write_word(La, a_mach);
+          break;
+      }
       default:
           ERS(_("G43.5: unsupported TCP_ORIENT_AXES topology"));
       }

@@ -1609,7 +1609,17 @@ The machine's rotary topology is selected with the
 |`BCHEAD` |swivel head (5axiskins): B and C in the spindle head
 |`ACHEAD` |swivel head (5axiskins `sparm=tiltA`): A and C in the spindle head
 |`BCHT`   |head-table "mixed" (maxkins): B tilting head + C rotary table
+|`GENERIC`|config-driven: any two rotaries, any head/table mounts (see below)
 |====
+
+The `GENERIC` topology covers machines that do not match one of the fixed
+cases: the two orientation rotaries are described in the INI instead
+(<<sub:ini:sec:rs274ngc,`[RS274NGC]TCP_GENERIC_OUTER`>>, `TCP_GENERIC_INNER`
+and their `_MOUNT` keys), naming each rotary's letter, direction sense and
+head/table mount. Every fixed topology is an exact instance of `GENERIC`
+(for example `BCHT` equals `TCP_GENERIC_OUTER=-C` mounted `TABLE` plus
+`TCP_GENERIC_INNER=-B` mounted `HEAD`); the fixed names remain the simpler
+choice when they fit.
 
 For the `AC`, `BC` and `BCHT` machines, also set
 <<sub:ini:sec:rs274ngc,`[RS274NGC]TCP_CONVENTIONAL_DIRECTIONS`>> to match the

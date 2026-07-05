@@ -902,7 +902,68 @@ int Interp::init()
                   else if (!strcasecmp(topo.c_str(), "BCHEAD")) _setup.tcp_orient_axes = 4;
                   else if (!strcasecmp(topo.c_str(), "BCHT"))   _setup.tcp_orient_axes = 5;
                   else if (!strcasecmp(topo.c_str(), "ACHEAD")) _setup.tcp_orient_axes = 6;
-                  else fprintf(stderr, "rs274ngc: [RS274NGC]TCP_ORIENT_AXES=%s not supported (AB/AC/BC/BCHEAD/BCHT/ACHEAD) - G43.5 disabled\n", topo.c_str());
+                  else if (!strcasecmp(topo.c_str(), "GENERIC")) _setup.tcp_orient_axes = 7;
+                  else fprintf(stderr, "rs274ngc: [RS274NGC]TCP_ORIENT_AXES=%s not supported (AB/AC/BC/BCHEAD/BCHT/ACHEAD/GENERIC) - G43.5 disabled\n", topo.c_str());
+              }
+          }
+          /* GENERIC topology: the two orientation rotaries are described by
+           * config instead of a hard-coded case.
+           *   TCP_GENERIC_OUTER / TCP_GENERIC_INNER = [-]A | [-]B | [-]C
+           *     ("outer" is nearer the machine base in its chain, "inner"
+           *      nearer the tool for a head chain / the part for a table
+           *      chain; a leading '-' flips that rotary's direction sense)
+           *   TCP_GENERIC_OUTER_MOUNT / TCP_GENERIC_INNER_MOUNT = HEAD | TABLE
+           * Solvability: the rotation nearest the tool axis must actually
+           * tilt it, so C (about Z) may not be: the inner rotary of a
+           * head-head pair, the outer rotary of a table-table pair, or the
+           * head-mounted rotary of a mixed pair.  TCP_CONVENTIONAL_DIRECTIONS
+           * is ignored by GENERIC (the signs here are explicit). */
+          if (_setup.tcp_orient_axes == 7) {
+              auto parse_rot = [](const std::string &val, int *letter, int *sign) -> bool {
+                  const char *s = val.c_str();
+                  *sign = 1;
+                  if (*s == '-') { *sign = -1; s++; }
+                  else if (*s == '+') { s++; }
+                  if      (!strcasecmp(s, "A")) *letter = 0;
+                  else if (!strcasecmp(s, "B")) *letter = 1;
+                  else if (!strcasecmp(s, "C")) *letter = 2;
+                  else return false;
+                  return true;
+              };
+              std::string ov = inifile.findStringV("TCP_GENERIC_OUTER", "RS274NGC", "");
+              std::string iv = inifile.findStringV("TCP_GENERIC_INNER", "RS274NGC", "");
+              std::string om = inifile.findStringV("TCP_GENERIC_OUTER_MOUNT", "RS274NGC", "");
+              std::string im = inifile.findStringV("TCP_GENERIC_INNER_MOUNT", "RS274NGC", "");
+              bool ok = parse_rot(ov, &_setup.tcp_gen_outer_letter, &_setup.tcp_gen_outer_sign)
+                     && parse_rot(iv, &_setup.tcp_gen_inner_letter, &_setup.tcp_gen_inner_sign);
+              if (ok && !strcasecmp(om.c_str(), "HEAD"))       _setup.tcp_gen_outer_table = 0;
+              else if (ok && !strcasecmp(om.c_str(), "TABLE")) _setup.tcp_gen_outer_table = 1;
+              else ok = false;
+              if (ok && !strcasecmp(im.c_str(), "HEAD"))       _setup.tcp_gen_inner_table = 0;
+              else if (ok && !strcasecmp(im.c_str(), "TABLE")) _setup.tcp_gen_inner_table = 1;
+              else ok = false;
+              if (ok && _setup.tcp_gen_outer_letter == _setup.tcp_gen_inner_letter)
+                  ok = false;
+              if (ok) {
+                  /* the rotary whose rotation is applied to the tool axis
+                   * first must tilt it (must not be C, whose axis is Z) */
+                  int adjacent_letter;
+                  if (!_setup.tcp_gen_outer_table && !_setup.tcp_gen_inner_table)
+                      adjacent_letter = _setup.tcp_gen_inner_letter;   /* head-head */
+                  else if (_setup.tcp_gen_outer_table && _setup.tcp_gen_inner_table)
+                      adjacent_letter = _setup.tcp_gen_outer_letter;   /* table-table */
+                  else
+                      adjacent_letter = _setup.tcp_gen_outer_table ?
+                          _setup.tcp_gen_inner_letter :                /* mixed: head one */
+                          _setup.tcp_gen_outer_letter;
+                  if (adjacent_letter == 2) ok = false;
+              }
+              if (!ok) {
+                  fprintf(stderr, "rs274ngc: TCP_ORIENT_AXES=GENERIC needs valid "
+                          "TCP_GENERIC_OUTER/INNER ([-]A|[-]B|[-]C, distinct, "
+                          "orientation-solvable) and *_MOUNT (HEAD|TABLE) - "
+                          "G43.5 disabled\n");
+                  _setup.tcp_orient_axes = 0;
               }
           }
           /* TCP_CONVENTIONAL_DIRECTIONS selects the rotary direction sense used
