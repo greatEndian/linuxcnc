@@ -19,14 +19,15 @@ on LINUXCNC upstream + PR #4154 base. Updated 2026-07-05.
   HEAD-TABLE (mixed)          head+table   ##     #3         [DONE]       0
   NUTATING (45 deg spindle)   special      .      niche      [skip]       --
   ----------------------------------------------------------------------------
-  GENERIC  5axiskins config-driven case beyond BCHEAD's B+C  [OPEN]       ~2-3 days
+  GENERIC  config-driven: any 2 rotaries, any head/table mix [DONE]       0
   con=+1   conventional-directions variant (applies to all) [DONE]       0
 
-  COVERAGE:  [###################-]  all three industrial families DONE+sim
-             (AB/AC/BC/BCHEAD/ACHEAD/BCHT); G43.4 TCP on/off, con=+1, D7
-             refinements also DONE; D2 now FULLY closed (both head-head
-             variants). Remaining: 5axiskins GENERIC case (D3),
-             hw commissioning (D6).
+  COVERAGE:  [####################]  all three industrial families DONE+sim
+             (AB/AC/BC/BCHEAD/ACHEAD/BCHT) + the config-driven GENERIC
+             topology (D3) covering every remaining solvable 2-rotary
+             layout; G43.4 TCP on/off, con=+1, D7 refinements also DONE.
+             ALL software-side RTCP work is complete. Remaining: only D6
+             (real-machine commissioning, hw-gated).
 
 ================================================================================
 ## DONE  (built / gated 9/9 / D7 / verified)
@@ -52,9 +53,13 @@ on LINUXCNC upstream + PR #4154 base. Updated 2026-07-05.
     whichever of the two valid solutions needs less combined joint travel),
     G43.5-with-arcs reviewed (safe, documented), BCHT rotary-offset
     transform (last item, closed D7).
+  - GENERIC topology (D3): TCP_ORIENT_AXES=GENERIC + TCP_GENERIC_OUTER/
+    INNER (+_MOUNT) describe any solvable 2-rotary layout; every fixed
+    topology is an exact GENERIC instance (used as cross-oracles).
   - Verify assets: rtcp-dev/g435_trt_test.c, g435_con_test.c,
     maxkins_inv_test.c, maxkins_offset_test.c, bcht_offset_rs274_test.py,
-    g435_achead_test.c, achead_rs274_test.py, g435-acbc/, g435fix-tests/,
+    g435_achead_test.c, achead_rs274_test.py, g435_generic_test.c,
+    generic_oracle_rs274_test.py, g435-acbc/, g435fix-tests/,
     bchead-sim/, achead-sim/, bcht-sim/, xyzac-trt-dev/.
 
 ================================================================================
@@ -63,8 +68,8 @@ on LINUXCNC upstream + PR #4154 base. Updated 2026-07-05.
   D1  Live-sim validate AC/BC on vismach xyzac-trt/xyzbc-trt    [DONE]    0
   D2  HEAD-HEAD swivel: B+C [DONE, via BCHEAD/5axiskins];       [DONE]    0
       A+C variant [DONE 2026-07-05, via ACHEAD/5axiskins sparm=tiltA]
-  D3  5axiskins generic head/table (broad, config-driven        ~2-3 days [feat]
-      coverage beyond BCHEAD's specific swivel-head derivation)
+  D3  GENERIC config-driven topology (any two rotaries, any     [DONE]    0
+      head/table mounts) [DONE 2026-07-05]
   D4  HEAD-TABLE mixed                                           [DONE]    0
       (via BCHT/maxkins, TCP_NO_SWITCH decouple, not a switchkins add)
   D5  con=+1 conventional-directions variant (all topologies)   [DONE]    0
@@ -72,10 +77,9 @@ on LINUXCNC upstream + PR #4154 base. Updated 2026-07-05.
   D7  Refinements: dual-solution nearest-travel, kinstype knob, [DONE]    0
       G43.5-with-arcs review, BCHT rotary-offset transform
 
-  RECOMMENDATION: the three industrial 5-axis families (table-table,
-  head-head B+C AND A+C, head-table) are all DONE+sim-validated, plus D5
-  and D7. Remaining open work: D3's generic 5axiskins case and D6 (gated
-  on real hardware access).
+  RECOMMENDATION: every software-side item (D1-D5, D7, and now D3's
+  GENERIC topology) is DONE+validated. The only remaining item is D6,
+  real-machine commissioning, gated on hardware access.
 
 ================================================================================
 ## FULL NATIVE KINEMATICS INVENTORY — RTCP relevance
@@ -90,8 +94,8 @@ only where the machine has 2 orientation DOF that tilt the TOOL vs the PART
   xyzbc-trt-kins   BC  trunnion tilt+rotary   switchkins   [DONE]
   5axiskins        BCHEAD swivel head (B+C)   switchkins   [DONE]; A+C variant
                    ACHEAD swivel head (A+C,                 [DONE] (sparm=tiltA);
-                   sparm=tiltA)                             generic config-driven
-                                                            case still open (D3)
+                   sparm=tiltA)                             GENERIC config-driven
+                                                            topology [DONE] (D3)
   maxkins          XYZBC head-table 5ax mill  NO-switchkins[DONE, as BCHT]
                    ^ Chris Radek's 'max' - a real 5-axis mill (B head + C
                      table = the concrete HEAD-TABLE case). Turned out NOT
@@ -141,12 +145,12 @@ so RTCP there is optional/non-standard.
  │ xyzbc-trt  │ BC  trunnion tilt+rot  │   yes    │ DONE ✅ │ ·····  0        │
  │ 5axiskins  │ BCHEAD swivel head B+C │   yes    │ DONE ✅ │ ·····  0        │
  │ 5axiskins  │ ACHEAD swivel head A+C │   yes    │ DONE ✅ │ ·····  0        │
- │ 5axiskins  │ generic (any B/C combo)│   yes    │ OPEN ▢  │ ███··  ~2-3 day │
+ │ (config)   │ GENERIC any-2-rotary   │   yes    │ DONE ✅ │ ·····  0        │
  │ maxkins    │ BCHT head-table mixed  │ NO (kept)│ DONE ✅ │ ·····  0        │
  └────────────┴────────────────────────┴──────────┴─────────┴─────────────────┘
    side items:  AC/BC live-sim validate  DONE ✅  |  con=+1 variant  DONE ✅  |
                 D7 refinements (nearest-travel, kinstype, arcs, BCHT offset) DONE ✅
-   >>> remaining mill RTCP: 5axiskins GENERIC case only, ~2-3 days <<<
+   >>> remaining mill RTCP work: NONE (software side complete) <<<
 
  GROUP 2 — ORIENTATION-CAPABLE, RTCP OPTIONAL (kins already emits Cart+orient)
  ┌────────────┬────────────────────────┬──────────┬──────────┬────────────────┐
@@ -424,3 +428,66 @@ RT sampler, tiphold_achead.ngc, run_tiphold_achead.sh driver).
   The fix is applied to the local working tree only (src/emc/usr_intf/
   emcrsh.cc) to make headless-sim validation possible; it belongs to its
   own branch/PR and must NOT be committed with RTCP work.
+
+================================================================================
+## 2026-07-05 UPDATE — GENERIC config-driven topology DONE — D3 COMPLETE
+================================================================================
+Implemented TCP_ORIENT_AXES=GENERIC: instead of a hard-coded topology case,
+the machine's two orientation rotaries are described in the INI --
+
+  TCP_GENERIC_OUTER / TCP_GENERIC_INNER = [-]A | [-]B | [-]C
+    (letter = rotation axis: A about X, B about Y, C about Z; optional '-'
+     flips that rotary's direction sense; "outer" = nearer the machine
+     frame in its chain, "inner" = nearer the tool/part)
+  TCP_GENERIC_OUTER_MOUNT / TCP_GENERIC_INNER_MOUNT = HEAD | TABLE
+
+THE MATH (one solver for everything): every solvable 2-rotary orientation
+mechanism reduces to v = R_a(alpha)*R_b(beta)*z in the part frame, where
+R_b (applied to the tool axis first) must tilt it (axis X or Y -- enforced
+at INI parse, C rejected in that position) and R_a is about any other
+principal axis. Mounts map the configured rotaries onto (alpha, beta):
+head-head alpha=s_o*t_o, beta=s_i*t_i; table-table (transpose) alpha=
+-s_i*t_i (INNER), beta=-s_o*t_o; mixed alpha=-s_t*t_t, beta=s_h*t_h.
+Only 4 closed forms needed: (Z,X), (Z,Y), (X,Y), (Y,X). Dual branch:
+(alpha+180, -beta) for the Z forms, (alpha+180, 180-beta) for the XY
+forms, fed through the shared tcp_pick_nearest_branch().
+
+WORK OFFSETS, one uniform rule that reproduces every per-topology special
+case: rotate the programmed vector through the SAME R_a*R_b expression
+evaluated at the offset angles, keeping only the table-mounted factors
+(head-mounted offsets stay purely additive). Equivalently: the part frame
+is the table pose at the offset angles, v_part = P(off)*P(th)^T*u(th).
+This reproduces AC/BC's con-scaled Rz*Rx(/Ry) offset transform AND BCHT's
+non-con-scaled plain Rz(off_c) automatically.
+
+Every fixed topology is an exact GENERIC instance (the cross-oracle set):
+  AB         = OUTER=-B/TABLE,  INNER=-A/TABLE
+  AC  con-1  = OUTER= A/TABLE,  INNER= C/TABLE   (con+1: both '-')
+  BC  con-1  = OUTER= B/TABLE,  INNER= C/TABLE   (con+1: both '-')
+  BCHEAD     = OUTER= C/HEAD,   INNER=-B/HEAD
+  ACHEAD     = OUTER= C/HEAD,   INNER= A/HEAD
+  BCHT con-1 = OUTER=-C/TABLE,  INNER=-B/HEAD    (con+1: INNER=B/HEAD)
+GENERIC ignores TCP_CONVENTIONAL_DIRECTIONS (signs are explicit per rotary).
+
+VERIFIED:
+- Offline g435_generic_test.c: enumerates ALL 64 valid configs (96 combos
+  minus unsolvable/duplicate), 50,000 random vectors each (3.2M cases,
+  half with random offsets on all three letters), solved with the
+  implementation math and round-tripped through an INDEPENDENT physical
+  forward (pure rotation-matrix products, v_part = P(off)*P(th)^T*u(th)):
+  worst 3.9e-14, canonical AND dual branch.
+- Cross-oracle generic_oracle_rs274_test.py: 270 cases through real
+  rs274 -g -- 9 fixed-topology mappings x 30 random (start pose, offsets,
+  vector) cases, fixed ini vs GENERIC-equivalent ini: worst STRAIGHT_FEED
+  word difference 0.000e+00 (bit-identical output).
+- LIVE headless sim (generic-hl.ini: GENERIC OUTER=C/HEAD INNER=A/HEAD on
+  the 5axiskins sparm=identityfirst,tiltA machine): tip-hold, RT-coherent
+  sampling, worst tip deviation 7.5e-6 mm across 4,805 servo cycles,
+  joints land on the kins-predicted compensation exactly.
+- Full tests/interp suite: 80/80, unchanged.
+
+Docs updated (g-code.adoc GENERIC row + paragraph; ini-config.adoc: the
+four TCP_GENERIC_* keys, solvability rule, offset semantics).
+
+  D3 IS NOW COMPLETE. ALL SOFTWARE-SIDE RTCP WORK IS DONE (D1-D5, D7).
+  REMAINING: D6 only (real-machine commissioning, hw-gated).
