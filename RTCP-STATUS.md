@@ -1,7 +1,7 @@
 # RTCP / 5-axis TCP — status (fork: G43.4 / G43.5)
 
 Native Fanuc-style RTCP in this fork. Branch: fork-upstream (production RTCP),
-on LINUXCNC upstream + PR #4154 base. Updated 2026-07-02.
+on LINUXCNC upstream + PR #4154 base. Updated 2026-07-05.
 
 ================================================================================
 ## 5-AXIS RTCP COVERAGE MAP
@@ -14,7 +14,7 @@ on LINUXCNC upstream + PR #4154 base. Updated 2026-07-02.
    head fixed                 A+B  [AB]    med/aero/auto     [DONE]       0
   ----------------------------------------------------------------------------
   HEAD-HEAD (swivel head)     B+C          ###    #2         [DONE]       0
-   both rotaries in spindle   A+C          Europe / large    [OPEN]       ~1 day
+   both rotaries in spindle   A+C          Europe / large    [DONE]       0
   ----------------------------------------------------------------------------
   HEAD-TABLE (mixed)          head+table   ##     #3         [DONE]       0
   NUTATING (45 deg spindle)   special      .      niche      [skip]       --
@@ -22,10 +22,11 @@ on LINUXCNC upstream + PR #4154 base. Updated 2026-07-02.
   GENERIC  5axiskins config-driven case beyond BCHEAD's B+C  [OPEN]       ~2-3 days
   con=+1   conventional-directions variant (applies to all) [DONE]       0
 
-  COVERAGE:  [##################--]  all three industrial families DONE+sim
-             (AB/AC/BC/BCHEAD/BCHT); G43.4 TCP on/off, con=+1, D7 refinements
-             also DONE. Remaining: 5axiskins GENERIC case (D3), A+C head-head
-             (2nd HEAD-HEAD variant, part of D2), hw commissioning (D6).
+  COVERAGE:  [###################-]  all three industrial families DONE+sim
+             (AB/AC/BC/BCHEAD/ACHEAD/BCHT); G43.4 TCP on/off, con=+1, D7
+             refinements also DONE; D2 now FULLY closed (both head-head
+             variants). Remaining: 5axiskins GENERIC case (D3),
+             hw commissioning (D6).
 
 ================================================================================
 ## DONE  (built / gated 9/9 / D7 / verified)
@@ -38,8 +39,9 @@ on LINUXCNC upstream + PR #4154 base. Updated 2026-07-02.
       AC   (xyzac-trt, table-table trunnion)
       BC   (xyzbc-trt, table-table trunnion)
       BCHEAD (5axiskins, head-head swivel head, B+C variant)
+      ACHEAD (5axiskins sparm=tiltA, head-head swivel head, A+C variant)
       BCHT (maxkins, head-table mixed, B-head + C-table)
-  - [RS274NGC]TCP_ORIENT_AXES = AB | AC | BC | BCHEAD | BCHT. Per-topology
+  - [RS274NGC]TCP_ORIENT_AXES = AB | AC | BC | BCHEAD | ACHEAD | BCHT. Per-topology
     part->table offset transform, singularity guard, unwrap-near, G53
     one-shot, G91 delta -- all five now support rotary work offsets.
   - [RS274NGC]TCP_CONVENTIONAL_DIRECTIONS (con=+1 variant, D5) for AC/BC/BCHT.
@@ -52,14 +54,15 @@ on LINUXCNC upstream + PR #4154 base. Updated 2026-07-02.
     transform (last item, closed D7).
   - Verify assets: rtcp-dev/g435_trt_test.c, g435_con_test.c,
     maxkins_inv_test.c, maxkins_offset_test.c, bcht_offset_rs274_test.py,
-    g435-acbc/, g435fix-tests/, bchead-sim/, bcht-sim/, xyzac-trt-dev/.
+    g435_achead_test.c, achead_rs274_test.py, g435-acbc/, g435fix-tests/,
+    bchead-sim/, achead-sim/, bcht-sim/, xyzac-trt-dev/.
 
 ================================================================================
 ## OPEN  (choose direction)
 ================================================================================
   D1  Live-sim validate AC/BC on vismach xyzac-trt/xyzbc-trt    [DONE]    0
-  D2  HEAD-HEAD swivel: B+C [DONE, via BCHEAD/5axiskins];       ~1 day    [feat]
-      A+C variant (Europe/large machines) still open
+  D2  HEAD-HEAD swivel: B+C [DONE, via BCHEAD/5axiskins];       [DONE]    0
+      A+C variant [DONE 2026-07-05, via ACHEAD/5axiskins sparm=tiltA]
   D3  5axiskins generic head/table (broad, config-driven        ~2-3 days [feat]
       coverage beyond BCHEAD's specific swivel-head derivation)
   D4  HEAD-TABLE mixed                                           [DONE]    0
@@ -70,9 +73,9 @@ on LINUXCNC upstream + PR #4154 base. Updated 2026-07-02.
       G43.5-with-arcs review, BCHT rotary-offset transform
 
   RECOMMENDATION: the three industrial 5-axis families (table-table,
-  head-head B+C, head-table) are all DONE+sim-validated, plus D5 and D7.
-  Remaining open work is narrower: D2's A+C head-head variant, D3's
-  generic 5axiskins case, and D6 (gated on real hardware access).
+  head-head B+C AND A+C, head-table) are all DONE+sim-validated, plus D5
+  and D7. Remaining open work: D3's generic 5axiskins case and D6 (gated
+  on real hardware access).
 
 ================================================================================
 ## FULL NATIVE KINEMATICS INVENTORY — RTCP relevance
@@ -85,9 +88,10 @@ only where the machine has 2 orientation DOF that tilt the TOOL vs the PART
   xyzab_tdr-kins   AB  table dual-rotary      switchkins   [DONE]
   xyzac-trt-kins   AC  trunnion tilt+rotary   switchkins   [DONE]
   xyzbc-trt-kins   BC  trunnion tilt+rotary   switchkins   [DONE]
-  5axiskins        BCHEAD swivel head (B+C)   switchkins   [DONE]; generic
-                                                            config-driven case
-                                                            still open (D3)
+  5axiskins        BCHEAD swivel head (B+C)   switchkins   [DONE]; A+C variant
+                   ACHEAD swivel head (A+C,                 [DONE] (sparm=tiltA);
+                   sparm=tiltA)                             generic config-driven
+                                                            case still open (D3)
   maxkins          XYZBC head-table 5ax mill  NO-switchkins[DONE, as BCHT]
                    ^ Chris Radek's 'max' - a real 5-axis mill (B head + C
                      table = the concrete HEAD-TABLE case). Turned out NOT
@@ -136,6 +140,7 @@ so RTCP there is optional/non-standard.
  │ xyzac-trt  │ AC  trunnion tilt+rot  │   yes    │ DONE ✅ │ ·····  0        │
  │ xyzbc-trt  │ BC  trunnion tilt+rot  │   yes    │ DONE ✅ │ ·····  0        │
  │ 5axiskins  │ BCHEAD swivel head B+C │   yes    │ DONE ✅ │ ·····  0        │
+ │ 5axiskins  │ ACHEAD swivel head A+C │   yes    │ DONE ✅ │ ·····  0        │
  │ 5axiskins  │ generic (any B/C combo)│   yes    │ OPEN ▢  │ ███··  ~2-3 day │
  │ maxkins    │ BCHT head-table mixed  │ NO (kept)│ DONE ✅ │ ·····  0        │
  └────────────┴────────────────────────┴──────────┴─────────┴─────────────────┘
@@ -360,3 +365,62 @@ fork-upstream 4bbb69cf61.
   case beyond BCHEAD's specific swivel-head derivation) and D6
   (real-machine commissioning, hw-gated). Worth a top-of-file cleanup
   pass at some point, not done here to stay in scope.
+
+================================================================================
+## 2026-07-05 UPDATE — ACHEAD head-head A+C DONE — D2 FULLY COMPLETE
+================================================================================
+Implemented the second HEAD-HEAD variant (A tilt + C rotary, both in the
+spindle; common on European/large gantry machines). Two parts:
+
+ 1. KINS VEHICLE: no native A+C swivel-head kins existed. Added a minimal
+    sparm=tiltA variant to 5axiskins: geometrically the same spherical head
+    with the azimuth phase-shifted 90 deg, r = s2r(R, C+90, 180-A); required
+    coordinates become XYZACW (B optional instead of A). Default (no sparm
+    flag) is bit-identical to the original XYZBCW module.
+ 2. ACHEAD topology (=6): tool axis v = Rz(C)*Rx(A)*z =
+    ( sinA sinC, -sinA cosC, cosA ). Inverse: A = atan2(hypot(i,j), k),
+    C = atan2(i, -j). Dual branch (-A, C+180) via the shared
+    tcp_pick_nearest_branch(). HEAD machine: part fixed, so no part-frame
+    transform; A/C work offsets are plain additive angle shifts (like
+    BCHEAD). con knob n/a (no conventional-directions pin), like BCHEAD.
+
+VERIFIED (same bar as every other topology):
+- offline g435_achead_test.c: grid + 2,000,000 random unit vectors,
+  three checks per point -- inverse recovers orientation (1.5e-15),
+  interp forward == KINS forward s2r(R,C+90,180-A) (1.2e-15), and
+  dual-branch identity (9e-16).
+- achead_rs274_test.py: 200 random cases through real rs274 -g, half with
+  random A/C work offsets, round-tripped through forward kins; worst
+  1.9e-6 (print-precision limited).
+- rs274 spot checks: nearest-branch (current at the alternate solution ->
+  picked with zero travel instead of a 240 deg swing) and singularity
+  (K1 -> A0, C word withheld, C holds current).
+- LIVE headless sim tip-hold (5axiskins sparm=identityfirst,tiltA,
+  coordinates=xyzacwy, achead-hl.ini): G43.5 vector (.5,0,.866) -> A30 C90,
+  RT-COHERENT sampling via sampler/halsampler at every servo cycle:
+  4,453 cycles during/after the reorientation, worst tip deviation
+  7.5e-6 mm (double-precision noise). Joints land exactly on the
+  kins-predicted compensation (J0 +50.000, J2 -3.3975). ERROR OK.
+- Full tests/interp suite: 80/80, unchanged.
+
+GOTCHA found while validating (matters for BCHEAD/ACHEAD sim configs):
+G43.5 requests switchkins type 1 (TCP_KINSTYPE default), which assumes the
+identityfirst module layout. Loading 5axiskins WITHOUT sparm=identityfirst
+makes type0=fiveaxis/type1=identity, so G43.5 actually selects IDENTITY and
+the tip is NOT held (joints track axis words 1:1 -- verified live, the
+sampled joint stream shows zero compensation). The sim ini must use
+sparm=identityfirst,tiltA (or set TCP_KINSTYPE to the fiveaxis type).
+
+Docs updated (g-code.adoc topology table + ini-config.adoc TCP_ORIENT_AXES/
+TCP_CONVENTIONAL_DIRECTIONS/TCP_NO_SWITCH). Sim assets:
+~/cnc-dev/rtcp-dev/achead-sim/ (achead-hl.ini, achead_pivot.hal with the
+RT sampler, tiphold_achead.ngc, run_tiphold_achead.sh driver).
+
+  D2 IS NOW FULLY COMPLETE (BCHEAD 2026-06-15 + ACHEAD 2026-07-05).
+  REMAINING: D3 (5axiskins generic config-driven case), D6 (hw-gated).
+
+  NOTE (validation infra, NOT committed to rtcp): this sandbox has no IPv6,
+  so linuxcncrsh could not listen (the exact bug fixed on fix/emcrsh-ipv4).
+  The fix is applied to the local working tree only (src/emc/usr_intf/
+  emcrsh.cc) to make headless-sim validation possible; it belongs to its
+  own branch/PR and must NOT be committed with RTCP work.
