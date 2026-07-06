@@ -1,7 +1,7 @@
 # RTCP / 5-axis TCP — status (fork: G43.4 / G43.5)
 
 Native Fanuc-style RTCP in this fork. Branch: fork-upstream (production RTCP),
-on LINUXCNC upstream + PR #4154 base. Updated 2026-07-05.
+on LINUXCNC upstream + PR #4154 base. Updated 2026-07-06.
 
 ================================================================================
 ## 5-AXIS RTCP COVERAGE MAP
@@ -73,7 +73,9 @@ on LINUXCNC upstream + PR #4154 base. Updated 2026-07-05.
   D4  HEAD-TABLE mixed                                           [DONE]    0
       (via BCHT/maxkins, TCP_NO_SWITCH decouple, not a switchkins add)
   D5  con=+1 conventional-directions variant (all topologies)   [DONE]    0
-  D6  Real-machine commissioning (AB/AC/BC/BCHEAD/BCHT)          hw-gated  [future]
+  D6  Real-machine commissioning: sim-side prep DONE 2026-07-06 hw-gated  [future]
+      (vismach visual validation + RTCP-COMMISSIONING.md checklist;
+      only the physical-machine steps remain)
   D7  Refinements: dual-solution nearest-travel, kinstype knob, [DONE]    0
       G43.5-with-arcs review, BCHT rotary-offset transform
 
@@ -491,3 +493,49 @@ four TCP_GENERIC_* keys, solvability rule, offset semantics).
 
   D3 IS NOW COMPLETE. ALL SOFTWARE-SIDE RTCP WORK IS DONE (D1-D5, D7).
   REMAINING: D6 only (real-machine commissioning, hw-gated).
+
+================================================================================
+## 2026-07-06 UPDATE — D6 sim-side prep DONE (vismach validation + checklist)
+================================================================================
+Did everything in D6 (real-machine commissioning) that does not require
+hardware:
+
+1. VISMACH VISUAL VALIDATION (isolated Xvfb :99, frames captured from the
+   real vismach models driven by the live headless sims via linuxcncrsh):
+   - BCHEAD bridgemill (5axisgui): G43.5 vector -> B swings 0 to -45 with
+     the tool visibly tilted 45 deg and the tip still on the same table
+     point, gantry compensating.
+   - AC trunnion (xyzac-trt-gui): table tilts A30/rotates C while the tool
+     stays on the part point.
+   - BCHT max5 (max5gui): head tilts B-30, spindle nose stays on the part.
+     Gotcha: maxkins hard-codes B=joint4, C=joint5 (joints[3] is the unused
+     A slot) -- max5gui hookup must net j4->tilt, j5->rotate; and the max5
+     ini has no HOME_SEQUENCE, so "home all" fails -- home joints 0..5
+     individually. max5's toolchange is auto-looped (no manual ack needed).
+   Before/after frames: ~/cnc-dev/rtcp-dev/vismach-proof/. Drivers saved
+   next to each sim's assets. AB table-dual-rotary visual skipped (same
+   recipe, nothing new to learn); ACHEAD has no vismach model (the tiltA
+   kins is validated numerically; building a model variant is optional
+   polish).
+
+2. FOUND+FIXED A LATENT SIM MISCONFIGURATION: the 2026-06-15 bchead-sim
+   snapshot loads 5axiskins WITHOUT sparm=identityfirst, so G43.5's
+   switchkins type-1 request selects IDENTITY -- re-ran its tip-hold with
+   RT-coherent sampling: 63.4 mm tip deviation, joints tracking the axis
+   words 1:1 (the tip-hold was NOT actually working in that layout; the
+   solver output itself was correct). Fixed bchead-hl.ini with
+   sparm=identityfirst and re-validated: 8.6e-6 mm worst deviation over
+   2,686 servo cycles, joints exactly on the kins-predicted compensation.
+   Snapshot updated. This is the same trap documented in the 2026-07-05
+   ACHEAD update, now recorded as a first-class commissioning check.
+
+3. RTCP-COMMISSIONING.md (new, committed): the hardware-day procedure --
+   topology/identityfirst/TCP_NO_SWITCH/conventional-directions config
+   checks, pivot+tool-length plumbing (sum2 pattern), rotary direction
+   sense, centerline calibration, soft limits, the in-air tip-hold
+   first-motion test (with the identityfirst symptom spelled out), solver
+   spot checks (singularity / nearest-branch / offsets) mapped to their
+   sim reference assets, and the genuinely hw-only dynamics items.
+
+  D6 REMAINING: only the steps that need a physical machine (sections
+  2-9 of RTCP-COMMISSIONING.md executed on real iron).
