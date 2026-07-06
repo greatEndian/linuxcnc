@@ -115,7 +115,7 @@ void SET_XY_ROTATION(double t) {
 
 
 void WAIT_RENDEZVOUS(int waitm_num, int waitm_mask) {
-    ECHO_WITH_ARGS("");
+    ECHO_WITH_ARGS("%d, %d", waitm_num, waitm_mask);
 }
 void HOME_CYCLE(void) { ECHO_WITH_ARGS(""); }
 void UNHOME_AXES(void) { ECHO_WITH_ARGS(""); }

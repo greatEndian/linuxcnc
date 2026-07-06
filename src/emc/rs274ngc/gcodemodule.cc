@@ -433,7 +433,7 @@ void SELECT_PLANE(CANON_PLANE pl) {
 }
 
 
-void WAIT_RENDEZVOUS(int waitm_num, int waitm_mask) {}
+void WAIT_RENDEZVOUS(int /*waitm_num*/, int /*waitm_mask*/) {}
 void HOME_CYCLE(void) {}
 void UNHOME_AXES(void) {}
 void HOME_CYCLE_IF_UNHOMED(void) {}
