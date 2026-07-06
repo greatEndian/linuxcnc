@@ -41,6 +41,7 @@ param rw float gain = 200.0          "Proportional gain, output units per revolu
 param rw float lock_tolerance = 0.01 "Phase-lock tolerance, revolutions";
 param rw float max_vel = 0.0         "Clamp on |out| in output units (0 = no clamp). Set to the slave spindle's max speed so a large phase error cannot command a runaway speed (real spindles, and encoder-based sims, cannot follow an unbounded command).";
 
+option period no;
 function _;
 license "GPL";
 ;;

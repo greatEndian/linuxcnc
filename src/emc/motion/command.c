@@ -95,7 +95,7 @@ int mchan_active_channel = 0;	/* exported: reportError routes by it (MC30) */
  * is aborted where the legacy code did so. Channel 0 keeps the historic
  * global flag behavior (D7). */
 #define SET_MOTION_ERROR_FLAG_SCOPED(v) do { \
-	if (mchan_active_channel == 0) SET_MOTION_ERROR_FLAG(v); \
+	if (mchan_active_channel == 0) { SET_MOTION_ERROR_FLAG(v); } \
     } while (0)
 static cmd_code_t   *mchan_echo_cmd;
 static int          *mchan_echo_num;
