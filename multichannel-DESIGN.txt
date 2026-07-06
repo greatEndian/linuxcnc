@@ -335,6 +335,25 @@ KEY TRUTH (documented for operators): spatial path overlap is necessary
 but NOT sufficient for collision - TIME coincidence decides; the live
 view shows the now, MC31 zones give the guarantee.
 
+MULTI-CHANNEL GUI (built + gated 2026-07-06, share/qtvcp/screens/mchan_mon/)
+------------------------------------------------------------------------
+One qtvcp process, N per-channel NML connections (design D3 makes this
+possible with zero core changes). Panes are generic over [MCHAN]CHANNEL_INI
+(validated N=3 incl. graceful no-connection degradation). Each pane: live
+DRO/state/program, per-channel MDI/Run/Abort/Home (Home = ONE home(-1),
+scoped by the mchan permit mask), its own MC30 error line. Global row:
+ESTOP-all / Machine-On-all (D5 power rule) / Abort-all. Preview: per-channel
+G43-canon backplots with a Per-channel/Combined toggle; combined view =
+world-frame scene with envelope boxes, the computed overlap zone (== the
+mchan-lint matrix), origin triads, live tool markers + tool-to-tool distance
+vs [MCHAN]PROXIMITY_WARN, zoom/pan. Bottom RENDEZVOUS banner surfaces the
+motion-side "chN: waiting for chM @M2xx" report (D4/CP9), auto-clears on
+release. GATES: command-routing matrix 9/9 (real clicks, rsh oracle; caught
+3 GUI bugs pre-sign-off), waiting-M banner + release + error isolation all
+proven with screenshots; user sign-off 2026-07-06. Full build/gate record:
+~/cnc-dev/mchan-dev/multichannelGUI.md + HUMAN-TESTS-REPORT.md.
+Launch: DISPLAY=... MCHAN_INI=<master.ini> qtvcp -u mchan_mon_handler.py         share/qtvcp/screens/mchan_mon/mchan_mon.ui
+
 FINALIZATION TASKS (do at project end, before publishing)
 ----------------------------------------------------------
  F2. COMMISSIONING VERIFICATOR (user note 2026-06-12, explicitly deferred
