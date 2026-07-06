@@ -134,7 +134,7 @@ struct _inittab builtin_modules[] = {
  * estop/tool loopbacks). Set from [EMCMOT]MOTION_CHANNEL by emctaskmain's
  * iniLoad before the Task object is constructed. DEFINED here (not in
  * emctaskmain.cc) because rs274/sai links taskclass.o without
- * emctaskmain.o - same lesson as tp_active_scurve_peak_scale. */
+ * emctaskmain.o. */
 int emc_task_motion_channel = 0;
 static std::string mchan_iocontrol_name(void)
 {

@@ -1694,7 +1694,6 @@ static void mchan_update_status(void)
 	st.enables_new = tp->enables_new;
 	st.enables_queued = tp->enables_queued;
 	st.planner_type = tp->planner_type;
-	st.scurve_peak_scale = tp->scurve_peak_scale;
 	st.distance_to_go = tp->distance_to_go;
 	st.dtg = tp->dtg;
 	st.current_vel = tp->current_vel;
