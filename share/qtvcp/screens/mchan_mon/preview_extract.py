@@ -102,6 +102,12 @@ def dump_one(ini, ngc):
         def check_abort(self): pass
         def next_line(self, st):
             glcanon.GLCanon.next_line(self, st)
+        # GLCanon.dwell/user_defined_function touch colors['dwell'] and
+        # self.state, which this minimal extraction canon never sets up -
+        # G4 (or M1xx) in a program would abort the parse. The extractor
+        # only needs motion segments, so record nothing for them.
+        def dwell(self, *a): pass
+        def user_defined_function(self, *a): pass
 
     os.environ["INI_FILE_NAME"] = os.path.abspath(ini)
     inidir = os.path.dirname(os.path.abspath(ini))
