@@ -118,7 +118,7 @@ class PreviewWidget(QtWidgets.QWidget):
     """Paints channel toolpaths in the world frame. Rapids dashed, feeds
     solid; per-channel color; auto-fit to extents."""
 
-    AZIM = 0.45   # rad, around the lathe base view
+    AZIM = 0.45   # rad, around the lathe base view (defaults)
     ELEV = 0.30
 
     def __init__(self, parent=None):
@@ -129,6 +129,8 @@ class PreviewWidget(QtWidgets.QWidget):
         self.triads = []            # [(origin, R)] per channel
         self.zoom = 1.0
         self.pan = [0.0, 0.0]
+        self.azim = self.AZIM       # interactive view rotation (s5 parity)
+        self.elev = self.ELEV
         self._drag = None
         self.live = []              # s6: [(world_pos, rgb)] live tool markers
         self.trails = {}            # s6: marker idx -> recent world positions
@@ -169,13 +171,24 @@ class PreviewWidget(QtWidgets.QWidget):
             self.update()
 
     def mousePressEvent(self, ev):
-        self._drag = (ev.x(), ev.y(), self.pan[0], self.pan[1])
+        # left-drag = ROTATE (s5 viewer parity); shift+left or middle = pan
+        mode = ("pan" if (ev.button() == QtCore.Qt.MiddleButton
+                          or ev.modifiers() & QtCore.Qt.ShiftModifier)
+                else "rot")
+        self._drag = (mode, ev.x(), ev.y(),
+                      self.pan[0], self.pan[1], self.azim, self.elev)
 
     def mouseMoveEvent(self, ev):
-        if self._drag:
-            x0, y0, px, py = self._drag
-            self.pan = [px + ev.x() - x0, py + ev.y() - y0]
-            self.update()
+        if not self._drag:
+            return
+        mode, x0, y0, px, py, az, el = self._drag
+        dx, dy = ev.x() - x0, ev.y() - y0
+        if mode == "pan":
+            self.pan = [px + dx, py + dy]
+        else:
+            self.azim = az + dx * 0.01
+            self.elev = max(-1.55, min(1.55, el + dy * 0.01))
+        self.update()
 
     def mouseReleaseEvent(self, _ev):
         self._drag = None
@@ -183,6 +196,8 @@ class PreviewWidget(QtWidgets.QWidget):
     def mouseDoubleClickEvent(self, _ev):
         self.zoom = 1.0
         self.pan = [0.0, 0.0]
+        self.azim = self.AZIM
+        self.elev = self.ELEV
         self.update()
 
     # ---- projection (port of mchan-preview-view.py Viewer.proj) ----
@@ -209,8 +224,8 @@ class PreviewWidget(QtWidgets.QWidget):
         cx, cy, cz, scale = fit
         x, y, z = p[0] - cx, p[1] - cy, p[2] - cz
         u0, v0, w0 = z, x, y              # lathe basis: right, depth, up
-        ca, sa = math.cos(self.AZIM), math.sin(self.AZIM)
-        ce, se = math.cos(self.ELEV), math.sin(self.ELEV)
+        ca, sa = math.cos(self.azim), math.sin(self.azim)
+        ce, se = math.cos(self.elev), math.sin(self.elev)
         u = ca * u0 + sa * v0
         v = -sa * u0 + ca * v0
         w = ce * w0 - se * v
