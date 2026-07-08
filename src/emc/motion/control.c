@@ -1663,6 +1663,31 @@ static void mchan_run_secondary(long period)
  * AND finishes inside the reader's copy (proven: 3580 undetected tears /
  * 44M reads with mc2c-tear). The reader side (usrmotintf) now does a real
  * seqlock check to close that half. Never runs at num_channels=1 (D7). */
+
+/* MCHAN: compound velocity of THIS channel's own owned joints while they
+ * are being driven through free_tp (jogging or homing - coord_tp is NOT
+ * involved). Needed because both the legacy global compound-velocity calc
+ * below and each channel's coord_tp.current_vel are blind to free_tp
+ * motion outside their own scope: the global calc summed ALL_JOINTS with
+ * no ownership filter (so a secondary channel's jog/home velocity bled
+ * into channel 0's DRO), and a channel's own coord_tp.current_vel is
+ * always 0 during a pure jog/home (coord_tp isn't the one moving) - so a
+ * secondary channel's OWN DRO never showed its jog/home velocity at all.
+ * Found by the user: "ch1 DRO velocity doesn't work; during homing ch1's
+ * velocity shows on ch0's DRO instead." */
+static double mchan_channel_free_vel(int ch)
+{
+    double v2 = 0.0;
+    for (int j = 0; j < ALL_JOINTS; j++) {
+	if (emcmotInternal->joint_owner[j] == ch
+	    && GET_JOINT_ACTIVE_FLAG(&joints[j])
+	    && joints[j].free_tp.active) {
+	    v2 += joints[j].vel_cmd * joints[j].vel_cmd;
+	}
+    }
+    return (v2 > 0.0) ? sqrt(v2) : 0.0;
+}
+
 static void mchan_update_status(void)
 {
     static emcmot_status_t st;	/* staging - private to motmod */
@@ -1701,7 +1726,13 @@ static void mchan_update_status(void)
 	st.planner_type = tp->planner_type;
 	st.distance_to_go = tp->distance_to_go;
 	st.dtg = tp->dtg;
-	st.current_vel = tp->current_vel;
+	/* coord_tp velocity for program-driven motion; this channel's OWN
+	 * free_tp velocity (jog/home) when that's what's actually moving -
+	 * a channel is never doing both at once, so this is unambiguous. */
+	{
+	    double fv = mchan_channel_free_vel(ch);
+	    st.current_vel = (fv > 0.0) ? fv : tp->current_vel;
+	}
 	st.requested_vel = tp->requested_vel;
 	st.current_acc = tp->current_acc;
 	st.current_jerk = tp->current_jerk;
@@ -2595,22 +2626,18 @@ static void output_to_hal(void)
         emcmotStatus->current_vel = (*emcmot_hal_data->current_vel) = axis_get_compound_velocity();
         *(emcmot_hal_data->requested_vel) = 0.0;
     } else {
-        int i;
-        double v2 = 0.0;
-        for(i=0; i < ALL_JOINTS; i++)
-            if(GET_JOINT_ACTIVE_FLAG(&(joints[i])) && joints[i].free_tp.active)
-                v2 += joints[i].vel_cmd * joints[i].vel_cmd;
-        if(v2 > 0.0)
-            emcmotStatus->current_vel = (*emcmot_hal_data->current_vel) = sqrt(v2);
-        else
-            emcmotStatus->current_vel = (*emcmot_hal_data->current_vel) = 0.0;
+        /* MCHAN: legacy/global view = channel 0's own perspective - scope
+         * to joints channel 0 owns, so a secondary channel's jog/home
+         * velocity doesn't bleed into this (channel 0's) DRO. */
+        emcmotStatus->current_vel = (*emcmot_hal_data->current_vel) = mchan_channel_free_vel(0);
         *(emcmot_hal_data->requested_vel) = 0.0;
     }
 
     /* MCHAN MC5: per-channel motion outputs (motion.N.is-moving / .current-vel).
      * is-moving = the channel's coord TP is running OR any joint it owns is
      * running a free/jog/homing move (so ch0 jogs/teleop count too).
-     * current-vel = the channel coord TP velocity (0 during pure jog). */
+     * current-vel = the channel coord TP velocity, or this channel's own
+     * free_tp (jog/home) velocity when THAT's what's actually moving. */
     {
 	int ch, j;
 	for (ch = 0; ch < motion_num_channels; ch++) {
@@ -2623,7 +2650,11 @@ static void output_to_hal(void)
 		}
 	    }
 	    *(emcmot_hal_data->mchan[ch].is_moving) = mv;
-	    *(emcmot_hal_data->mchan[ch].current_vel) = ctp->current_vel;
+	    {
+		double fv = mchan_channel_free_vel(ch);
+		*(emcmot_hal_data->mchan[ch].current_vel) =
+		    (fv > 0.0) ? fv : ctp->current_vel;
+	    }
 	    /* MC7: per-channel run-status feedback (mirrors the global motion.*
 	     * pins but for THIS channel's coord_tp). in-position = at rest with
 	     * nothing queued. At num_channels=1, motion.0.* matches the legacy
