@@ -1613,6 +1613,11 @@ static void mchan_run_secondary(long period)
 		if (jn < 0) continue;
 		emcmot_joint_t *j = &joints[jn];
 		j->free_tp.max_jerk = j->jerk_limit;
+		/* the stock FREE executor skips owned joints, so ITS acc-limit
+		 * housekeeping never runs for them - without this the homing
+		 * FSM's seek move (free_tp target+enable set, max_acc never
+		 * initialized = 0) freezes at zero velocity forever */
+		j->free_tp.max_acc = j->acc_limit;
 		simple_tp_update(&(j->free_tp), servo_period);
 		j->jerk_cmd = j->free_tp.curr_jerk;
 		j->pos_cmd = j->free_tp.curr_pos;
