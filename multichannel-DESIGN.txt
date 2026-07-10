@@ -427,6 +427,36 @@ VALIDATION GATES for the implementation:
     channel runs a program; jog-abort isolation both directions.
   - D7 gate: full G5 matrix + G6 + motion regression tests unchanged.
 
+IMPLEMENTATION OUTCOME - CORRECTION ADDENDUM (2026-07-10)
+The PROBLEM statement above was WRONG, and the per-channel axis-array
+rework it motivates is NOT NEEDED. The decisive live experiment (healthy
+desktop session, ch1 world jog via NML with joint_flag=False): the mchan
+command dispatcher intercepts EMCMOT_JOG_CONT/INCR/ABS for secondary
+channels BEFORE the global teleop path - mchan_jog() (command.c:505)
+already handles axis-flavored jogs per channel, resolving the letter
+through the channel's axis_to_joint[] map and driving that joint's
+free_tp under the MC24 envelope. Observed: joint 4 moved 1.0 -> 18.76
+with perfect isolation (ch0 untouched, ch0 velocity 0.000) and correct
+ch1 velocity. The global axis_array/kinematicsInverse analysis described
+a path these jogs never take; the earlier "evidence" came from a dead
+session plus the (since-fixed, 12b3c041a1) velocity-attribution bug.
+
+The ONE real defect the experiment surfaced: st.carte_pos_cmd in
+mchan_update_status() came from tpGetPos() unconditionally, so the
+commanded-position DRO froze during free-mode motion (jog/homing) while
+carte_pos_fb tracked. Fixed in e8e6c4155e: outside COORD the commanded
+pose is composed from the mapped joints' pos_cmd, mirroring the fb loop.
+Validated: cmd+actual track together during jog, no snap-back, MDI exact
+after COORD re-entry, homing seek visible on cmd; G5 9/9 + G6 green.
+
+Still true and kept for the record: the kinematics amendment (generic
+per-channel kinematicsInverse is blocked by genserkins impurity + the
+single coordinates= map - identity-only via axis_to_joint stands, and
+mchan_jog already enforces exactly that); the risk register remains the
+checklist IF non-identity kins per channel is ever attempted (upstream
+kins-API conversation). Risk 2 materialized in advance and is closed by
+12b3c041a1 + e8e6c4155e.
+
 FINALIZATION TASKS (do at project end, before publishing)
 ----------------------------------------------------------
  F2. COMMISSIONING VERIFICATOR (user note 2026-06-12, explicitly deferred
