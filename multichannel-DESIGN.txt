@@ -354,6 +354,79 @@ proven with screenshots; user sign-off 2026-07-06. Full build/gate record:
 ~/cnc-dev/mchan-dev/multichannelGUI.md + HUMAN-TESTS-REPORT.md.
 Launch: DISPLAY=... MCHAN_INI=<master.ini> qtvcp -u mchan_mon_handler.py         share/qtvcp/screens/mchan_mon/mchan_mon.ui
 
+PER-CHANNEL TELEOP (WORLD-MODE) JOG - validated design (2026-07-10)
+------------------------------------------------------------------------
+PROBLEM (user-found): world/teleop jog is not channel-aware. axis.c holds
+ONE machine-global axis_array[EMCMOT_MAX_AXIS]; the TELEOP path feeds ONE
+global carte_pos_cmd through ONE kinematicsInverse() call whose loaded
+module (trivkins coordinates=...) only describes channel 0's joints. A
+secondary channel's world jog therefore drives ch0's axes/joints and its
+velocity appears on ch0's DRO; the jogging channel itself never moves.
+Joint-mode jog is unaffected (correctly mchan-scoped via free_tp).
+
+DECISION (user, 2026-07-08): build the real per-channel fix, not a
+refuse-with-error mitigation.
+
+VALIDATED DESIGN (thesis + 2 evidence-driven amendments, 2026-07-10):
+
+  Core: a per-channel axis dimension, fixed-size and letter-indexed -
+      static emcmot_axis_t axis_array[EMCMOT_MAX_CHANNELS][EMCMOT_MAX_AXIS];
+  kept PRIVATE inside axis.c (amendment 1: emcmot_axis_t is deliberately
+  module-private; nesting it into emcmot_channel_t would break the module
+  boundary and drag planner state into shmem for nothing). Channel-aware
+  API entry points (axis_chan_*) take an explicit bounded channel index;
+  the existing legacy API keeps its signatures and forwards to channel 0,
+  so every existing call site is untouched (D7 bit-identity by
+  construction, no shmem/ABI change, nothing new for the MC2b snapshot
+  to tear).
+
+  Kinematics (amendment 2): secondary-channel world jog uses the
+  channel's own axis_to_joint[] map as its (identity) inverse kinematics.
+  Generic per-channel kinematicsInverse() is FACTUALLY blocked today:
+  (a) genserkins is ITERATIVE - it seeds from the passed-in joints[], so
+  interleaved per-channel calls through an impure module produce garbage
+  by construction; (b) the loaded module's coordinates= string describes
+  exactly one letter->slot mapping and the kins API has no channel
+  parameter. Non-identity kins on a secondary channel is refused with a
+  clear operator error until the kins API grows a channel dimension
+  (upstream conversation). For identity kins the axis_to_joint remap IS
+  kinematicsInverse's result, computed without the redundant call.
+
+  Existing scaffolding reused: MC24 per-channel envelope = the limits
+  source (already stored + configured per channel); virt_state (already
+  virtualized - a secondary channel's teleop enable never touches the
+  global motion state); mchan_run_secondary() = the executor that drives
+  the channel's teleop planners each cycle.
+
+RISK REGISTER (ranked; each is an implementation checklist item):
+  1. Jog-abort friendly fire: axis_jog_abort_all() has ~10 GLOBAL call
+     sites (ABORT, COORD entry, jog-stop pin, teleop transitions). Every
+     site must be audited: machine-global events abort ALL channels'
+     jogs; channel-scoped events abort only that channel's.
+  2. Velocity/position DRO regression: the mchan_channel_free_vel()
+     helper (12b3c041a1) reads free_tp only - the channel's teleop
+     planner velocity must be included or the world-jog velocity DRO
+     reads 0 again. Same for the per-channel stat position overlay.
+  3. Homing gate: per-channel teleop requires THAT CHANNEL's joints
+     homed (not allhomed); define explicitly.
+  4. Busy refusal: world jog refused while the channel's coord_tp runs.
+  5. Envelope-unset trap: MC24 limits are zero-until-configured; a zero
+     envelope must produce a LOUD refusal, not a silent no-move (the
+     free_tp.max_acc lesson).
+  6. HAL pins: axis.<letter>.* stays channel 0 (legacy compat).
+     Per-channel axis pins + per-channel jogwheels are DEFERRED -
+     GUI/keyboard jog arrives via NML, needing no new pins.
+  7. External offsets remain channel-0-only (threaded through COORD
+     bound updates); splitting them is a separate future effort.
+
+VALIDATION GATES for the implementation:
+  - Equivalence: on ch0/trivkins the axis_to_joint remap must produce
+    joints bit-identical to the kinematicsInverse() path.
+  - New matrix rows: ch1 world jog moves ONLY joints 4-7 with position
+    AND velocity on ch1's DRO only; mirror for ch0; refusal while the
+    channel runs a program; jog-abort isolation both directions.
+  - D7 gate: full G5 matrix + G6 + motion regression tests unchanged.
+
 FINALIZATION TASKS (do at project end, before publishing)
 ----------------------------------------------------------
  F2. COMMISSIONING VERIFICATOR (user note 2026-06-12, explicitly deferred
