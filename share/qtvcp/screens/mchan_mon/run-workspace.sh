@@ -66,12 +66,14 @@ log "workspace closed - AXIS windows are back on the desktop"
 
 # --- offer a full shutdown ---------------------------------------------------
 if [ -t 0 ]; then
-    read -r -p "run-workspace: shut the LinuxCNC session down too? [y/N] " ans
-    if [ "${ans,,}" = "y" ]; then
+    # default = YES: "I closed it" should mean closed (a lingering session
+    # once kept a wedged homing latch alive across a supposed restart)
+    read -r -p "run-workspace: shut the LinuxCNC session down too? [Y/n] " ans
+    if [ "${ans,,}" = "n" ]; then
+        log "session left running (pid $SIM)"
+    else
         kill $SIM 2>/dev/null
         log "session shutdown requested"
-    else
-        log "session left running (pid $SIM)"
     fi
 else
     log "session left running (pid $SIM); stop it with: kill $SIM"
