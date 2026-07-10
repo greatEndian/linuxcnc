@@ -1750,9 +1750,26 @@ static void mchan_update_status(void)
 	st.paused = tp->pausing;
 	st.tool_offset = c->tool_offset;
 
-	/* channel pose: commanded from its TP; "actual" composed from the
-	 * mapped joints' feedback through the identity letter map */
-	tpGetPos(tp, &st.carte_pos_cmd);
+	/* channel pose: commanded from its TP while in COORD; outside COORD
+	 * (FREE/TELEOP jog or homing drive the joints through free_tp while
+	 * the TP is parked) compose it from the mapped joints' commanded
+	 * positions, mirroring the fb loop below. Without this the
+	 * commanded-position DRO (POSITION_FEEDBACK=COMMANDED) freezes at
+	 * the TP's stale pose during secondary-channel jogs and homing
+	 * (found by the world-jog validation: joint moved 18mm, actual
+	 * tracked, commanded stayed 0.000). COORD re-entry already
+	 * tpSetPos()s from the joints (zero-jump rule), so switching back
+	 * is seamless. */
+	if (c->virt_state == EMCMOT_MOTION_COORD) {
+	    tpGetPos(tp, &st.carte_pos_cmd);
+	} else {
+	    ZERO_EMC_POSE(st.carte_pos_cmd);
+	    for (int ax = 0; ax < EMCMOT_MAX_AXIS; ax++) {
+		int jn = c->axis_to_joint[ax];
+		if (jn >= 0)
+		    mchan_pose_set_axis(&st.carte_pos_cmd, ax, joints[jn].pos_cmd);
+	    }
+	}
 	st.carte_pos_cmd_ok = 1;
 	ZERO_EMC_POSE(st.carte_pos_fb);
 	for (int ax = 0; ax < EMCMOT_MAX_AXIS; ax++) {
