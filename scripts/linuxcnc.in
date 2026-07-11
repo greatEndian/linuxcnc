@@ -1056,6 +1056,20 @@ while [ -n "$CH_INI" ] ; do
     CH_INI=$($INIVAR -tildeexpand -ini "$INIFILE" -var CHANNEL_INI -sec MCHAN -num $NUM 2> /dev/null)
 done
 
+# Machine-global mchan settings live in the MASTER INI and are NOT carried by
+# any per-channel chmap call above (those get the secondary channel INIs).
+# Push them once now that every channel stack is up. Currently this is the
+# MC31 interference keep-out zone - without it the collision guard is never
+# armed (silent no-op) even though every channel reports its world frame.
+if [ "$NUM" -gt 1 ]; then
+    CHMAP=$($INIVAR -ini "$INIFILE" -var CHMAP -sec MCHAN 2> /dev/null)
+    CHMAP=${CHMAP:-mchan-chmap}
+    if ! "$CHMAP" --machine "$INIFILE"; then
+        echo "MCHAN: machine-global settings (interference zone) rejected" \
+            | tee -a "$PRINT_FILE"
+    fi
+fi
+
 # 4.3.11. Run display in foreground
 echo "Starting DISPLAY program: $EMCDISPLAY" >> "$PRINT_FILE"
 result=0
