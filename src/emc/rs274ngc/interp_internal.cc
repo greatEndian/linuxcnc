@@ -292,6 +292,10 @@ int Interp::init_block(block_pointer block)      //!< pointer to a block to be i
     block->m_modes[n] = -1;
   }
   block->user_m = 0;
+  /* MCHAN MC10/Phase4: the block is reused for every line - without this
+   * reset the first M2xx leaves a phantom rendezvous on every later block */
+  block->waitm_flag = false;
+  block->waitm_number = -1;
   block->p_number = -1.0;
   block->p_flag = false;
   block->q_flag = false;
