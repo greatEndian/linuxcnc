@@ -111,7 +111,16 @@ def main(argv=None):
     session = Session(args.master_ini)
     print("mchan-verify: %d channel(s), joints %s"
           % (session.num_channels, session.all_joints()))
-    session.connect()
+    try:
+        session.connect()
+    except Exception as e:
+        print("\nmchan-verify: cannot attach to a running session (%s)" % e)
+        print("Start the machine FIRST, then run the wizard, e.g.:")
+        print("  terminal 1:  ~/cnc-dev/mchan-dev/run-workspace.sh")
+        print("  terminal 2:  %s %s" % ("mchan-verify", args.master_ini))
+        print("The wizard never boots a session itself - it verifies the "
+              "one the integrator started.")
+        return 2
     report = Report(session, operator=args.operator)
     operator = Operator(batch)
 
