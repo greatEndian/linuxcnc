@@ -289,14 +289,19 @@ class HandlerClass:
             "background:#b00; color:white; font-weight:bold;")
         self.btn_on = QtWidgets.QPushButton("Machine On (all)")
         self.btn_abort_all = QtWidgets.QPushButton("Abort (all)")
+        self.btn_commission = QtWidgets.QPushButton("Commissioning…")
         grow.addWidget(self.btn_estop)
         grow.addWidget(self.btn_on)
         grow.addWidget(self.btn_abort_all)
         grow.addStretch(1)
+        grow.addWidget(self.btn_commission)
         self.w.outer.insertLayout(1, grow)
         self.btn_estop.clicked.connect(self._estop_all)
         self.btn_on.clicked.connect(self._machine_on_all)
         self.btn_abort_all.clicked.connect(self._abort_all)
+        self.btn_commission.clicked.connect(self._open_commissioning)
+        self._master_ini = master
+        self._commission_dlg = None
 
         # G4b: preview mode toggle (mockup: "Preview: ( )Per-channel (*)Combined")
         row = QtWidgets.QHBoxLayout()
@@ -365,6 +370,16 @@ class HandlerClass:
     def _abort_all(self):
         for pane in self.panes:
             pane.abort()
+
+    def _open_commissioning(self):
+        """F2 P3: the commissioning verificator page - drives the same
+        mchan_verify check objects the CLI wizard runs."""
+        from mchan_verify.verify_page import CommissioningDialog
+        if self._commission_dlg is None:
+            self._commission_dlg = CommissioningDialog(
+                self._master_ini, parent=self.w, default_nml=ORIG_NML)
+        self._commission_dlg.show()
+        self._commission_dlg.raise_()
 
     def _preview_mode(self, combined_on=None):
         combined_on = self.rb_comb.isChecked()

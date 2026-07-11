@@ -23,6 +23,14 @@ import linuxcnc
 AXIS_LETTERS = "XYZABCUVW"
 ANGULAR_LETTERS = "ABC"
 
+# The compiled-in default NML file (channel 0's buffers) captured at import,
+# while linuxcnc.nmlfile is still pristine. This is the fallback for a master
+# ini with no explicit [EMC]NML_FILE. In a host process that has already
+# retargeted the global linuxcnc.nmlfile (e.g. the qtvcp mchan_mon panel, whose
+# panes point it at each channel's own nml), this import-time value can be
+# stale, so Session accepts an explicit default_nml the host passes in.
+_IMPORT_DEFAULT_NML = linuxcnc.nmlfile
+
 
 def rot_matrix(rx, ry, rz):
     """Rz*Ry*Rx, degrees -> 3x3 (matches the preview's convention)."""
@@ -145,9 +153,14 @@ class Hal:
 
 
 class Chan:
-    def __init__(self, idx, nml=None):
-        if nml:
-            linuxcnc.nmlfile = nml
+    def __init__(self, idx, nml):
+        # ALWAYS retarget the global before creating the objects - never
+        # inherit whatever the ambient linuxcnc.nmlfile happens to be. A host
+        # process (the qtvcp panel) may have left it pointing at another
+        # channel's buffer; without this reset, "channel 0" would silently
+        # bind to that other channel and every command would hit the wrong
+        # head. nml must be a concrete path (connect() resolves it).
+        linuxcnc.nmlfile = nml
         self.s = linuxcnc.stat()
         self.c = linuxcnc.command()
         self.e = linuxcnc.error_channel()
@@ -169,9 +182,14 @@ class Chan:
 class Session:
     """Parsed multichannel config + live connections."""
 
-    def __init__(self, master_ini):
+    def __init__(self, master_ini, default_nml=None):
         self.master_ini = os.path.abspath(master_ini)
         self.ini_dir = os.path.dirname(self.master_ini)
+        # channel 0's fallback nml when the master ini has no [EMC]NML_FILE.
+        # A GUI host that has retargeted linuxcnc.nmlfile passes the pristine
+        # value it captured at its own (clean) import; standalone/CLI callers
+        # get the correct value from _IMPORT_DEFAULT_NML.
+        self.default_nml = default_nml or _IMPORT_DEFAULT_NML
         self.channel_inis = [self.master_ini]
         for ci in ini_find_all(self.master_ini, "MCHAN", "CHANNEL_INI"):
             p = ci if os.path.isabs(ci) else os.path.join(self.ini_dir, ci)
@@ -249,14 +267,19 @@ class Session:
         return self.world_point(ch, loc)
 
     # ---- live --------------------------------------------------------
+    def _channel_nml(self, ch):
+        """resolve a channel's NML file to a concrete path. Channel 0's master
+        ini usually has no [EMC]NML_FILE and uses the compiled default."""
+        nml = ini_find(self.channel_inis[ch], "EMC", "NML_FILE")
+        if not nml:
+            return self.default_nml
+        return nml if os.path.isabs(nml) else os.path.join(self.ini_dir, nml)
+
     def connect(self):
         self.hal = Hal()
-        self.chans = [Chan(0)]
-        for ch in range(1, self.num_channels):
-            nml = ini_find(self.channel_inis[ch], "EMC", "NML_FILE")
-            if nml and not os.path.isabs(nml):
-                nml = os.path.join(self.ini_dir, nml)
-            self.chans.append(Chan(ch, nml=nml))
+        self.chans = []
+        for ch in range(self.num_channels):
+            self.chans.append(Chan(ch, nml=self._channel_nml(ch)))
         for ch in self.chans:
             ch.poll()          # a real protocol round-trip per channel
 

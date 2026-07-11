@@ -196,5 +196,33 @@ VR  report                   AUTO. Markdown: per-check verdict + operator
  P3  qtvcp commissioning page in mchan_mon
      GATE: xdotool-driven page walk on :99 mirroring the P1 batch run
      (same pattern as the G5 matrix).
+     -> DONE 2026-07-11: CommissioningDialog (verify_page.py) rendered by the
+     real mchan_mon panel on Xvfb :99, opened via the "Commissioning…" button
+     and driven with xdotool (integrator field + Start). It renders the SAME
+     check objects the CLI wizard runs (design rule: the page must not fork
+     the logic - the driver loop mirrors cli.run_check). Full V0-V9 run from a
+     FRESH sim boot = all PASS (report commissioning-...-195143.md); a
+     consecutive RE-RUN with the machine already powered+homed = all PASS too
+     (195454.md). Answers came from a new env-gated BatchOperator
+     (MCHAN_VERIFY_ANSWERS) - the GUI parity of the CLI --batch seam, so the
+     page is gate-able headlessly and v7.X ("opposite") is answered correctly.
+     ** P3 FOUND A REAL BUG (masked in every prior standalone/CLI run): the
+     check Session's channel-0 connection bound to the WRONG NML buffer when
+     it runs inside the qtvcp panel. Chan(0) had nml=None and inherited the
+     ambient global linuxcnc.nmlfile, which the panel's per-channel panes leave
+     pointing at the LAST channel's own .nml. Result: "channel 0" silently
+     aliased channel 1 - every command hit the wrong head, so V1's D5 demo and
+     V2's homing failed ("could not power on", homed 0.0s at the wrong pos).
+     Fix: Chan ALWAYS retargets linuxcnc.nmlfile explicitly (never inherits);
+     connect() resolves ch0's nml from the master ini's [EMC]NML_FILE, falling
+     back to a pristine default the host captures at its own clean import
+     (Session default_nml, CommissioningDialog default_nml=ORIG_NML). Proven:
+     with the global deliberately polluted, the two channels now bind to
+     DISTINCT buffers (estop-ch0 leaves ch1 untouched). Standalone/CLI callers
+     are unaffected (their import-time default is already correct). Two other
+     "failures" in early P3 runs were state, not code: a dirty machine left in
+     an interference-hold wedge cascaded homing timeouts, and V1's "already ON"
+     start was the same nmlfile misbinding - both clean once the binding is
+     fixed and the run starts from a real state.
 
 Each phase = its own commit(s) + gate record here.
