@@ -1,0 +1,11 @@
+#!/bin/bash
+# mchan-verify - guided commissioning verificator for multichannel configs.
+# usage: mchan-verify <master.ini> [--batch answers.json] [...]
+# Connects to a RUNNING session (start the machine first).
+DIR="$(cd "$(dirname "$0")" && pwd)"
+if [ -z "${EMC2_HOME:-}" ]; then
+    # shellcheck disable=SC1091
+    source "$DIR/rip-environment"
+fi
+PYTHONPATH="$EMC2_HOME/share/qtvcp/screens/mchan_mon:${PYTHONPATH:-}" \
+    exec python3 -m mchan_verify.cli "$@"

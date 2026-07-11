@@ -1,0 +1,13 @@
+{
+  "_comment": "worked example: the 2-spindle lathe SIM answers - what a correctly commissioned machine looks like. Doubles as the P1 regression gate input.",
+  "v1.physical-estop": true,
+  "v2.physical-reference": true,
+  "v4.ch0.C": true,
+  "v4.ch0.X": true,
+  "v4.ch0.Y": true,
+  "v4.ch0.Z": true,
+  "v4.ch1.C": true,
+  "v4.ch1.X": true,
+  "v4.ch1.Y": true,
+  "v4.ch1.Z": true
+}

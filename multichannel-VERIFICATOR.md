@@ -158,6 +158,15 @@ VR  report                   AUTO. Markdown: per-check verdict + operator
  P1  session.py + report.py + cli.py + V0,V1,V2,V4  (all AUTO-heavy)
      GATE: batch run vs lathe sim = all PASS; negative test: break MAP in a
      scratch ini -> V4 FAIL; unwired index-enable claim -> V2 static FAIL.
+     -> DONE 2026-07-11: positive batch run V0/V1/V2/V4 all PASS on the
+     lathe sim; NEG1 swapped-MAP scratch ini -> V4 oracle FAIL ("mapped
+     joint 1 moved 0.0000"); NEG2 HOME_USE_INDEX claim w/o net -> V2
+     static FAIL; NEG3 operator answers no -> V4 verdict FAIL. Two
+     build-time findings folded in: settle must watch TARGET-JOINT
+     pos-cmd (ch0 teleop jogs drive the axis planners, so
+     motion.N.current-vel reads 0 mid-move) and V2 must UNHOME before
+     homing (home(-1) on homed joints is a no-op, the position check
+     would compare leftovers).
  P2  V3,V5,V6,V7,V8,V9
      GATE: batch run all PASS on sim (operator answers scripted); negative:
      ORIENT flipped in scratch ini -> V7 FAIL; zone removed -> V9(b) FAIL;
