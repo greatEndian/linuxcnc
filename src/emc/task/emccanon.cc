@@ -487,6 +487,10 @@ void WAIT_RENDEZVOUS(int waitm_num, int waitm_mask)
     auto msg = std::make_unique<EMC_TRAJ_WAIT_RENDEZVOUS>();
     msg->waitm_num = waitm_num;
     msg->waitm_mask = waitm_mask;
+    /* feeds ahead of this may still sit in the naive-cam linking buffer
+     * (chained_points) - flush them or they land on the interp_list AFTER
+     * this rendezvous and the arrival registers before the moves run */
+    flush_segments();
     interp_list.append(std::move(msg));
 }
 
