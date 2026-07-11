@@ -464,7 +464,10 @@ FINALIZATION TASKS (do at project end, before publishing)
      AXES and verify the GEOMETRICAL PREVIEW setup (ORIGIN/ORIENT truth
      vs the real iron, per-channel envelope sanity, chuck/spindle axis
      conventions). mchan-lint + mchan-preview check are the seeds; the
-     verificator wraps them into a commissioning procedure. NOT scheduled.
+     verificator wraps them into a commissioning procedure.
+     -> STARTED 2026-07-11: full design in multichannel-VERIFICATOR.md
+     (check catalog V0-V9+VR, module core + CLI + qtvcp page, build
+     phases P1-P3 with sim gates).
  F1. RENAMING (user request 2026-06-11): replace the vendor names in ALL
      project-owned text - this document, notes.txt, code comments, future
      docs - as follows:  "Fanuc" -> "Fanuq",  "Siemens" -> "Siemenz".
