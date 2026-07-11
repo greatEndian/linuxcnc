@@ -171,6 +171,28 @@ VR  report                   AUTO. Markdown: per-check verdict + operator
      GATE: batch run all PASS on sim (operator answers scripted); negative:
      ORIENT flipped in scratch ini -> V7 FAIL; zone removed -> V9(b) FAIL;
      limits narrowed -> V5 refusal-check FAIL.
+     -> DONE 2026-07-11: full V0-V9 batch run all PASS on the lathe sim.
+     Negatives: NEG-V7 (ch1 ORIENT 0 180 0 -> 180 0 0) -> V7 FAIL naming
+     the observed pattern; NEG-V6 (measured gap 25 vs designed 20) -> V6
+     FAIL with the ORIGIN-correction hint. V5's refusal assertion is
+     covered by its POSITIVE run (real joint+axis limit rejections logged
+     on both channels reaching 99/299); a synthetic broken-soft-limit
+     negative needs a multi-minute huge move, skipped.
+     ** V9 FOUND A REAL BUG (its whole reason to exist): the MC31
+     interference keep-out zone was NEVER armed at session start, so the
+     collision guard was a silent no-op on every boot. Root cause: the
+     launcher (scripts/linuxcnc[.in]) runs mchan-chmap once per SECONDARY
+     channel with that channel's INI, but [MCHAN]INTERFERE_ZONE lives in
+     the MASTER ini only, so the zone command was never sent. Fixed by a
+     new `mchan-chmap --machine <master.ini>` mode (sends only the
+     machine-global zone, no per-channel map/ownership) + a launcher call
+     after the channel loop. V9 went from FAIL (guard dead) to PASS
+     (guard latches interfere-active/hold and holds the entering tool ~5mm
+     inside the boundary, never reaching its in-zone target). Two design
+     points folded in: V6 asserts motion.interfere-allow (sanctioned
+     handover) to measure inside the zone, and V9 recovers from the
+     feed-0 hold under the same permit (jog-out-under-permit is the
+     documented recovery).
  P3  qtvcp commissioning page in mchan_mon
      GATE: xdotool-driven page walk on :99 mirroring the P1 batch run
      (same pattern as the G5 matrix).

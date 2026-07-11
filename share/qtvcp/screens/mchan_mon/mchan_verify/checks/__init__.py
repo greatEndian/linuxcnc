@@ -56,7 +56,11 @@ class Check:
 
 
 def load_all():
-    from . import v0_static, v1_power, v2_homing, v4_map
-    checks = [v0_static.V0Static, v1_power.V1Power,
-              v2_homing.V2Homing, v4_map.V4Map]
+    from . import (v0_static, v1_power, v2_homing, v3_direction, v4_map,
+                   v5_envelope, v6_origin, v7_orient, v8_spindle,
+                   v9_interference)
+    checks = [v0_static.V0Static, v1_power.V1Power, v2_homing.V2Homing,
+              v3_direction.V3Direction, v4_map.V4Map, v5_envelope.V5Envelope,
+              v6_origin.V6Origin, v7_orient.V7Orient, v8_spindle.V8Spindle,
+              v9_interference.V9Interference]
     return sorted(checks, key=lambda c: c.id)

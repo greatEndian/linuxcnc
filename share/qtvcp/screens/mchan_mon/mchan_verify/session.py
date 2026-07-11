@@ -13,6 +13,7 @@ project has already paid for twice:
 
 The verificator CONNECTS to a running session; it never boots one.
 """
+import math
 import os
 import subprocess
 import time
@@ -20,6 +21,19 @@ import time
 import linuxcnc
 
 AXIS_LETTERS = "XYZABCUVW"
+ANGULAR_LETTERS = "ABC"
+
+
+def rot_matrix(rx, ry, rz):
+    """Rz*Ry*Rx, degrees -> 3x3 (matches the preview's convention)."""
+    rx, ry, rz = (math.radians(v) for v in (rx, ry, rz))
+    cx, sx, cy, sy, cz, sz = (math.cos(rx), math.sin(rx), math.cos(ry),
+                              math.sin(ry), math.cos(rz), math.sin(rz))
+    return [
+        [cz * cy, cz * sy * sx - sz * cx, cz * sy * cx + sz * sx],
+        [sz * cy, sz * sy * sx + cz * cx, sz * sy * cx - cz * sx],
+        [-sy, cy * sx, cy * cx],
+    ]
 
 
 def ini_find(path, sec, var, default=None):
@@ -59,6 +73,16 @@ def ini_find_all(path, sec, var):
     except OSError:
         pass
     return out
+
+
+def triplet(s, default=(0.0, 0.0, 0.0)):
+    if not s:
+        return list(default)
+    p = s.split()
+    try:
+        return [float(p[0]), float(p[1]), float(p[2])]
+    except (IndexError, ValueError):
+        return list(default)
 
 
 def parse_map(s):
@@ -171,9 +195,58 @@ class Session:
     def axis_index(self, letter):
         return AXIS_LETTERS.index(letter.upper())
 
+    def is_angular(self, letter):
+        return letter.upper() in ANGULAR_LETTERS
+
     def jvar(self, joint, var, default=None):
         """joint config comes from the MASTER ini only (MC28)."""
         return ini_find(self.master_ini, "JOINT_%d" % joint, var, default)
+
+    def axis_limits(self, ch, letter):
+        """(min, max) soft limits of a channel's axis letter, from its own
+        [AXIS_L] envelope (MC24). None if unset."""
+        ini = self.channel_inis[ch]
+        sec = "AXIS_%s" % letter.upper()
+        lo = ini_find(ini, sec, "MIN_LIMIT")
+        hi = ini_find(ini, sec, "MAX_LIMIT")
+        try:
+            return float(lo), float(hi)
+        except (TypeError, ValueError):
+            return None
+
+    def axis_vmax(self, ch, letter, default=10.0):
+        v = ini_find(self.channel_inis[ch], "AXIS_%s" % letter.upper(),
+                     "MAX_VELOCITY")
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            return default
+
+    def origin(self, ch):
+        return triplet(ini_find(self.channel_inis[ch], "CHANNEL", "ORIGIN"))
+
+    def orient(self, ch):
+        return triplet(ini_find(self.channel_inis[ch], "CHANNEL", "ORIENT"))
+
+    def world_point(self, ch, local_xyz):
+        """channel-local XYZ (mm) -> machine world frame via ORIGIN/ORIENT."""
+        R = rot_matrix(*self.orient(ch))
+        O = self.origin(ch)
+        x, y, z = local_xyz
+        return [R[i][0] * x + R[i][1] * y + R[i][2] * z + O[i]
+                for i in range(3)]
+
+    def world_dir(self, ch, local_dir):
+        """rotate a local direction vector into world (no translation)."""
+        R = rot_matrix(*self.orient(ch))
+        x, y, z = local_dir
+        return [R[i][0] * x + R[i][1] * y + R[i][2] * z for i in range(3)]
+
+    def channel_world_xyz(self, ch):
+        """this channel's current commanded X/Y/Z in the world frame."""
+        m = self.maps[ch]
+        loc = [self.joint_pos(m[l]) if l in m else 0.0 for l in "XYZ"]
+        return self.world_point(ch, loc)
 
     # ---- live --------------------------------------------------------
     def connect(self):
@@ -225,6 +298,87 @@ class Session:
 
     def joint_pos(self, joint):
         return self.hal.num("joint.%d.pos-cmd" % joint)
+
+    def settle_joint(self, joint, timeout=25.0):
+        """position-stability settle on ONE joint: teleop jogs on ch0 drive
+        the axis planners, so motion.N.current-vel reads 0 mid-move - watch
+        the target joint's pos-cmd instead."""
+        t0 = time.time()
+        time.sleep(0.3)                       # command latency
+        last = self.joint_pos(joint)
+        quiet = 0
+        while time.time() - t0 < timeout:
+            now = self.joint_pos(joint)
+            if abs(now - last) < 1e-9:
+                quiet += 1
+                if quiet >= 4:
+                    return True
+            else:
+                quiet = 0
+            last = now
+            time.sleep(0.1)
+        return False
+
+    def world_jog(self, ch, letter, incr, speed):
+        """teleop (world) increment jog of one axis LETTER on a channel."""
+        c = self.chans[ch].c
+        c.mode(linuxcnc.MODE_MANUAL)
+        c.wait_complete()
+        c.teleop_enable(1)
+        c.wait_complete()
+        c.jog(linuxcnc.JOG_INCREMENT, False,
+              self.axis_index(letter), speed, incr)
+
+    def jog_and_settle(self, ch, letter, incr, speed_frac=0.10):
+        """jog one letter by incr; return the mapped joint's signed delta."""
+        joint = self.maps[ch][letter.upper()]
+        speed = self.axis_vmax(ch, letter) * speed_frac
+        before = self.joint_pos(joint)
+        self.world_jog(ch, letter, incr, speed)
+        self.settle_joint(joint)
+        return self.joint_pos(joint) - before
+
+    def mdi(self, ch, command, timeout=30.0):
+        """run one MDI line on a channel and wait for it to finish.
+        returns (ok, error_text): ok False if the command was refused."""
+        c = self.chans[ch]
+        c.drain_errors()
+        c.c.mode(linuxcnc.MODE_MDI)
+        c.c.wait_complete()
+        c.c.mdi(command)
+        rc = c.c.wait_complete(timeout)
+        errs = c.drain_errors()
+        # wait_complete returns -1 on error/timeout, 1 on done
+        ok = (rc == 1) and not errs
+        return ok, ("; ".join(errs) if errs else "")
+
+    def mdi_nowait(self, ch, command):
+        """issue an MDI line without blocking for completion (for moves the
+        interference guard is expected to hold partway)."""
+        c = self.chans[ch]
+        c.drain_errors()
+        c.c.mode(linuxcnc.MODE_MDI)
+        c.c.wait_complete()
+        c.c.mdi(command)
+
+    def spindle_speed(self, ch):
+        """commanded spindle speed for a channel's owned spindle (index=ch
+        on this sim's 1-spindle-per-channel layout)."""
+        return self.hal.num("spindle.%d.speed-out" % ch)
+
+    def interfere_active(self):
+        return self.hal.flag("motion.interfere-active")
+
+    def interfere_hold(self, ch):
+        return self.hal.flag("motion.%d.interfere-hold" % ch)
+
+    def set_interfere_allow(self, on):
+        """assert/clear the sanctioned-handover permit. Returns True if the
+        pin took the value (a net-driven pin can't be setp'd)."""
+        subprocess.run(["halcmd", "setp", "motion.interfere-allow",
+                        "1" if on else "0"],
+                       capture_output=True, text=True)
+        return self.hal.flag("motion.interfere-allow") == bool(on)
 
     def wait_motion_idle(self, ch, timeout=30.0):
         c = self.chans[ch]
