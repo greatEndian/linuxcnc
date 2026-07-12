@@ -16,9 +16,16 @@ EMCLCDSRCS := emc/usr_intf/emclcd.cc \
 HALUISRCS := emc/usr_intf/halui.cc \
              emc/usr_intf/mapini.cc
 
-USERSRCS += $(EMCSHSRCS) $(EMCRSHSRCS) $(EMCSCHEDSRCS) $(EMCLCDSRCS) $(USRMOTSRCS) $(HALUISRCS)
+MCHANCHMAPSRCS := emc/usr_intf/mchan-chmap.cc
+
+USERSRCS += $(EMCSHSRCS) $(EMCRSHSRCS) $(EMCSCHEDSRCS) $(EMCLCDSRCS) $(USRMOTSRCS) $(HALUISRCS) $(MCHANCHMAPSRCS)
 
 $(call TOOBJSDEPS, $(EMCSHSRCS)) : EXTRAFLAGS = $(ULFLAGS) $(TCL_CFLAGS) -fPIC
+
+# motion.h/usrmotintf.h live in emc/motion/, not on the default include path
+# for a file outside that directory (unlike usrmotintf.cc itself, which
+# finds them via the same-directory quote-include rule).
+$(call TOOBJSDEPS, $(MCHANCHMAPSRCS)) : EXTRAFLAGS = -Iemc/motion -Iemc/kinematics -Iemc/tp -Iemc/nml_intf
 
 ../tcl/linuxcnc.so: $(call TOOBJS, $(EMCSHSRCS)) ../lib/liblinuxcnc.a ../lib/liblinuxcncini.so.1 ../lib/libnml.so.0
 	$(ECHO) Linking $(notdir $@)
@@ -44,3 +51,19 @@ TARGETS += ../bin/linuxcnclcd
 	$(ECHO) Linking $(notdir $@)
 	$(Q)$(CXX) $(CXXFLAGS) -o $@ $(ULFLAGS) $^ $(LDFLAGS)
 TARGETS += ../bin/halui
+
+# MCHAN: sends a channel's [CHANNEL]MAP (and machine-global settings, via
+# --machine) to the running motion process (see mchan-chmap.cc). Talks the
+# raw motion-command mailbox directly (usrmotintf), the same objects
+# milltask itself links (emc/task/Submakefile) - reused here rather than
+# recompiled.
+../bin/mchan-chmap: $(call TOOBJS, $(MCHANCHMAPSRCS)) \
+                     objects/emc/motion/usrmotintf.o \
+                     objects/emc/motion/emcmotglb.o \
+                     objects/emc/motion/emcmotutil.o \
+                     objects/emc/motion/dbuf.o \
+                     objects/emc/motion/stashf.o \
+                     ../lib/liblinuxcnchal.so.0 ../lib/libnml.so.0 ../lib/liblinuxcncini.so.1
+	$(ECHO) Linking $(notdir $@)
+	$(Q)$(CXX) -o $@ $(ULFLAGS) $^ $(LDFLAGS)
+TARGETS += ../bin/mchan-chmap
