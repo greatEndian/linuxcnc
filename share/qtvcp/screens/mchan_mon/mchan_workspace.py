@@ -53,19 +53,12 @@ class ChannelLive:
                     else list(PALETTE[idx % len(PALETTE)]))
         self.last_file = None
         self.chan_data = None
-        self.dead_ticks = 0
 
     def poll(self):
         try:
             self.stat.poll()
         except Exception:
-            # session/channel gone (e.g. AXIS's File>Exit tore the whole
-            # session down) - count consecutive misses so a lone transient
-            # NML hiccup can't look like a dead session (tick() checks
-            # this against DEAD_TICKS before closing the workspace).
-            self.dead_ticks += 1
             return None, False
-        self.dead_ticks = 0
         changed = False
         if self.stat.file != self.last_file:
             self.last_file = self.stat.file
@@ -164,14 +157,22 @@ def main():
     rb_common.toggled.connect(preview_mode)
 
     # LIFECYCLE (the other direction): quitting from inside one channel's
-    # AXIS (File>Exit) tears down the WHOLE session (all channels' milltask/
-    # linuxcncsvr), which kills every embedded AXIS window - but this
-    # standalone workspace process has no window-manager-level way to learn
-    # that on its own, so the now-empty container used to sit there orphaned
-    # until the operator force-closed it (Alt+F4). DEAD_TICKS consecutive
-    # failed polls (~1s) on EVERY channel means the session is gone -> close
-    # the workspace window too, the same clean way a manual close would.
-    DEAD_TICKS = 5
+    # AXIS (File>Exit) tears down the WHOLE session (scripts/linuxcnc.in's
+    # Cleanup(), all channels' milltask/linuxcncsvr) and every embedded AXIS
+    # window with it - but this standalone workspace process has no
+    # window-manager-level way to learn that on its own, so the now-empty
+    # container used to sit there orphaned until the operator force-closed
+    # it (Alt+F4). linuxcnc.stat().poll() is NOT a usable signal for this:
+    # confirmed live that it never raises even after the backing
+    # linuxcncsvr/milltask are killed - the client keeps reading the last
+    # cached values from its still-mapped (now orphaned) shared memory
+    # segment forever. The launcher's own /tmp/linuxcnc.lock is the real
+    # session-lifetime marker: Cleanup() removes it (scripts/linuxcnc.in)
+    # on every teardown path, normal or signal-triggered. Require it to
+    # have existed when this workspace started, so launching without a
+    # session up yet can't look like an instant "session ended".
+    LOCKFILE = "/tmp/linuxcnc.lock"
+    had_lock = os.path.exists(LOCKFILE)
 
     def tick():
         markers, dirty = [], False
@@ -185,7 +186,7 @@ def main():
                 common.set_channels([lv.chan_data for lv in lives
                                      if lv.chan_data])
             common.set_live(markers)
-        if lives and all(lv.dead_ticks >= DEAD_TICKS for lv in lives):
+        if had_lock and not os.path.exists(LOCKFILE):
             timer.stop()
             win.close()
     timer = QtCore.QTimer()
@@ -212,8 +213,12 @@ def main():
         def closeEvent(self, ev):
             settings.setValue("window/geometry", self.saveGeometry())
             for w in axis_wids:
+                # when the session tore itself down first (the lock-file
+                # path above), these windows are already destroyed - the
+                # reparent is a harmless no-op then; capture_output keeps
+                # xdotool's expected BadWindow diagnostic off the log.
                 subprocess.run("xdotool windowreparent 0x%x %d" % (w, root_id),
-                               shell=True)
+                               shell=True, capture_output=True)
             ev.accept()
 
     root_id = int(subprocess.run(
