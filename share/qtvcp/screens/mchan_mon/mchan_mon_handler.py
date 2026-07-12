@@ -267,7 +267,27 @@ class HandlerClass:
         self.paths = paths
         self.panes = []
 
+    def _init_window_state(self):
+        """G7: start full screen on first launch; on every later launch,
+        restore whatever window state (full screen / maximized / normal at
+        its last geometry) the operator actually closed the panel in -
+        saveGeometry()/restoreGeometry() round-trip that state, not just
+        size+position. Persisted via the panel's own QSettings file, so it
+        survives across sessions."""
+        geo = self.w.settings.value("window/geometry")
+        if geo is not None:
+            self.w.restoreGeometry(geo)
+        else:
+            self.w.showFullScreen()
+        self._orig_close_event = self.w.closeEvent
+        self.w.closeEvent = self._on_close_event
+
+    def _on_close_event(self, event):
+        self.w.settings.setValue("window/geometry", self.w.saveGeometry())
+        self._orig_close_event(event)
+
     def initialized__(self):
+        self._init_window_state()
         master = os.environ.get("MCHAN_INI") or os.environ.get("INI_FILE_NAME")
         if not master or not os.path.exists(master):
             self.w.statusbar.setText(

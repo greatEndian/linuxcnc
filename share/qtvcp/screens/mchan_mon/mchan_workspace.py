@@ -178,8 +178,17 @@ def main():
     # on close so closing the workspace leaves the session running.
     axis_wids = [w for w in _EMBEDDED_WIDS]
 
+    # G7: full screen by default; remember whatever window state (full
+    # screen / maximized / normal at its last geometry) the operator
+    # actually closed the workspace in, and restore exactly that on the
+    # next launch. saveGeometry()/restoreGeometry() round-trip the window
+    # STATE, not just size+position. Persisted across sessions via a small
+    # QSettings file (~/.config/QtVcp/mchan_workspace.conf).
+    settings = QtCore.QSettings("QtVcp", "mchan_workspace")
+
     class _Win(QtWidgets.QMainWindow):
         def closeEvent(self, ev):
+            settings.setValue("window/geometry", self.saveGeometry())
             for w in axis_wids:
                 subprocess.run("xdotool windowreparent 0x%x %d" % (w, root_id),
                                shell=True)
@@ -200,7 +209,11 @@ def main():
     signal.signal(signal.SIGTERM, lambda *_a: QtCore.QTimer.singleShot(0, win.close))
     signal.signal(signal.SIGINT, lambda *_a: QtCore.QTimer.singleShot(0, win.close))
 
-    win.resize(1800, 1100)
+    geo = settings.value("window/geometry")
+    if geo is not None:
+        win.restoreGeometry(geo)
+    else:
+        win.showFullScreen()
     win.show()
     print("WORKSPACE UP (%d AXIS embedded)" % embedded)
     sys.stdout.flush()
