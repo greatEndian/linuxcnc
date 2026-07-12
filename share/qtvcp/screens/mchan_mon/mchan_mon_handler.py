@@ -279,6 +279,12 @@ class HandlerClass:
         geo = self.w.settings.value("window/geometry")
         if geo is not None:
             self.w.restoreGeometry(geo)
+            if self.w.isFullScreen():
+                # migration: an earlier build defaulted to true fullscreen
+                # and may have saved that state. There is no way to ask
+                # for fullscreen anymore, so a restored fullscreen flag is
+                # always stale - coerce it to maximized instead.
+                self.w.showMaximized()
         else:
             self.w.showMaximized()
         self._orig_close_event = self.w.closeEvent

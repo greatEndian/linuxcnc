@@ -53,12 +53,19 @@ class ChannelLive:
                     else list(PALETTE[idx % len(PALETTE)]))
         self.last_file = None
         self.chan_data = None
+        self.dead_ticks = 0
 
     def poll(self):
         try:
             self.stat.poll()
         except Exception:
+            # session/channel gone (e.g. AXIS's File>Exit tore the whole
+            # session down) - count consecutive misses so a lone transient
+            # NML hiccup can't look like a dead session (tick() checks
+            # this against DEAD_TICKS before closing the workspace).
+            self.dead_ticks += 1
             return None, False
+        self.dead_ticks = 0
         changed = False
         if self.stat.file != self.last_file:
             self.last_file = self.stat.file
@@ -156,6 +163,16 @@ def main():
         split.setSizes([560, 440] if on else [1000, 0])
     rb_common.toggled.connect(preview_mode)
 
+    # LIFECYCLE (the other direction): quitting from inside one channel's
+    # AXIS (File>Exit) tears down the WHOLE session (all channels' milltask/
+    # linuxcncsvr), which kills every embedded AXIS window - but this
+    # standalone workspace process has no window-manager-level way to learn
+    # that on its own, so the now-empty container used to sit there orphaned
+    # until the operator force-closed it (Alt+F4). DEAD_TICKS consecutive
+    # failed polls (~1s) on EVERY channel means the session is gone -> close
+    # the workspace window too, the same clean way a manual close would.
+    DEAD_TICKS = 5
+
     def tick():
         markers, dirty = [], False
         for lv in lives:
@@ -168,6 +185,9 @@ def main():
                 common.set_channels([lv.chan_data for lv in lives
                                      if lv.chan_data])
             common.set_live(markers)
+        if lives and all(lv.dead_ticks >= DEAD_TICKS for lv in lives):
+            timer.stop()
+            win.close()
     timer = QtCore.QTimer()
     timer.timeout.connect(tick)
     timer.start(200)
@@ -214,6 +234,12 @@ def main():
     geo = settings.value("window/geometry")
     if geo is not None:
         win.restoreGeometry(geo)
+        if win.isFullScreen():
+            # migration: an earlier build of this feature defaulted to
+            # true fullscreen and may have saved that state. There is no
+            # way to ask for fullscreen anymore, so a restored fullscreen
+            # flag is always stale - coerce it to maximized instead.
+            win.showMaximized()
     else:
         win.showMaximized()
     win.show()
