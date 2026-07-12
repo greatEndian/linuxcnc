@@ -1,9 +1,9 @@
 ================================================================================
   MULTICHANNEL LINUXCNC  —  DESIGN FREEZE (Phase 0)
-  "one motion, N channels"  —  Fanuc multi-path style
+  "one motion, N channels"  —  Fanuq multi-path style
   Status:   DESIGN FROZEN 2026-06-10 — NO CODE WRITTEN YET (by decision)
-  Decided:  after research of Siemens 840D (channels/BAG/WAITM/GET-RELEASE),
-            Fanuc 2-path (paths/waiting-M/balance cut/composite control),
+  Decided:  after research of Siemenz 840D (channels/BAG/WAITM/GET-RELEASE),
+            Fanuq 2-path (paths/waiting-M/balance cut/composite control),
             LinuxCNC internals, and a 4-solution trade study (see notes below).
 ================================================================================
 
@@ -11,7 +11,7 @@ GOAL
 ----
 Run N independent G-code programs ("channels") simultaneously in ONE LinuxCNC
 session: independent start/stop/feed per channel, cycle-accurate synchronization
-between channels, Fanuc-style coordination codes, all axes on ONE EtherCAT bus.
+between channels, Fanuq-style coordination codes, all axes on ONE EtherCAT bus.
 Primary reference machine: 2-path lathe (most common industrial case), but the
 design is GENERIC — nothing machine-type-specific in the core.
 
@@ -34,7 +34,7 @@ THE ARCHITECTURE
 
 KEY PRINCIPLE (decided): synchronization quality = how much clock you share.
 All channels share ONE servo thread = ONE interpolation clock = inter-channel
-sync is exact by construction. This is how Fanuc runs 2-path inside one CNC.
+sync is exact by construction. This is how Fanuq runs 2-path inside one CNC.
 
 FROZEN DECISIONS
 ----------------
@@ -47,7 +47,7 @@ D2. Each channel = native LinuxCNC axis architecture: its own complete
 D3. Userspace stacks (milltask/io/halui/GUI) are UNCHANGED stock binaries,
     one set per channel, isolated by per-channel .nml + SHMEM_KEY (both already
     INI-configurable). GUI choice belongs to the integrator.
-D4. Waiting-M sync codes: M200-M229, Fanuc convention - the SAME M-number in
+D4. Waiting-M sync codes: M200-M229, Fanuq convention - the SAME M-number in
     two (or more) programs is a rendezvous point; both queues drain (M-codes
     are queue busters), both channels block until all arrive, then continue
     in the same servo cycle. Optional P-word = channel mask for N>2.
@@ -57,7 +57,7 @@ D5. Stop semantics: hardware E-STOP and hard limits = ALWAYS machine-global
     per channel as HAL pins (motion.N.*) PLUS global pins; the integrator
     selects propagation policy in HAL.
 D6. Joint-ownership table is runtime-DYNAMIC from day 1 (axis sharing /
-    Fanuc composite-style exchange is a config choice, not a redesign);
+    Fanuq composite-style exchange is a config choice, not a redesign);
     the exchange COMMANDS themselves are phase 5.
 D7. Backward compatibility golden rule: channel count defaults to 1 and the
     result must be BIT-IDENTICAL to today's behavior. Existing configs are
@@ -152,7 +152,7 @@ CATEGORY B - GLOBAL-STATE LEAKS confirmed in code -> new register items:
  MC22 feed/rapid override + M48-M53 enables are global (feed_scale,
       rapid_scale, enables_new; net_feed_scale computed once) -> per-channel
       scale+enables, per-channel net_feed_scale, motion.N.feed-hold etc.;
-      global pins stay as all-channel floor (Fanuc per-path override).
+      global pins stay as all-channel floor (Fanuq per-path override).
       WORST HAZARD: ch1 GUI knob silently slows ch2 cut.         [CRITICAL]
  MC23 tool offset global (EMCMOT_SET_OFFSET -> emcmotStatus->tool_offset,
       single HAL pin set, used by probe reporting) -> chan[].tool_offset +
@@ -163,7 +163,7 @@ CATEGORY B - GLOBAL-STATE LEAKS confirmed in code -> new register items:
       validate against the wrong envelope today).                [CRITICAL]
  MC25 G38 probing: TP routed BUT one probe_input pin + global probing state
       + global trip logic -> per-channel probe state, INI-assignable probe
-      pin per channel (Fanuc per-path skip signal); day-1 guard = mutual
+      pin per channel (Fanuq per-path skip signal); day-1 guard = mutual
       exclusion w/ clear "probe busy (channel N)" error.           [MEDIUM]
       DONE 2026-06-15 (777c24c6ff): day-1 mutual-exclusion done (any channel
       may use the shared probe one-at-a-time; probe_owner; trip aborts the
@@ -171,11 +171,11 @@ CATEGORY B - GLOBAL-STATE LEAKS confirmed in code -> new register items:
  MC26 spindles: per-index state ok, NO channel ownership (any channel can
       M3/M5/S any spindle) -> enforce [CHANNEL_N]SPINDLES ownership, loud
       error on foreign spindle; cross-channel use = phase-5 exchange
-      (Fanuc path-spindle assignment).                               [HIGH]
+      (Fanuq path-spindle assignment).                               [HIGH]
  MC27 M62-M68/M66 share one global motion.digital/analog-* namespace and
       immediate writes are unarbitrated -> per-channel index ranges in INI
       (e.g. ch0 0-31, ch1 32-63) enforced in motion + motion.N.* aliases
-      (Fanuc per-path PMC interface areas).                        [MEDIUM]
+      (Fanuq per-path PMC interface areas).                        [MEDIUM]
       DONE 2026-06-15 (c67085551e): per-channel DIO/AIO index window
       [CHANNEL]DIO_RANGE/AIO_RANGE enforced on SET_DOUT/SET_AOUT (outside =
       refused); EMCMOT_SET_CHANNEL_IO_RANGE via chmap. RIG-PROVEN (M64 P2
@@ -184,7 +184,7 @@ CATEGORY B - GLOBAL-STATE LEAKS confirmed in code -> new register items:
       sequence (SET_NUM_JOINTS, traj/axis limits, maxFeedScale, ...) into
       global state - last to boot wins, divergent INIs silently reconfigure
       the machine -> classify EVERY config command machine-global vs
-      channel-scoped (Siemens $MN_* vs $MC_* machine-data split); globals
+      channel-scoped (Siemenz $MN_* vs $MC_* machine-data split); globals
       accepted from ch0 stack ONLY; divergence -> refuse to start. [CRITICAL]
 
 CATEGORY C - machine-global by NATURE -> policy + guard, not per-channel:
@@ -192,7 +192,7 @@ CATEGORY C - machine-global by NATURE -> policy + guard, not per-channel:
       machine's kinematics (one module per machine) while other channels may
       be driving joints -> day-1 rule: switchkins command allowed only when
       requesting channel owns ALL mapped joints (in practice: single active
-      channel), else clean refusal. Per-channel kins instances (Fanuc 30i
+      channel), else clean refusal. Per-channel kins instances (Fanuq 30i
       per-path TCP) = explicit FUTURE project, NOT in phases 1-5.    [HIGH]
       DONE 2026-06-15 (d927a321a0): G43.4/G43.5 (req>=1) refused unless the
       requesting channel owns ALL joints; G49/identity always allowed.
@@ -224,17 +224,17 @@ PHASING (no code until explicitly started)
  1. Motion core: coord_tp[N], per-channel cmd/status, static owners   [DONE]
  2. N-stack launcher + 2-channel SIM, two independent programs        [DONE 2026-06-11]
  3. Per-channel jog/modes + homing/estop rules                        <- MC3/4/5
- 4. Waiting-M rendezvous M200-M229 (transport-agnostic)               <- Fanuc semantics
+ 4. Waiting-M rendezvous M200-M229 (transport-agnostic)               <- Fanuq semantics
  5. Axis exchange / composite control (ownership handoff commands)
  [deferred] A-layer: instance-key patch + cross-domain bridge (D8)
 
 MC3 DESIGN DECISIONS (2026-06-12, user-approved q1/q2/q3 = yes/yes/yes)
 ------------------------------------------------------------------------
- D-MC3-1 MODE MODEL: per-channel INDEPENDENT modes (Fanuc 2-path
-   standard, web-verified; Siemens BAG = channels in a group share the
-   mode). Per-channel chan[].virt_state is the BASE MECHANISM; Siemens-
+ D-MC3-1 MODE MODEL: per-channel INDEPENDENT modes (Fanuq 2-path
+   standard, web-verified; Siemenz BAG = channels in a group share the
+   mode). Per-channel chan[].virt_state is the BASE MECHANISM; Siemenz-
    style coupling is a CONSTRAINT ON TOP, reserved as
-       [MCHAN] MODE_GROUPS = 0+1     (absent = Fanuc independent;
+       [MCHAN] MODE_GROUPS = 0+1     (absent = Fanuq independent;
                                       mixed setups = real multi-BAG)
    implemented later in the single mode-request funnel (MC28 gate):
    group switch fans out when ALL members idle, else clean refusal;
@@ -248,7 +248,7 @@ MC3 DESIGN DECISIONS (2026-06-12, user-approved q1/q2/q3 = yes/yes/yes)
    COORD->FREE only when the channel TP is idle, else refusal;
    FREE->COORD resync = tpSetPos(mapped joints) + cubic prime;
    machine disable (D5) overrides all; re-enable resync exists.
- D-MC3-4 JOG DURING OTHER CHANNEL'S AUTO: allowed by default (Fanuc);
+ D-MC3-4 JOG DURING OTHER CHANNEL'S AUTO: allowed by default (Fanuq);
    iron protection = proximity display today, MC31 zones later.
 
 PHASE 2 RESULT (2026-06-11) - "it exists" ACHIEVED
@@ -282,7 +282,7 @@ accident". Now one slice per planner (slice 0 = historic = D7).
 
 PHASE-2 FACTS (operational):
  - ch>0 power-on requires channel 0 out of hardware estop first: ch0's
-   task state machine enforces the D5 floor (Fanuc machine-power
+   task state machine enforces the D5 floor (Fanuq machine-power
    semantics). Power order: ch0, then the rest.
  - HAL component names per stack: inihal (ch0 only - secondaries skip the
    ini.* surface entirely until MC7), iocontrol.<N>, axisui.<N>; per-stack
@@ -307,8 +307,8 @@ NEW REGISTER ITEMS:
       ch0 polled concurrently read ERROR OK every time.            [DONE]
  MC31 RT INTERFERENCE ZONES (the machine's collision GUARANTEE): per-
       channel geometric zones checked in motion every servo cycle,
-      feed-hold/alarm BEFORE contact - Fanuc Tool Post Interference
-      Check / Siemens protection areas equivalent. The combined preview
+      feed-hold/alarm BEFORE contact - Fanuq Tool Post Interference
+      Check / Siemenz protection areas equivalent. The combined preview
       (below) is the HUMAN aid; MC31 is the guard. Phase 3/4.        [HIGH]
 
 COMBINED MULTI-CHANNEL PREVIEW (built 2026-06-11, ~/cnc-dev/mchan-dev/)
@@ -470,10 +470,24 @@ FINALIZATION TASKS (do at project end, before publishing)
      phases P1-P3 with sim gates).
  F1. RENAMING (user request 2026-06-11): replace the vendor names in ALL
      project-owned text - this document, notes.txt, code comments, future
-     docs - as follows:  "Fanuc" -> "Fanuq",  "Siemens" -> "Siemenz".
-     Applies at FINALIZATION, not during development (grep-able then:
-     grep -rn "Fanuc\|Siemens" over repo docs + comments). Git history/
-     past commit messages are immutable and stay as-is.
+     docs - as follows: "Fanuc" -> "Fanuq", "Siemens" -> "Siemenz".
+     Applies at FINALIZATION, not during development. Git history/past
+     commit messages are immutable and stay as-is.
+     -> DONE 2026-07-12: applied across this document, the mchan code
+     comments (command.c/control.c/emcmotcfg.h/motion.h), and the
+     mchan-dev project notes (CONFIG-REFERENCE.md, testing.txt,
+     WAITM-RESEARCH.md, MC31-DESIGN.md, OPEN-PROBLEMS.md,
+     axisExchangeSpindle.md, STATUS-2026-06-15.md, lathe-ch0.ini,
+     mchan-chmap.cc). Scope was project-owned prose/comments only - NOT
+     upstream LinuxCNC files that predate or are unrelated to mchan
+     (translations, user-manual adoc pages, the existing Fanuc-style
+     M98/M99 subroutine tests, the fanuc_200f.py vismach model, the
+     lathe-fanucy sample config, HAL driver comments) - those describe
+     real, unrelated upstream conventions and stay as-is. Two lowercase
+     "siemens" references to the literal filename
+     flag_siemens_mode_groups.md were left untouched (a real filename,
+     not vendor-name prose). grep -rn "Fanuc\|Siemens" over project docs
+     + mchan comments now clean.
 
 EFFORT ESTIMATE (honest)
 ------------------------
@@ -491,6 +505,6 @@ TRADE STUDY (why this architecture; summary)
  C. 9-axis merge (one TP, ch2=UVW): perfect sync but NO independent start/stop,
     no per-channel letter space, no arcs for ch2. Rejected by requirements.
  D. SELECTED: one motion process with N TPs + N stock userspace stacks.
-    Cycle-accurate sync, independent channels, one EtherCAT bus, Fanuc
+    Cycle-accurate sync, independent channels, one EtherCAT bus, Fanuq
     ergonomics (each path programs its own X/Z...), ~1/3 the cost of B.
 ================================================================================

@@ -31,7 +31,7 @@
 #define EMCMOT_MAX_AXIS 9
 
 /* MCHAN: maximum number of motion channels (independent coordinated
- * planners, Fanuc-multi-path style). Channel count defaults to 1 at
+ * planners, Fanuq-multi-path style). Channel count defaults to 1 at
  * runtime; single-channel behavior is bit-identical to pre-multichannel. */
 #define EMCMOT_MAX_CHANNELS 4
 

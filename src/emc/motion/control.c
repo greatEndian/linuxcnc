@@ -387,7 +387,7 @@ static void handle_kinematicsSwitch(void) {
  *   - feed-hold is OR'd across the group (any member holds -> the whole
  *     group holds: a stop on one synchronized head stops the set)
  *   - the feed override is taken from the group AUTHORITY = the lowest-
- *     numbered member (Fanuc exclusive-authority: one knob governs the
+ *     numbered member (Fanuq exclusive-authority: one knob governs the
  *     group; members' own override pins are ignored while grouped).
  * Ungrouped (feed-group < 0) = pure MC5 per-channel behaviour.
  * Note: this couples OVERRIDE and HOLD, not the toolpaths themselves
@@ -1410,7 +1410,7 @@ static void mchan_pose_set_axis(EmcPose *p, int ax, double v)
  * P-word mask, or all configured channels if none), and when EVERY
  * participant is simultaneously arrived at the SAME number with a consistent
  * mask it releases them all in the SAME cycle (waitm_released=1). A partner
- * arrived at a DIFFERENT number/mask is a Fanuc-160 mismatch -> error+hold.
+ * arrived at a DIFFERENT number/mask is a Fanuq-160 mismatch -> error+hold.
  * A partner that never arrives within motion.waitm-timeout -> a ONE-SHOT
  * "chN waiting for chM @M2xx" error, then HOLD (stay armed so a late partner
  * still releases - the error+hold policy). estop/disable clears everything.
@@ -1443,7 +1443,7 @@ static void mchan_run_rendezvous(void)
 		if (o->waitm_num < 0 || o->waitm_released) {
 		    all_arrived = 0; blockers |= (1 << m);	/* not (yet) here */
 		} else if (o->waitm_num != c->waitm_num || omask != mask) {
-		    mismatch = 1; mm_ch = m;			/* Fanuc-160 */
+		    mismatch = 1; mm_ch = m;			/* Fanuq-160 */
 		}
 	    }
 	    c->waitm_blockers = blockers;

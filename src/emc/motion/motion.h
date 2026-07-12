@@ -837,7 +837,7 @@ typedef struct emcmot_channel_t {
     int    interfere_stop;
     /* MCHAN MC27: this channel's allowed digital/analog I/O index window
      * (M62-M65 DOUT / M67-M68 AOUT). Writes outside [base, base+count) are
-     * refused so one head's PMC interface can't clobber another's (Fanuc
+     * refused so one head's PMC interface can't clobber another's (Fanuq
      * per-path PMC areas). count==0 = unrestricted = legacy/D7. Set at config
      * time via EMCMOT_SET_CHANNEL_IO_RANGE from [CHANNEL]DIO_RANGE/AIO_RANGE. */
     int    dio_base, dio_count;
@@ -854,7 +854,7 @@ typedef struct emcmot_internal_t {
     int overriding;     /* non-zero means we've initiated an joint
                            move while overriding limits */
     /* MCHAN: per-channel motion state. Each channel is an independent
-     * coordinated planner (Fanuc-multi-path style). chan[0] is the historic
+     * coordinated planner (Fanuq-multi-path style). chan[0] is the historic
      * single channel; with num_channels=1 behavior is bit-identical to the
      * pre-multichannel code. Future per-channel state (mode machines, axis
      * ownership) lives here too. */

@@ -495,7 +495,7 @@ static unsigned mchan_home_mask(int ch)
 }
 
 /* MCHAN MC3: jog a SECONDARY channel's owned joint with its own free
- * planner, independent of channel 0's machine mode (Fanuc 2-path
+ * planner, independent of channel 0's machine mode (Fanuq 2-path
  * standard: jog one path while the other runs AUTO - D-MC3-4). The jog
  * is joint-space through the channel's letter map (D-MC3-2; identity
  * mapping makes it equal to world jog on these machines). Limits =
@@ -627,7 +627,7 @@ void emcmotCommandHandler_locked(void *arg, long servo_period)
 	/* clear status value by default */
 	(*mchan_echo_status) = EMCMOT_COMMAND_OK;
 
-	/* ===== MCHAN MC28: command scope gate (Siemens $MN/$MC split) =======
+	/* ===== MCHAN MC28: command scope gate (Siemenz $MN/$MC split) =======
 	 * Machine-GLOBAL configuration and machine modes are owned by channel
 	 * 0's stack. Secondary stacks run the same stock milltask, so they DO
 	 * send the full init sequence; global-scope commands from ch>0 are
@@ -700,7 +700,7 @@ void emcmotCommandHandler_locked(void *arg, long servo_period)
 	    case EMCMOT_JOINT_DEACTIVATE:
 	    case EMCMOT_FREE:
 	    case EMCMOT_TELEOP: {
-		/* MC3 (D-MC3-1/3): the channel's OWN mode machine, Fanuc-
+		/* MC3 (D-MC3-1/3): the channel's OWN mode machine, Fanuq-
 		 * independent. Leaving COORD is only legal when this
 		 * channel's planner is idle; the owned joints are then
 		 * handed to the per-joint jog planners at their current
