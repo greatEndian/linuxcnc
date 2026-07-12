@@ -294,8 +294,10 @@ PHASE-2 FACTS (operational):
  - kins letter spaces must be DISJOINT across channels (D2): channel 0's
    coordinates= covers ONLY its joints; other channels' joints are
    letterless in ch0's space (AXIS now tolerates letterless joints).
- - mchan-chmap currently lives in ~/cnc-dev/mchan-dev/ (graduate into
-   bin/ at the next deploy milestone).
+ - mchan-chmap moved into the repo build 2026-07-12 (`e40aed90e0`):
+   src/emc/usr_intf/mchan-chmap.cc + Submakefile rule, lands in ../bin/
+   like every other userspace tool. INIs no longer need [MCHAN]CHMAP -
+   the launcher's default ("mchan-chmap") resolves it via $PATH.
 NEW REGISTER ITEMS:
  MC30 emcmot error ring single-reader steal -> DONE 2026-06-12: per-
       channel error rings (mchan_error[] appended to emcmot shmem);
