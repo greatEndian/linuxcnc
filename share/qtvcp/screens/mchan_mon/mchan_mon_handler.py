@@ -268,17 +268,19 @@ class HandlerClass:
         self.panes = []
 
     def _init_window_state(self):
-        """G7: start full screen on first launch; on every later launch,
-        restore whatever window state (full screen / maximized / normal at
-        its last geometry) the operator actually closed the panel in -
-        saveGeometry()/restoreGeometry() round-trip that state, not just
-        size+position. Persisted via the panel's own QSettings file, so it
-        survives across sessions."""
+        """G7: start maximized (a NORMAL window, title bar + border kept,
+        so the operator can still move/restore it or switch to other
+        windows) on first launch; on every later launch, restore whatever
+        window state (maximized / normal at its last geometry) the
+        operator actually closed the panel in - saveGeometry()/
+        restoreGeometry() round-trip that state, not just size+position.
+        Persisted via the panel's own QSettings file, so it survives
+        across sessions."""
         geo = self.w.settings.value("window/geometry")
         if geo is not None:
             self.w.restoreGeometry(geo)
         else:
-            self.w.showFullScreen()
+            self.w.showMaximized()
         self._orig_close_event = self.w.closeEvent
         self.w.closeEvent = self._on_close_event
 
