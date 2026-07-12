@@ -1,0 +1,11 @@
+setp 5axiskins.pivot-length 100
+
+# RT-coherent joint sampling for the tip-hold validation:
+# all 5 values latched in the same servo cycle
+loadrt sampler depth=4000 cfg=fffff
+addf sampler.0 servo-thread
+net bch:j0 joint.0.pos-cmd => sampler.0.pin.0
+net bch:j1 joint.1.pos-cmd => sampler.0.pin.1
+net bch:j2 joint.2.pos-cmd => sampler.0.pin.2
+net bch:j3 joint.3.pos-cmd => sampler.0.pin.3
+net bch:j4 joint.4.pos-cmd => sampler.0.pin.4
