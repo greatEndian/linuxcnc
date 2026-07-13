@@ -32,7 +32,16 @@ set -u
 log() { echo "run-workspace: $*"; }
 
 # --- clean slate ----------------------------------------------------------
-for nm in linuxcncrsh milltask linuxcncsvr rtapi_app tpmod; do
+# "axis" MUST be in this list: a stale AXIS window left over from a
+# previous, improperly-terminated session has the EXACT SAME title as a
+# freshly-launched one (same machine name -> same config), so
+# find_axis_window() below cannot tell them apart. Without this, a
+# leftover ch0 (or ch1) window can get embedded into the NEW workspace
+# instead of the real, live one - the symptom is a channel that "won't
+# merge" (its live window is left outside, unembedded) or whose controls
+# (e.g. estop reset) silently do nothing (the embedded pane is talking to
+# a dead session).
+for nm in linuxcncrsh milltask linuxcncsvr rtapi_app tpmod axis; do
     pgrep -x "$nm" 2>/dev/null | xargs -r kill 2>/dev/null
 done
 sleep 1

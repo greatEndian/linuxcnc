@@ -31,12 +31,30 @@ from preview_widget import (PreviewWidget, extract_channel, ini_find,
 
 
 def find_axis_window(machine_name):
-    """X window id of the stock AXIS window titled '... on <machine>'."""
+    """X window id of the stock AXIS window titled '... on <machine>'.
+
+    Defense in depth: if a previous session's AXIS process was never
+    cleaned up (run-workspace.sh's own pre-launch kill is the real fix -
+    see its "clean slate" comment), a stale window can share the EXACT
+    same title as the fresh one (same machine name -> same config). X11
+    window IDs are allocated by a monotonically increasing counter within
+    one X server run, so the newest matching window is reliably the
+    highest ID - prefer that one instead of an arbitrary "first line"
+    match, and warn loudly so a leftover process is visible in the log
+    rather than silently embedding the wrong (dead) window.
+    """
     out = subprocess.run(
-        "xwininfo -root -tree | grep -i 'AXIS .* on %s' | head -1"
-        % machine_name, shell=True, capture_output=True, text=True
+        "xwininfo -root -tree | grep -i 'AXIS .* on %s'" % machine_name,
+        shell=True, capture_output=True, text=True
     ).stdout.strip()
-    return int(out.split()[0], 16) if out else None
+    if not out:
+        return None
+    wids = [int(line.split()[0], 16) for line in out.splitlines()]
+    if len(wids) > 1:
+        print("WARNING: %d AXIS windows match '%s' - picking the newest "
+              "(0x%x). A stale process from a prior session was likely "
+              "not cleaned up." % (len(wids), machine_name, max(wids)))
+    return max(wids)
 
 
 class ChannelLive:
