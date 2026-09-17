@@ -935,7 +935,11 @@ int tcUpdateArcLimits(TC_STRUCT * tc)
         // j_entry = (v²/R) / cycle_time ≤ j_max
         double v_max_jerk_entry = pmSqrt(jerk * radius * tc->cycle_time);
 
-        double v_max_jerk = fmin(fmin(v_max_jerk_steady, v_max_jerk_tan), v_max_jerk_entry);
+        /* EXPERIMENT: constraint 3 replaced by a jerk budget.  Tangential and
+           normal jerk are orthogonal, so the magnitude is what must respect
+           the limit; allocate what the normal component leaves. */
+        (void)v_max_jerk_entry;
+        double v_max_jerk = fmin(v_max_jerk_steady, v_max_jerk_tan);
 
         tp_debug_print("tcUpdateArcLimits: type=%d R=%f phi=%f j=%f\n",
                        tc->motion_type, radius, angle, jerk);
@@ -957,6 +961,21 @@ int tcUpdateArcLimits(TC_STRUCT * tc)
 
     tc->maxvel = v_max_actual;
     tc->acc_ratio_tan = acc_ratio_tan;
+
+    /* EXPERIMENT: budget the tangential jerk against the normal component. */
+    if (GET_TRAJ_PLANNER_TYPE() == 1 && emcmotStatus->jerk > TP_POS_EPSILON) {
+        double jerk = emcmotStatus->jerk;
+        double a_t_budget = BLEND_ACC_RATIO_TANGENTIAL * tcGetOverallMaxAccel(tc);
+        double v = tc->maxvel;
+        double j_n = 3.0 * v * a_t_budget / radius
+                   + (v * v * v) / (radius * radius);
+        if (j_n < jerk) {
+            double j_t = pmSqrt(jerk * jerk - j_n * j_n);
+            if (j_t < tc->maxjerk) {
+                tc->maxjerk = j_t;
+            }
+        }
+    }
 
     tp_debug_print("tcUpdateArcLimits: final v_max=%f acc_ratio_tan=%f\n",
                    tc->maxvel, tc->acc_ratio_tan);
