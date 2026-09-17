@@ -1,0 +1,8 @@
+( Constraint-3 radius sweep: same feed, R = 80 mm instead of 20 mm. )
+G21 G90 G64 P0.01
+G0 X80 Y0 Z0
+G4 P0.2
+G1 F3000
+G2 X80 Y0 I-80 J0
+G4 P0.2
+M2

@@ -1,0 +1,9 @@
+( Gate A case A: straight rest-to-rest move.                      )
+( Scalar path model is exact here: q'' = q''' = 0, so reported and )
+( derived joint derivatives must agree.  This is the control case. )
+G21 G90 G64 P0.01
+G0 X0 Y0 Z0
+G4 P0.2
+G1 X100 F6000
+G4 P0.2
+M2

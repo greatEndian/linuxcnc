@@ -1,0 +1,12 @@
+( Case D: tangential line -> arc -> line at feed.                    )
+( This is the scenario constraint 3 was written for: the curvature   )
+( steps from 0 to 1/R at the junction while moving at speed, so the  )
+( normal acceleration steps from 0 to v^2/R in one servo period.     )
+G21 G90 G64 P0.01
+G0 X-40 Y-20 Z0
+G4 P0.2
+G1 F3000 X0 Y-20
+G2 X20 Y0 I0 J20
+G1 X20 Y40
+G4 P0.2
+M2

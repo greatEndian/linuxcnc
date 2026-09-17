@@ -1,0 +1,63 @@
+# Gate A oracle instrumentation.
+#
+# Two independent measurements of the same commanded motion:
+#   * what motion REPORTS   -> joint.N.{vel,acc,jerk}-cmd
+#   * what the commanded POSITIONS actually contain -> a 3-stage ddt chain
+#     on joint.N.pos-cmd, evaluated in double precision inside the servo
+#     thread, so ASCII output precision never enters the derivative.
+#
+# Execution order is deliberate: motion-controller, then the derivative
+# chains (each stage consumes the value produced this cycle), then sampler.
+
+loadrt trivkins coordinates=XYZ
+loadrt [EMCMOT]EMCMOT base_period_nsec=[EMCMOT]BASE_PERIOD servo_period_nsec=[EMCMOT]SERVO_PERIOD num_joints=3 num_dio=10 num_aio=10 num_spindles=1
+
+loadrt ddt count=6
+loadrt sampler depth=8192 cfg=sfffffffffffffff
+
+addf motion-command-handler servo-thread
+addf motion-controller      servo-thread
+addf ddt.0 servo-thread
+addf ddt.1 servo-thread
+addf ddt.2 servo-thread
+addf ddt.3 servo-thread
+addf ddt.4 servo-thread
+addf ddt.5 servo-thread
+addf sampler.0 servo-thread
+
+# closed-loop sim feedback
+net x-pos-fb joint.0.motor-pos-fb <= joint.0.motor-pos-cmd
+net y-pos-fb joint.1.motor-pos-fb <= joint.1.motor-pos-cmd
+net z-pos-fb joint.2.motor-pos-fb <= joint.2.motor-pos-cmd
+
+# independent derivative chain, X
+net ora-x-pos  joint.0.pos-cmd => ddt.0.in
+net ora-x-dv   ddt.0.out       => ddt.1.in
+net ora-x-da   ddt.1.out       => ddt.2.in
+net ora-x-dj   ddt.2.out
+
+# independent derivative chain, Y
+net ora-y-pos  joint.1.pos-cmd => ddt.3.in
+net ora-y-dv   ddt.3.out       => ddt.4.in
+net ora-y-da   ddt.4.out       => ddt.5.in
+net ora-y-dj   ddt.5.out
+
+# capture: column order must match analyze.py COLUMNS
+net ora-line   motion.program-line  => sampler.0.pin.0
+net ora-cvel   motion.current-vel   => sampler.0.pin.1
+net ora-x-pos                       => sampler.0.pin.2
+net ora-x-vc   joint.0.vel-cmd      => sampler.0.pin.3
+net ora-x-ac   joint.0.acc-cmd      => sampler.0.pin.4
+net ora-x-jc   joint.0.jerk-cmd     => sampler.0.pin.5
+net ora-y-pos                       => sampler.0.pin.6
+net ora-y-vc   joint.1.vel-cmd      => sampler.0.pin.7
+net ora-y-ac   joint.1.acc-cmd      => sampler.0.pin.8
+net ora-y-jc   joint.1.jerk-cmd     => sampler.0.pin.9
+net ora-x-dv                        => sampler.0.pin.10
+net ora-x-da                        => sampler.0.pin.11
+net ora-x-dj                        => sampler.0.pin.12
+net ora-y-dv                        => sampler.0.pin.13
+net ora-y-da                        => sampler.0.pin.14
+net ora-y-dj                        => sampler.0.pin.15
+
+setp iocontrol.0.emc-enable-in 1

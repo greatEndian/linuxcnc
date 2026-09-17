@@ -1,0 +1,13 @@
+( Gate A case B: two full circles at constant commanded speed.     )
+( R = 20 mm, F = 3000 mm/min = 50 mm/s.                            )
+( Truth, exactly: |a| = v^2/R = 125 mm/s^2, |j| = v^3/R^2 = 312.5  )
+( mm/s^3, while scalar path speed is constant and its scalar       )
+( derivatives are zero.                                            )
+G21 G90 G64 P0.01
+G0 X20 Y0 Z0
+G4 P0.2
+G1 F3000
+G2 X20 Y0 I-20 J0
+G2 X20 Y0 I-20 J0
+G4 P0.2
+M2
