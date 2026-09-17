@@ -51,6 +51,10 @@
 /* default comm timeout, in seconds */
 #define DEFAULT_EMCMOT_COMM_TIMEOUT 1.0
 
+/* Seconds allowed for a curved segment's centripetal acceleration to be
+   established at the jerk limit.  See [TRAJ]GEOMETRIC_RAMP_TIME. */
+#define DEFAULT_GEOM_RAMP_TIME 0.010
+
 /* initial velocity, accel used for coordinated moves */
 #define DEFAULT_VELOCITY 1.0
 #define DEFAULT_ACCELERATION 10.0

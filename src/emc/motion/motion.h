@@ -126,6 +126,7 @@ extern "C" {
 	EMCMOT_SET_VEL_LIMIT,	/* set the max vel for all moves (tooltip) */
 	EMCMOT_SET_ACC,		/* set the max accel for moves (tooltip) */
 	EMCMOT_SET_JERK,	/* set the max jerk for moves (tooltip) */
+	EMCMOT_SET_GEOM_RAMP_TIME, /* set the geometric ramp time (arc jerk) */
 	EMCMOT_SET_PLANNER_TYPE,	/* set planner type (0=trapezoidal, 1=S-curve) */
 	EMCMOT_SET_SCURVE_PEAK_SCALE,	/* set S-curve rest-to-rest peak scale (0.5=faithful..1.0=full) */
 	EMCMOT_SET_TERM_COND,	/* set termination condition (stop, blend) */
@@ -756,6 +757,12 @@ Suggestion: Split this in to an Error and a Status flag register..
         int switchkins_type;    /* switchkins type requested by G12.1 */
         int switchkins_seq;     /* bumped per request, so a repeat of
                                    the same type is still seen */
+
+        /* Time allowed for a curved segment's centripetal acceleration to be
+           established at the jerk limit.  This is a machine property, not a
+           control-loop property, and must not be taken from the servo period.
+           From [TRAJ]GEOMETRIC_RAMP_TIME. */
+        double geomRampTime;
     } emcmot_config_t;
 
 /* error structure - lockfree MPSC ring buffer. See emcmotutil.c. */

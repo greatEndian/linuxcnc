@@ -898,6 +898,7 @@ static int init_comm_buffers(void)
     emcmotStatus->syncOverrunError = 0.0;
     emcmotConfig->limitVel = 0.0;
     emcmotStatus->acc = 0.0;
+    emcmotConfig->geomRampTime = DEFAULT_GEOM_RAMP_TIME;
     emcmotStatus->feed_scale = 1.0;
     emcmotStatus->rapid_scale = 1.0;
     emcmotStatus->net_feed_scale = 1.0;

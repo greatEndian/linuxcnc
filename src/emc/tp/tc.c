@@ -24,6 +24,7 @@
 #include "tp_types.h"
 #include "spherical_arc.h"
 #include "../motion/motion.h"
+#include "../nml_intf/emcmotcfg.h"
 #include "ruckig_wrapper.h"
 #include "cruckig/roots.h"
 
@@ -32,6 +33,7 @@
 
 // For jerk-limited arc velocity (planner_type 1)
 extern emcmot_status_t *emcmotStatus;
+extern emcmot_config_t *emcmotConfig;
 
 #ifndef GET_TRAJ_PLANNER_TYPE
 #define GET_TRAJ_PLANNER_TYPE() (emcmotStatus->planner_type)
@@ -895,6 +897,7 @@ int tcUpdateArcLimits(TC_STRUCT * tc)
 
     double a_max = tcGetOverallMaxAccel(tc);
     double a_n_max_cutoff = BLEND_ACC_RATIO_NORMAL * a_max;
+    double jerk_limit = emcmotStatus->jerk;
 
     // Find the acceleration necessary to reach the maximum velocity
     double a_n_vmax = pmSq(tc->maxvel) / radius;
@@ -930,10 +933,19 @@ int tcUpdateArcLimits(TC_STRUCT * tc)
         double a_t_max = BLEND_ACC_RATIO_TANGENTIAL * a_max;
         double v_max_jerk_tan = jerk * radius / (3.0 * a_t_max);
 
-        // Constraint 3: Entry/exit transition jerk (centripetal accel ramp)
-        // At line-arc boundary, centripetal accel changes from 0 to v²/R
-        // j_entry = (v²/R) / cycle_time ≤ j_max
-        double v_max_jerk_entry = pmSqrt(jerk * radius * tc->cycle_time);
+        // Constraint 3: establishing the centripetal acceleration.
+        // Entering curvature 1/R at speed v requires the normal acceleration
+        // to reach v²/R.  Ramping it at the jerk limit takes (v²/R)/j, so the
+        // speed at which that fits the time the machine is allowed for it is
+        //     v <= sqrt(j * R * t_ramp).
+        // t_ramp is a machine property, not a control-loop one: using the
+        // servo period here made the limit depend on SERVO_PERIOD and, through
+        // the base-period rounding in motion.c, on BASE_PERIOD as well, and it
+        // made a faster servo thread lower the achievable feed.
+        double ramp_time = emcmotConfig->geomRampTime > TP_TIME_EPSILON
+                           ? emcmotConfig->geomRampTime
+                           : DEFAULT_GEOM_RAMP_TIME;
+        double v_max_jerk_entry = pmSqrt(jerk * radius * ramp_time);
 
         double v_max_jerk = fmin(fmin(v_max_jerk_steady, v_max_jerk_tan), v_max_jerk_entry);
 
@@ -957,6 +969,35 @@ int tcUpdateArcLimits(TC_STRUCT * tc)
 
     tc->maxvel = v_max_actual;
     tc->acc_ratio_tan = acc_ratio_tan;
+
+    // Allocate the jerk budget between the tangential and normal directions.
+    //
+    // On a curved path the jerk vector decomposes in the Frenet frame as
+    //     tangential : J_path - v³/R²
+    //     normal     : 3·v·a_t/R      (+ v³·dK/ds, zero for constant R)
+    // (Tsirlin, J. Theor. Appl. Mech. 55(4) 1437, 2017), so the limit applies
+    // to sqrt(tangential² + normal²).  The constraints above each bound a
+    // contribution as if it owned the whole limit, and the tangential ramp
+    // then adds to it in quadrature, which is why the total could exceed
+    // emcmotStatus->jerk on an arc.  Reserve what the normal component needs
+    // and leave the rest for the profile's own tangential ramp.
+    if (GET_TRAJ_PLANNER_TYPE() == 1 && jerk_limit > TP_POS_EPSILON) {
+        /* Reserve against the tangential acceleration this segment may
+           actually use, which acc_ratio_tan has just been set to - not
+           against the nominal blend ratio, which is smaller. */
+        double a_t = acc_ratio_tan * tcGetOverallMaxAccel(tc);
+        double v = tc->maxvel;
+        double j_normal = 3.0 * v * a_t / radius;
+        double j_curve = (v * v * v) / (radius * radius);
+
+        if (j_normal < jerk_limit) {
+            double j_tangential = pmSqrt(pmSq(jerk_limit) - pmSq(j_normal))
+                                  + j_curve;
+            if (j_tangential < tc->maxjerk) {
+                tc->maxjerk = j_tangential;
+            }
+        }
+    }
 
     tp_debug_print("tcUpdateArcLimits: final v_max=%f acc_ratio_tan=%f\n",
                    tc->maxvel, tc->acc_ratio_tan);

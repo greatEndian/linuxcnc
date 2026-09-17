@@ -1158,6 +1158,23 @@ int emcTrajSetAcceleration(double acc)
     return retval;
 }
 
+int emcTrajSetGeometricRampTime(double seconds)
+{
+    if (seconds <= 0.0) {
+	return 0;	/* leave the motion-side default in place */
+    }
+
+    emcmotCommand.command = EMCMOT_SET_GEOM_RAMP_TIME;
+    emcmotCommand.jerk = seconds;
+
+    int retval = usrmotWriteEmcmotCommand(&emcmotCommand);
+
+    if (emc_debug & EMC_DEBUG_CONFIG) {
+        rcs_print("%s(%.6f) returned %d\n", __FUNCTION__, seconds, retval);
+    }
+    return retval;
+}
+
 int emcTrajSetJerk(double jerk)
 {
     if (jerk < 0.0) {

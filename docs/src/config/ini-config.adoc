@@ -967,6 +967,14 @@ Finally, no amount of tweaking will speed up a tool path with lots of small, tig
   initial S-curve release). Clamped to 0.1..1.0. Tunable at runtime via the
   `ini.traj-scurve-peak-scale` HAL pin or the <<gcode:g64,G64 R word>>.
 * `MAX_LINEAR_JERK = 10000.0` - (((MAX JERK))) The maximum jerk (rate of change of acceleration) for coordinated moves, in 'machine units' per second cubed.
+
+* `GEOMETRIC_RAMP_TIME = 0.010` - (((GEOMETRIC RAMP TIME))) The time, in seconds,
+  allowed for the centripetal acceleration of a curved segment to be established
+  at the jerk limit. Entering curvature 1/R at speed v needs the normal
+  acceleration to reach v^2^/R, so the feed on an arc is limited to
+  `sqrt(MAX_LINEAR_JERK * R * GEOMETRIC_RAMP_TIME)`. A longer ramp time permits
+  higher feed on small radii at the cost of a less abrupt onset; a shorter one is
+  more conservative. Only used when `PLANNER_TYPE = 1`. Defaults to 0.010.
   Default is 1e9 (1 billion) if not specified, which effectively disables jerk limiting while avoiding numerical instability.
   Values are clamped to a maximum of 1e9 to prevent numerical issues in S-curve calculations.
   When `PLANNER_TYPE = 1`, this enables S-curve trajectory planning.

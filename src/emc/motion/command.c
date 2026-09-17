@@ -1245,6 +1245,13 @@ void emcmotCommandHandler_locked(void *arg, long servo_period)
 	    tpSetAmax(&emcmotInternal->coord_tp, emcmotStatus->acc);
 	    break;
  
+	case EMCMOT_SET_GEOM_RAMP_TIME:
+	    rtapi_print_msg(RTAPI_MSG_DBG, "SET_GEOM_RAMP_TIME, t(%f)", emcmotCommand->jerk);
+	    if (emcmotCommand->jerk > 0.0) {
+		emcmotConfig->geomRampTime = emcmotCommand->jerk;
+	    }
+	    break;
+
 	case EMCMOT_SET_JERK:
 		/* set the traj jerk for jogging */
 		/* can do it at any time */

@@ -65,6 +65,8 @@ static int loadKins(const IniFile &ini)
 // [TRAJ]DEFAULT_LINEAR_ACCELERATION <real>  Default linear acceleration (dv/dt)
 // [TRAJ]MAX_LINEAR_ACCELERATION <real>      Maximum linear acceleration (dv/dt)
 // [TRAJ]MAX_LINEAR_JERK <real>              Maximum linear jerk (da/dt)
+// [TRAJ]GEOMETRIC_RAMP_TIME <real>          Seconds in which curvature-induced
+//                                           acceleration may be established
 // [TRAJ]PLANNER_TYPE <int>                  Planner type (0=standard, 1=S-curve)
 // [TRAJ]ARC_BLEND_ENABLE <bool>             S-curve planner settings
 // [TRAJ]ARC_BLEND_FALLBACK_ENABLE <bool>    ...
@@ -147,6 +149,15 @@ static int loadTraj(const IniFile &ini)
         return -1;
     }
     old_inihal_data.traj_max_jerk = jerk;
+
+    // Time in which a curved segment's centripetal acceleration may be
+    // established at the jerk limit.  A machine property; leaving it unset
+    // keeps the motion-side default.
+    double geom_ramp = ini.findRealV("GEOMETRIC_RAMP_TIME", "TRAJ", 0.0);
+    if (0 != emcTrajSetGeometricRampTime(geom_ramp)) {
+        print_dbg_config("emcTrajSetGeometricRampTime");
+        return -1;
+    }
     if (0 != emcTrajSetJerk(jerk)) {
         print_dbg_config("emcTrajSetJerk");
         return -1;
