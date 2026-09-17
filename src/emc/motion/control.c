@@ -1473,19 +1473,6 @@ static void get_pos_cmds(long period)
 		joint->pos_cmd = cubicInterpolate(&(joint->cubic), 0, &(joint->vel_cmd), &(joint->acc_cmd),  &(joint->jerk_cmd));
 	}
 
-	/* Use accurate jerk values from TP output for identity kinematics only.
-	 * For KINEMATICS_BOTH (non-trivial joint mapping), joint indices don't
-	 * necessarily correspond to XYZ axes, so keep cubic interpolator values.
-	 */
-	if (emcmotStatus->planner_type == 1
-	    && emcmotConfig->kinType == KINEMATICS_IDENTITY) {
-	    double path_jerk = emcmotStatus->current_jerk;
-	    PmCartesian dir = emcmotStatus->current_dir;
-	    if (NO_OF_KINS_JOINTS >= 1) joints[0].jerk_cmd = path_jerk * dir.x;
-	    if (NO_OF_KINS_JOINTS >= 2) joints[1].jerk_cmd = path_jerk * dir.y;
-	    if (NO_OF_KINS_JOINTS >= 3) joints[2].jerk_cmd = path_jerk * dir.z;
-	}
-
 	/* report motion status */
 	SET_MOTION_INPOS_FLAG(0);
 	if (tpIsDone(&emcmotInternal->coord_tp)) {
